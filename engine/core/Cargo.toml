@@ -1,0 +1,20 @@
+[package]
+name = "drifter-engine-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+drifter-engine-common = { path = "../common" }
+drifter-engine-server = { path = "../server", optional = true }
+drifter-engine-client = { path = "../client", optional = true }
+legion = "0.4"
+
+[features]
+default = []
+dedicated-server = ["drifter-engine-server"]
+client = ["drifter-engine-client"]
+full = ["drifter-engine-server", "drifter-engine-client"]
+

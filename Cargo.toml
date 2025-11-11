@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "engine/core",
+    "engine/common",
+    "engine/server",
+    "engine/client",
+]
+resolver = "2"
+
+[package]
+name = "drifter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "drifter"
+path = "src/main.rs"
+
+[dependencies]
+drifter-engine-core = { path = "engine/core" }

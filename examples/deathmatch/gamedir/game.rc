@@ -1,0 +1,2 @@
+exec configs/config.cfg
+exec configs/autoexec.cfg
