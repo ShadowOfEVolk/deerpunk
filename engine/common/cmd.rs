@@ -123,20 +123,36 @@ impl CmdSystem {
     
     /// Process all commands in buffer immediately
     pub fn process_buffer(&self) {
-        let mut buffer = self.buffer.replace(CmdBuffer::new());
-        println!("Processing buffer: {}", buffer.count);
-        while buffer.count > 0 {
-            println!("Processing command: {}", buffer.read_pos);
-            if let Some(ref command_line) = buffer.commands[buffer.read_pos] {
-                let cmd = command_line.clone();
-                buffer.commands[buffer.read_pos] = None;
-                buffer.read_pos = (buffer.read_pos + 1) % CMD_MAX_BUFFER;
-                buffer.count -= 1;
+        // TODO: подумать над тем, как не копировать данные из буфера
+        // И в то же время не попасться на уловки Rust.
+        // Фактически нам нужно заборровить только часть буффера и оставить возможность его модифицировать
+        // Со стороны execute_command
+        let commands_to_execute = {
+            let mut buffer = self.buffer.borrow_mut();
+            let mut commands = Vec::new();
+            let initial_count = buffer.count;
+            
+            // Extract all available commands at this moment
+            for _ in 0..initial_count {
+                let read_pos = buffer.read_pos;
                 
-                self.execute_command(&cmd);
-            } else {
-                break;
+                if let Some(command_line) = buffer.commands[read_pos].take() {
+                    buffer.read_pos = (read_pos + 1) % CMD_MAX_BUFFER;
+                    buffer.count -= 1;
+                    commands.push(command_line);
+                } else {
+                    // Should not happen, but handle gracefully
+                    buffer.read_pos = (read_pos + 1) % CMD_MAX_BUFFER;
+                    buffer.count = buffer.count.saturating_sub(1);
+                }
             }
+            
+            commands
+        };
+        
+        // Execute all collected commands (buffer is now free for new commands)
+        for command in commands_to_execute {
+            self.execute_command(&command);
         }
     }
 

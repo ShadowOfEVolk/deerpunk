@@ -56,17 +56,11 @@ impl Engine {
         if self.initialized {
             return Err("Engine already initialized".to_string());
         }
-        
-        println!("  Initializing filesystem...");
-        // Initialize singleton systems
+
         fs().initialize();
         fs().set_gamedir(gamedir);
-        println!("  Filesystem initialized");
-        
-        println!("  Initializing command system...");
+
         cmd().initialize();
-        println!("  Command system initialized");
-        println!("  Initializing cvar system...");
         cvar().initialize();
         
         println!("Engine initialized successfully");
