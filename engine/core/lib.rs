@@ -1,8 +1,8 @@
 // Core engine framework
 // Can include dedicated server or server with client
 
-use std::sync::Mutex;
-pub use legion::*;
+use glam::Vec3;
+pub use hecs::*;
 
 pub mod common {
     pub use drifter_engine_common::*;
@@ -21,35 +21,167 @@ pub mod client {
 // Singleton systems from common
 use drifter_engine_common::{CmdSystem, CvarSystem, FileSystem, cmd::cmd, cvar::cvar, fs::fs};
 
+#[cfg(feature = "client")]
+use drifter_engine_common::{SimpleEntity, TransformComponent};
+
 pub struct Engine {
     initialized: bool,
-    world: World,
-    schedule: Schedule,
+    server_world: World,
+    #[cfg(feature = "client")]
+    client_world: World,
+    #[cfg(feature = "client")]
+    server_frames: drifter_engine_server::network::ServerFrames,
+    #[cfg(feature = "client")]
+    client_frames: drifter_engine_client::network::frames::ClientFrames,
+    #[cfg(feature = "client")]
+    server_netchan: drifter_engine_server::network::NetChan,
+    #[cfg(feature = "client")]
+    client_netchan: drifter_engine_client::network::NetChan,
 }
 
 impl Engine {
     pub fn new() -> Self {
         Self {
             initialized: false,
-            world: World::default(),
-            schedule: Schedule::builder().build(),
+            server_world: World::new(),
+            #[cfg(feature = "client")]
+            client_world: World::new(),
+            #[cfg(feature = "client")]
+            server_frames: drifter_engine_server::network::ServerFrames::new(),
+            #[cfg(feature = "client")]
+            client_frames: drifter_engine_client::network::frames::ClientFrames::new(),
+            #[cfg(feature = "client")]
+            server_netchan: drifter_engine_server::network::NetChan::new(0),
+            #[cfg(feature = "client")]
+            client_netchan: drifter_engine_client::network::NetChan::new(0),
         }
     }
 
-    /// Get reference to ECS World
-    pub fn world(&self) -> &World {
-        &self.world
+    /// Get reference to server ECS World
+    pub fn server_world(&self) -> &World {
+        &self.server_world
     }
 
-    /// Get mutable reference to ECS World
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
+    /// Get mutable reference to server ECS World
+    pub fn server_world_mut(&mut self) -> &mut World {
+        &mut self.server_world
     }
 
-    /// Execute ECS schedule
-    pub fn run_schedule(&mut self) {
-        let mut resources = Resources::default();
-        self.schedule.execute(&mut self.world, &mut resources);
+    /// Get reference to client ECS World
+    #[cfg(feature = "client")]
+    pub fn client_world(&self) -> &World {
+        &self.client_world
+    }
+
+    /// Get mutable reference to client ECS World
+    #[cfg(feature = "client")]
+    pub fn client_world_mut(&mut self) -> &mut World {
+        &mut self.client_world
+    }
+
+    /// Execute ECS systems (runs on server world)
+    pub fn run_schedule(&mut self, delta_time: f32) {
+        // Server systems run here
+        #[cfg(feature = "client")]
+        {
+            use drifter_engine_client::simple_entity_system;
+            use drifter_engine_server::simple_circle_renderer_system;
+            simple_entity_system(&mut self.server_world, delta_time);
+            simple_circle_renderer_system(&mut self.server_world, delta_time);
+            
+            // Create frame snapshot after systems run
+            self.server_frames.create_frame(&mut self.server_world);
+        }
+    }
+    
+    /// Process network communication (loopback with latency and jitter)
+    #[cfg(feature = "client")]
+    fn process_network(&mut self) {
+        use drifter_engine_common::network::protocol::{SVC, CLC};
+        
+        // Process pending messages (check if any are ready to be delivered)
+        self.server_netchan.process_pending();
+        self.client_netchan.process_pending();
+        
+        // Process incoming messages from client
+        for msg in self.server_netchan.process_incoming() {
+            match msg.cmd {
+                cmd if cmd == CLC::CurrentFrame as u8 => {
+                    // Client sent current frame
+                    if msg.payload.len() >= 1 {
+                        let known_frame = msg.payload[0];
+                        self.server_frames.set_client_known_frame(self.server_netchan.client_id, known_frame);
+                    }
+                }
+                _ => {
+                    eprintln!("Unknown client command: {}", msg.cmd);
+                }
+            }
+        }
+        
+        // Send delta packet to client
+        let known_frame = self.server_frames.get_client_known_frame(self.server_netchan.client_id);
+        let current_frame = self.server_frames.current_frame();
+        
+        let mut buffer = Vec::new();
+        if let Err(e) = self.server_frames.write_delta_packet(&mut buffer, self.server_netchan.client_id) {
+            eprintln!("Failed to write delta packet: {}", e);
+            return;
+        }
+        
+        if !buffer.is_empty() {
+            let packet_size = buffer.len();
+            println!("Delta packet: frame_from={}, frame_to={}, size={} bytes", 
+                     known_frame, current_frame, packet_size);
+            self.server_netchan.send_message(SVC::DeltaPacketEntities, buffer);
+        }
+        
+        // Loopback: transfer messages between server and client (with latency/jitter)
+        while let Some(msg) = self.server_netchan.get_outgoing_message() {
+            self.client_netchan.receive_message(msg);
+        }
+        
+        while let Some(msg) = self.client_netchan.get_outgoing_message() {
+            self.server_netchan.receive_message(msg);
+        }
+    }
+
+    /// Sync server world state to client world using frame-based delta replication
+    #[cfg(feature = "client")]
+    fn sync_server_to_client(&mut self) {
+        use drifter_engine_client::client_replication;
+        use std::io::Cursor;
+        use std::io::Read;
+        use drifter_engine_common::network::protocol::{SVC, CLC};
+        
+        // Process incoming messages from server
+        for msg in self.client_netchan.process_incoming() {
+            match msg.cmd {
+                cmd if cmd == SVC::DeltaPacketEntities as u8 => {
+                    // Apply delta packet to client world
+                    let mut cursor = Cursor::new(&msg.payload);
+                    
+                    match client_replication().parse_delta_entities_packet(&mut cursor, &mut self.client_world) {
+                        Ok((_frame_from, frame_to)) => {
+                            // Create client frame after applying delta
+                            self.client_frames.create_frame(&mut self.client_world);
+                            
+                            // Update client's known frame - send back to server
+                            self.client_netchan.send_message(
+                                CLC::CurrentFrame,
+                                vec![frame_to],
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to parse delta packet: {}", e);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Unknown server command: {}", msg.cmd);
+                }
+            }
+        }
     }
 
     pub fn initialize<P: AsRef<std::path::Path>>(&mut self, gamedir: P) -> Result<(), String> {
@@ -62,6 +194,26 @@ impl Engine {
 
         cmd().initialize();
         cvar().initialize();
+
+        let center_position = Vec3::new(400.0, 300.0, 0.0);
+        
+        // Spawn SimpleEntity on server
+        #[cfg(feature = "client")]
+        {
+            use drifter_engine_common::SimpleCircleRenderer;
+            let server_entity = self.server_world.spawn((
+                TransformComponent { position: center_position, ..Default::default() }, // Center of screen
+                SimpleEntity::new(),
+                SimpleCircleRenderer::default(),
+            ));
+            println!("Spawned server SimpleEntity: {:?}", server_entity);
+            
+            // Spawn client entity (only Transform, no SimpleEntity - just copies server position)
+            let client_entity = self.client_world.spawn((
+                TransformComponent { position: center_position, ..Default::default() }, // Center of screen
+            ));
+            println!("Spawned client SimpleEntity: {:?}", client_entity);
+        }
         
         println!("Engine initialized successfully");
         
@@ -69,7 +221,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn frame(&mut self, _delta_time: f32) -> Result<(), String> {
+    pub fn frame(&mut self, delta_time: f32) -> Result<(), String> {
         if !self.initialized {
             return Err("Engine not initialized".to_string());
         }
@@ -77,9 +229,15 @@ impl Engine {
         // Process command system frame
         cmd().frame();
         
-        // Execute ECS schedule
-        // Systems can access delta_time via singleton or pass as parameter
-        self.run_schedule();
+        // Execute ECS schedule with delta_time
+        self.run_schedule(delta_time);
+        
+        // Process network communication (loopback)
+        #[cfg(feature = "client")]
+        {
+            self.process_network();
+            self.sync_server_to_client();
+        }
         
         Ok(())
     }
@@ -102,4 +260,5 @@ impl Default for Engine {
         Self::new()
     }
 }
+
 

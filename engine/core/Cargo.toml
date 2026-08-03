@@ -10,11 +10,12 @@ path = "lib.rs"
 drifter-engine-common = { path = "../common" }
 drifter-engine-server = { path = "../server", optional = true }
 drifter-engine-client = { path = "../client", optional = true }
-legion = "0.4"
+hecs = "0.7"
+glam = "0.30.9"
 
 [features]
 default = []
 dedicated-server = ["drifter-engine-server"]
-client = ["drifter-engine-client"]
+client = ["drifter-engine-client", "drifter-engine-server"]
 full = ["drifter-engine-server", "drifter-engine-client"]
 

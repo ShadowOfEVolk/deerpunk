@@ -17,4 +17,5 @@ name = "drifter"
 path = "src/main.rs"
 
 [dependencies]
-drifter-engine-core = { path = "engine/core" }
+drifter-engine-core = { path = "engine/core", features = ["client"] }
+drifter-engine-client = { path = "engine/client" }
