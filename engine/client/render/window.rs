@@ -1,5 +1,5 @@
-use drifter_engine_common::{SimpleCircleRenderer, TransformComponent};
-use hecs::World;
+use deerpunk_engine_common::{SimpleCircleRenderer, TransformComponent};
+use hecs::{Entity, World};
 use minifb::{Window, WindowOptions};
 
 const WIDTH: usize = 800;
@@ -74,7 +74,7 @@ impl<'a> Canvas<'a> {
 
 impl WindowRenderer {
     pub fn new() -> Result<Self, String> {
-        let mut window = Window::new("Drifter Engine", WIDTH, HEIGHT, WindowOptions::default())
+        let mut window = Window::new("deerpunk Engine", WIDTH, HEIGHT, WindowOptions::default())
             .map_err(|e| format!("Failed to create window: {}", e))?;
 
         window.limit_update_rate(Some(std::time::Duration::from_micros(16600))); // ~60 FPS
@@ -91,39 +91,21 @@ impl WindowRenderer {
     }
 
     /// Update renderer and draw entities from both server and client worlds
-    pub fn update_with_worlds(
-        &mut self,
-        server_world: &World,
-        client_world: &World,
-    ) -> bool {
+    pub fn update_with_worlds(&mut self, world: &World) -> bool {
         // Get canvas and draw
         let mut canvas = self.canvas();
         canvas.clear(0x00000000); // Black background
 
-        // Draw server entity (red, semi-transparent)
-        // Use query_mut for iteration (hecs allows read-only access via &T in query_mut)
-        for (id, circle_renderer) in server_world.query::<&SimpleCircleRenderer>().iter() {
-            let transform = server_world.get::<TransformComponent>(id).unwrap();
-            let screen_x = transform.position.x as i32;
-            let screen_y = (HEIGHT as f32 - transform.position.y) as i32; // Flip Y axis
-
-            // Red semi-transparent: 0x80FF0000 (50% opacity)
-            canvas.fill_circle(
-                screen_x, screen_y,
-                circle_renderer.radius as i32,
-                circle_renderer.color,
-            );
-        }
-
         // Draw client entity (blue, semi-transparent)
-        for (id, circle_renderer) in client_world.query::<&SimpleCircleRenderer>().iter() {
-            let transform = client_world.get::<TransformComponent>(id).unwrap();
+        for (id, circle_renderer) in world.query::<(Entity, &SimpleCircleRenderer)>().iter() {
+            let transform = world.get::<&TransformComponent>(id).unwrap();
             let screen_x = transform.position.x as i32;
             let screen_y = (HEIGHT as f32 - transform.position.y) as i32; // Flip Y axis
 
             // Blue semi-transparent: 0x800000FF (50% opacity)
             canvas.fill_circle(
-                screen_x, screen_y,
+                screen_x,
+                screen_y,
                 circle_renderer.radius as i32 - 2,
                 0x100000FF, // Blue semi-transparent (ARGB)
             );

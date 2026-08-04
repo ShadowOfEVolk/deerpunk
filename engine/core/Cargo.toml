@@ -1,5 +1,5 @@
 [package]
-name = "drifter-engine-core"
+name = "deerpunk-engine-core"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,15 +7,14 @@ edition = "2021"
 path = "lib.rs"
 
 [dependencies]
-drifter-engine-common = { path = "../common" }
-drifter-engine-server = { path = "../server", optional = true }
-drifter-engine-client = { path = "../client", optional = true }
-hecs = "0.7"
+deerpunk-engine-common = { path = "../common" }
+deerpunk-engine-server = { path = "../server", optional = true }
+deerpunk-engine-client = { path = "../client", optional = true }
+hecs = "0.11"
 glam = "0.30.9"
 
 [features]
 default = []
-dedicated-server = ["drifter-engine-server"]
-client = ["drifter-engine-client", "drifter-engine-server"]
-full = ["drifter-engine-server", "drifter-engine-client"]
-
+dedicated-server = ["deerpunk-engine-server"]
+client = ["deerpunk-engine-client", "deerpunk-engine-server"]
+full = ["deerpunk-engine-server", "deerpunk-engine-client"]

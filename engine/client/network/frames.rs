@@ -1,8 +1,9 @@
 // Client-side frame history for handling old deltas
 // Server may send delta from a frame client already processed but didn't notify server yet
 
-use drifter_engine_common::{TransformComponent, SimpleCircleRenderer};
-use drifter_engine_common::network::FrameNumber;
+use deerpunk_engine_common::network::FrameNumber;
+use deerpunk_engine_common::{SimpleCircleRenderer, TransformComponent};
+use hecs::Entity;
 
 /// Maximum number of frames to keep in history (256 frames)
 const MAX_FRAMES: usize = 256;
@@ -39,13 +40,16 @@ impl ClientFrames {
     /// Create a new frame from current world state
     pub fn create_frame(&mut self, world: &mut hecs::World) {
         let mut entities = Vec::new();
-        
+
         // Collect all entities with TransformComponent
-        for (entity_id, transform) in world.query::<&TransformComponent>().iter() {
+        for (entity_id, transform) in world.query::<(Entity, &TransformComponent)>().iter() {
             let network_id = entity_id.id() as u16;
-            
-            let circle_renderer = world.get::<SimpleCircleRenderer>(entity_id).ok().map(|r| *r);
-            
+
+            let circle_renderer = world
+                .get::<&SimpleCircleRenderer>(entity_id)
+                .ok()
+                .map(|r| *r);
+
             entities.push(ClientPacketEntity {
                 network_id,
                 transform: Some(*transform),
@@ -61,7 +65,7 @@ impl ClientFrames {
         // Store frame in circular buffer
         let buffer_index = self.current_frame as usize % MAX_FRAMES;
         self.frames[buffer_index] = Some(frame);
-        
+
         // Increment frame number (wraps around)
         self.current_frame = self.current_frame.wrapping_add(1);
     }
@@ -78,17 +82,17 @@ impl ClientFrames {
         if frame_diff as usize > MAX_FRAMES {
             return None; // Frame too old
         }
-        
+
         // Calculate buffer index using modulo
         let buffer_index = frame_number as usize % MAX_FRAMES;
-        
+
         // Check if frame exists at this index
         if let Some(frame) = &self.frames[buffer_index] {
             if frame.frame_number == frame_number {
                 return Some(frame);
             }
         }
-        
+
         None
     }
 }
@@ -98,4 +102,3 @@ impl Default for ClientFrames {
         Self::new()
     }
 }
-

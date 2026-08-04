@@ -3,17 +3,6 @@
 version = 4
 
 [[package]]
-name = "ahash"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9"
-dependencies = [
- "getrandom 0.2.16",
- "once_cell",
- "version_check",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -60,6 +49,61 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
 
 [[package]]
+name = "deerpunk"
+version = "0.1.0"
+dependencies = [
+ "deerpunk-engine-client",
+ "deerpunk-engine-core",
+ "hecs",
+]
+
+[[package]]
+name = "deerpunk-engine-client"
+version = "0.1.0"
+dependencies = [
+ "deerpunk-engine-common",
+ "glam",
+ "hecs",
+ "minifb",
+ "once_cell",
+ "paste",
+ "rand",
+]
+
+[[package]]
+name = "deerpunk-engine-common"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "hecs",
+ "inventory",
+ "once_cell",
+ "paste",
+]
+
+[[package]]
+name = "deerpunk-engine-core"
+version = "0.1.0"
+dependencies = [
+ "deerpunk-engine-client",
+ "deerpunk-engine-common",
+ "deerpunk-engine-server",
+ "glam",
+ "hecs",
+]
+
+[[package]]
+name = "deerpunk-engine-server"
+version = "0.1.0"
+dependencies = [
+ "deerpunk-engine-common",
+ "hecs",
+ "once_cell",
+ "paste",
+ "rand",
+]
+
+[[package]]
 name = "dlib"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -73,59 +117,6 @@ name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
-
-[[package]]
-name = "drifter"
-version = "0.1.0"
-dependencies = [
- "drifter-engine-client",
- "drifter-engine-core",
-]
-
-[[package]]
-name = "drifter-engine-client"
-version = "0.1.0"
-dependencies = [
- "drifter-engine-common",
- "glam",
- "hecs",
- "minifb",
- "once_cell",
- "paste",
- "rand",
-]
-
-[[package]]
-name = "drifter-engine-common"
-version = "0.1.0"
-dependencies = [
- "glam",
- "hecs",
- "once_cell",
- "paste",
-]
-
-[[package]]
-name = "drifter-engine-core"
-version = "0.1.0"
-dependencies = [
- "drifter-engine-client",
- "drifter-engine-common",
- "drifter-engine-server",
- "glam",
- "hecs",
-]
-
-[[package]]
-name = "drifter-engine-server"
-version = "0.1.0"
-dependencies = [
- "drifter-engine-common",
- "hecs",
- "once_cell",
- "paste",
- "rand",
-]
 
 [[package]]
 name = "errno"
@@ -148,6 +139,12 @@ name = "find-msvc-tools"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
+
+[[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "futures"
@@ -269,19 +266,20 @@ checksum = "bd47b05dddf0005d850e5644cae7f2b14ac3df487979dbfff3b56f20b1a6ae46"
 
 [[package]]
 name = "hashbrown"
-version = "0.12.3"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "ahash",
+ "foldhash",
 ]
 
 [[package]]
 name = "hecs"
-version = "0.7.7"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95ae6c6368add4cc6592ed9b48a270b35cf3a52d429355aaeb55822935526e94"
+checksum = "d5d61999272074fd54f3eda7afbfa3f781b0d62ddb89be28fdf56bce30e23576"
 dependencies = [
+ "foldhash",
  "hashbrown",
  "spin",
 ]
@@ -296,6 +294,15 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -621,9 +628,9 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "8abadc99fd9c7bbb7d0ca2b31d72a067d0c0dcd7aad25ab8cac71ba91417694b"
 
 [[package]]
 name = "syn"
@@ -660,12 +667,6 @@ name = "version-compare"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "579a42fc0b8e0c63b76519a339be31bed574929511fa53c1a3acae26eb258f29"
-
-[[package]]
-name = "version_check"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wasi"

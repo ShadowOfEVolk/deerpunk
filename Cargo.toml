@@ -8,14 +8,15 @@ members = [
 resolver = "2"
 
 [package]
-name = "drifter"
+name = "deerpunk"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "drifter"
+name = "deerpunk"
 path = "src/main.rs"
 
 [dependencies]
-drifter-engine-core = { path = "engine/core", features = ["client"] }
-drifter-engine-client = { path = "engine/client" }
+deerpunk-engine-core = { path = "engine/core", features = ["full"] }
+deerpunk-engine-client = { path = "engine/client" }
+hecs = "0.11"

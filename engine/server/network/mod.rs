@@ -1,10 +1,9 @@
+pub mod component_registry;
 pub mod frames;
 pub mod netchan;
 pub mod replication;
-pub mod component_registry;
 
+pub use component_registry::{get_component_id, get_component_type, SERVER_COMPONENT_REGISTRY};
+pub use deerpunk_engine_common::network::FrameNumber;
 pub use frames::ServerFrames;
-pub use netchan::{NetChan, IncomingMessage};
-pub use component_registry::{SERVER_COMPONENT_REGISTRY, get_component_type, get_component_id};
-pub use drifter_engine_common::network::FrameNumber;
-
+pub use netchan::{IncomingMessage, NetChan};

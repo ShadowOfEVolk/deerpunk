@@ -1,17 +1,15 @@
-use std::io::Read;
-pub use drifter_engine_common::{NetworkComponent, NetworkField};
-use hecs::World;
-use drifter_engine_common::{NetReplicatedComponent, SimpleCircleRenderer, TransformComponent};
 use crate::network::component_registry::get_component_type;
-use drifter_engine_common::network::ComponentType;
+use deerpunk_engine_common::network::ComponentType;
+use deerpunk_engine_common::{NetReplicatedComponent, SimpleCircleRenderer, TransformComponent};
+pub use deerpunk_engine_common::{NetworkComponent, NetworkField};
+use hecs::World;
+use std::io::Read;
 
-pub struct ClientReplication {
-}
+pub struct ClientReplication {}
 
 impl ClientReplication {
     pub fn new() -> Self {
-        Self {
-        }
+        Self {}
     }
 
     /// Parse and apply delta entities packet to world
@@ -22,11 +20,12 @@ impl ClientReplication {
     ) -> Result<(u8, u8), String> {
         // Read frame numbers
         let mut frame_bytes = [0u8; 2];
-        reader.read_exact(&mut frame_bytes)
+        reader
+            .read_exact(&mut frame_bytes)
             .map_err(|e| format!("Failed to read frame numbers: {}", e))?;
         let frame_from = frame_bytes[0];
         let frame_to = frame_bytes[1];
-        
+
         // Read entities one by one
         loop {
             let mut network_id_bytes = [0u8; 2];
@@ -34,24 +33,24 @@ impl ClientReplication {
                 break; // End of packet
             }
             let network_id = u16::from_le_bytes(network_id_bytes);
-            
+
             let mut is_deleted = [0u8; 1];
             if reader.read_exact(&mut is_deleted).is_err() {
                 break;
             }
-            
+
             if is_deleted[0] != 0 {
                 // Entity deleted - skip for now
                 continue;
             }
-            
+
             // Read component changes count
             let mut component_count = [0u8; 1];
             if reader.read_exact(&mut component_count).is_err() {
                 break;
             }
             let component_count = component_count[0] as usize;
-            
+
             // Read component IDs
             let mut component_ids = Vec::new();
             for _ in 0..component_count {
@@ -61,16 +60,18 @@ impl ClientReplication {
                 }
                 component_ids.push(u16::from_le_bytes(component_id_bytes));
             }
-            
+
             // Find entity by network_id using NetReplicatedComponent
             let mut entity_id_opt = None;
-            for (entity_id, net_replicated) in world.query_mut::<&NetReplicatedComponent>() {
+            for (entity_id, net_replicated) in
+                world.query_mut::<(hecs::Entity, &mut NetReplicatedComponent)>()
+            {
                 if net_replicated.network_id as u16 == network_id {
                     entity_id_opt = Some(entity_id);
                     break;
                 }
             }
-            
+
             // Process each component using registry
             for component_id in component_ids {
                 if let Some(component_type) = get_component_type(component_id) {
@@ -82,13 +83,13 @@ impl ClientReplication {
                             if component_type == ComponentType::Transform {
                                 let mut transform = TransformComponent::default();
                                 self.apply_component_delta_from_zero(reader, &mut transform);
-                                
+
                                 // Create NetReplicatedComponent with component_ids from packet
                                 let net_replicated = NetReplicatedComponent {
                                     network_id: network_id as u32,
                                     replicated_component_ids: component_ids.clone(),
                                 };
-                                
+
                                 let new_entity = world.spawn((transform, net_replicated));
                                 entity_id_opt = Some(new_entity);
                                 new_entity
@@ -98,20 +99,20 @@ impl ClientReplication {
                             }
                         }
                     };
-                    
+
                     // Apply component delta using registry-based dispatch
                     self.apply_component_by_type(reader, world, entity_id, component_type)?;
                 }
             }
-            
+
             // Update NetReplicatedComponent with current component list
             if let Some(entity_id) = entity_id_opt {
-                if let Ok(mut net_replicated) = world.get_mut::<NetReplicatedComponent>(entity_id) {
+                if let Ok(mut net_replicated) = world.get::<&mut NetReplicatedComponent>(entity_id) {
                     net_replicated.replicated_component_ids = component_ids.clone();
                 }
             }
         }
-        
+
         Ok((frame_from, frame_to))
     }
 
@@ -125,19 +126,20 @@ impl ClientReplication {
     ) -> Result<(), String> {
         match component_type {
             ComponentType::Transform => {
-                if let Ok(mut transform) = world.get_mut::<TransformComponent>(entity_id) {
+                if let Ok(mut transform) = world.get::<&mut TransformComponent>(entity_id) {
                     self.apply_component_delta_from_zero(reader, &mut *transform);
                 }
             }
             ComponentType::SimpleCircleRenderer => {
-                let renderer_opt = world.get_mut::<SimpleCircleRenderer>(entity_id).ok();
+                let renderer_opt = world.get::<&mut SimpleCircleRenderer>(entity_id).ok();
                 if let Some(mut renderer) = renderer_opt {
                     self.apply_component_delta_from_zero(reader, &mut *renderer);
                 } else {
                     drop(renderer_opt);
                     let mut renderer = SimpleCircleRenderer::default();
                     self.apply_component_delta_from_zero(reader, &mut renderer);
-                    world.insert_one(entity_id, renderer)
+                    world
+                        .insert_one(entity_id, renderer)
                         .map_err(|e| format!("Failed to insert SimpleCircleRenderer: {:?}", e))?;
                 }
             }
@@ -168,10 +170,10 @@ impl ClientReplication {
         reader.read_exact(&mut bitmask_bytes).unwrap();
         let bitmask = u16::from_le_bytes(bitmask_bytes);
 
-        let from_bytes = unsafe { 
+        let from_bytes = unsafe {
             std::slice::from_raw_parts(from as *const _ as *const u8, std::mem::size_of::<T>())
         };
-        let to_bytes = unsafe { 
+        let to_bytes = unsafe {
             std::slice::from_raw_parts_mut(to as *mut _ as *mut u8, std::mem::size_of::<T>())
         };
 
@@ -188,4 +190,4 @@ impl ClientReplication {
     }
 }
 
-drifter_engine_common::singleton_system!(client_replication, ClientReplication);
+deerpunk_engine_common::singleton_system!(client_replication, ClientReplication);

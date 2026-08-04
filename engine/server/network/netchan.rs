@@ -1,6 +1,6 @@
+use deerpunk_engine_common::network::protocol::SVC;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use drifter_engine_common::network::protocol::SVC;
 
 /// Pending message with delivery time
 struct PendingMessage {
@@ -26,8 +26,8 @@ impl NetChan {
             outgoing_messages: VecDeque::new(),
             incoming_messages: VecDeque::new(),
             pending_outgoing: VecDeque::new(),
-            latency_ms: 50, // Default 50ms latency
-            jitter_ms: 10,  // Default 10ms jitter
+            latency_ms: 50,           // Default 50ms latency
+            jitter_ms: 10,            // Default 10ms jitter
             packet_loss_percent: 0.1, // Default 10% packet loss
         }
     }
@@ -48,7 +48,7 @@ impl NetChan {
         let mut packet = Vec::new();
         packet.push(svc as u8);
         packet.extend_from_slice(&data);
-        
+
         // Calculate delivery time with latency + jitter (symmetric: latency ± jitter)
         let base_delay_ms = self.latency_ms as i64;
         let jitter_value = rand::random::<u32>() % (self.jitter_ms * 2 + 1);
@@ -56,7 +56,7 @@ impl NetChan {
         let total_delay_ms = (base_delay_ms + jitter_ms).max(1) as u64; // Minimum 1ms delay
         let total_delay = Duration::from_millis(total_delay_ms);
         let delivery_time = Instant::now() + total_delay;
-        
+
         self.pending_outgoing.push_back(PendingMessage {
             data: packet,
             delivery_time,
@@ -79,7 +79,7 @@ impl NetChan {
     /// Get next outgoing message (for loopback, with packet loss simulation)
     pub fn get_outgoing_message(&mut self) -> Option<Vec<u8>> {
         self.process_pending();
-        
+
         // Simulate packet loss
         if let Some(msg) = self.outgoing_messages.pop_front() {
             if rand::random::<f32>() < self.packet_loss_percent {
@@ -104,14 +104,11 @@ impl NetChan {
             if data.is_empty() {
                 continue;
             }
-            
+
             let cmd = data[0];
             let payload = data[1..].to_vec();
-            
-            messages.push(IncomingMessage {
-                cmd,
-                payload,
-            });
+
+            messages.push(IncomingMessage { cmd, payload });
         }
         messages
     }
@@ -122,4 +119,3 @@ pub struct IncomingMessage {
     pub cmd: u8,
     pub payload: Vec<u8>,
 }
-

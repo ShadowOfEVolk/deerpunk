@@ -1,8 +1,8 @@
 // Пример использования EntityState вместо PacketEntity
 // Это демонстрирует, как можно хранить состояние сущности универсально
 
-use drifter_engine_common::{
-    TransformComponent, 
+use deerpunk_engine_common::{
+    TransformComponent,
     SimpleCircleRenderer,
     network::{EntityState, ComponentType}
 };
@@ -11,35 +11,35 @@ use hecs::World;
 // Пример создания фрейма с EntityState
 fn create_frame_example(world: &mut World) -> Vec<EntityState> {
     let mut entities = Vec::new();
-    
+
     // Собираем все сущности с TransformComponent
     for (entity_id, transform) in world.query_mut::<&TransformComponent>() {
         let network_id = entity_id.id() as u16;
         let mut entity_state = EntityState::new(network_id);
-        
+
         // Добавляем TransformComponent
         entity_state.set_component(ComponentType::Transform, transform);
-        
+
         // Пытаемся добавить SimpleCircleRenderer, если он есть
         if let Ok(renderer) = world.get::<SimpleCircleRenderer>(entity_id) {
             entity_state.set_component(ComponentType::SimpleCircleRenderer, &*renderer);
         }
-        
+
         entities.push(entity_state);
     }
-    
+
     entities
 }
 
 // Пример сравнения двух EntityState для дельты
 fn compare_entity_states(from: &EntityState, to: &EntityState) -> u8 {
     let mut bitmask = 0u8;
-    
+
     // Проверяем каждый возможный компонент
     for component_type in [ComponentType::Transform, ComponentType::SimpleCircleRenderer] {
         let from_data = from.get_component_data(component_type);
         let to_data = to.get_component_data(component_type);
-        
+
         // Компонент изменился, если:
         // 1. Есть в обоих, но данные разные
         // 2. Есть только в одном из них
@@ -48,12 +48,12 @@ fn compare_entity_states(from: &EntityState, to: &EntityState) -> u8 {
             (Some(_), None) | (None, Some(_)) => true,
             (None, None) => false,
         };
-        
+
         if changed {
             bitmask |= 1 << component_type.to_id();
         }
     }
-    
+
     bitmask
 }
 
@@ -70,4 +70,3 @@ fn compare_entity_states(from: &EntityState, to: &EntityState) -> u8 {
 //  ^offset=0          ^offset=40           ^offset=48
 //
 // HashMap хранит метаданные: ComponentType -> (offset, size)
-

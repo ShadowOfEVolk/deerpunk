@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::HashMap};
 
+use crate::cvar::cvar;
 use crate::fs::fs;
 
 const CMD_MAX_BUFFER: usize = 256;
@@ -46,26 +47,29 @@ impl CmdSystem {
 
     pub fn initialize(&mut self) {
         self.initialized = true;
-        
+
         // Register built-in commands
         self.register_exec_command();
         self.register_echo_command();
-        
+
         // game.rc will be executed from core after fs is initialized
         self.add_command("exec game.rc".to_string());
     }
-    
+
     fn register_echo_command(&mut self) {
-        self.register_command("echo", Box::new(move |ctx: CommandExecutionContext<'_>| {
-            if ctx.args.is_empty() {
-                println!();
-            } else {
-                // Join all arguments with spaces
-                println!("{}", ctx.args.join(" "));
-            }
-        }));
+        self.register_command(
+            "echo",
+            Box::new(move |ctx: CommandExecutionContext<'_>| {
+                if ctx.args.is_empty() {
+                    println!();
+                } else {
+                    // Join all arguments with spaces
+                    println!("{}", ctx.args.join(" "));
+                }
+            }),
+        );
     }
-    
+
     fn register_exec_command(&mut self) {
         // exec command will be registered with a callback that uses the load_file function
         // We'll set it up to use a function pointer that can access fs
@@ -74,14 +78,14 @@ impl CmdSystem {
                 println!("Usage: exec <filename>");
                 return;
             }
-            
+
             let filename = &ctx.args[0];
             ctx.cmd.exec_file(filename);
         });
-        
+
         self.commands.insert("exec".to_string(), exec_handler);
     }
-    
+
     fn exec_file(&self, filename: &str) {
         println!("Executing file: {}", filename);
         let Ok(mut iterator) = fs().stream_file(filename) else {
@@ -93,10 +97,10 @@ impl CmdSystem {
             let line = line.unwrap();
             self.add_command(line);
         }
-        
+
         self.process_buffer();
     }
-    
+
     pub fn register_command<F>(&mut self, name: &str, callback: F)
     where
         F: Fn(CommandExecutionContext) + Send + Sync + 'static,
@@ -120,7 +124,7 @@ impl CmdSystem {
         // Process commands from buffer
         self.process_buffer();
     }
-    
+
     /// Process all commands in buffer immediately
     pub fn process_buffer(&self) {
         // TODO: подумать над тем, как не копировать данные из буфера
@@ -131,11 +135,11 @@ impl CmdSystem {
             let mut buffer = self.buffer.borrow_mut();
             let mut commands = Vec::new();
             let initial_count = buffer.count;
-            
+
             // Extract all available commands at this moment
             for _ in 0..initial_count {
                 let read_pos = buffer.read_pos;
-                
+
                 if let Some(command_line) = buffer.commands[read_pos].take() {
                     buffer.read_pos = (read_pos + 1) % CMD_MAX_BUFFER;
                     buffer.count -= 1;
@@ -146,10 +150,10 @@ impl CmdSystem {
                     buffer.count = buffer.count.saturating_sub(1);
                 }
             }
-            
+
             commands
         };
-        
+
         // Execute all collected commands (buffer is now free for new commands)
         for command in commands_to_execute {
             self.execute_command(&command);
@@ -160,7 +164,7 @@ impl CmdSystem {
         // Note: read_line is blocking, so this will block until input is available
         // For non-blocking input, we'd need async I/O or a separate thread
         // For now, this is fine for a simple console
-        
+
         // Try to read from stdin (this will block if no input available)
         // In a real implementation, this should be in a separate thread
         // For now, we'll skip stdin reading in frame() to avoid blocking
@@ -187,15 +191,13 @@ impl CmdSystem {
     pub fn execute_command(&self, command_line: &str) {
         // Tokenize command line (handles quotes like Xash3d/GoldSource)
         let tokens = self.tokenize(command_line);
-        
+
         if tokens.is_empty() {
             return;
         }
 
         let command_name = tokens[0].as_str();
         let args: Vec<&str> = tokens[1..].iter().map(|s| s.as_str()).collect();
-
-        println!("tokens: {:?}", tokens);
 
         // Search for registered command
         if let Some(callback) = self.commands.get(command_name) {
@@ -204,13 +206,52 @@ impl CmdSystem {
                 cmd: self,
                 args: args.to_vec(),
             });
+        } else if !args.is_empty() {
+            // Неизвестная команда с аргументами — попробовать как установку квара
+            // (`<cvarname> <value>`), как в tanks/Quake-консоли.
+            cvar().set_or_create(command_name, &args.join(" "));
+            println!("Setting cvar: {} = {}", command_name, args.join(" "));
         } else {
             println!("Unknown command: {}", command_name);
         }
     }
 
+    /// Загрузить и выполнить .cfg файл из CWD (не через gamedir).
+    /// Строки `name value` применяются как квары (`set_or_create`).
+    pub fn exec_config_file(&self, path: &str) {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("[cfg] can't read {}: {err}", path);
+                return;
+            }
+        };
+        eprintln!("[cfg] executing {path}");
+        let mut executed = 0;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+                continue;
+            }
+            if let Some((name, value)) = line.split_once(char::is_whitespace) {
+                let name = name.trim();
+                let value = value.trim();
+                if !cvar().set(name, value) {
+                    // неизвестный кvar — всё равно задаём (.cfg может создавать квары)
+                    cvar().set_or_create(name, value);
+                }
+                executed += 1;
+            } else {
+                eprintln!("[cfg] {path}: skipping malformed line: {line}");
+            }
+        }
+        if executed > 0 {
+            println!("[cfg] {path}: applied {executed} cvars");
+        }
+    }
+
     /// Execute commands from file lines iterator
-    pub fn execute_file_lines<I>(&mut self, lines: I) 
+    pub fn execute_file_lines<I>(&mut self, lines: I)
     where
         I: Iterator<Item = Result<String, std::io::Error>>,
     {
@@ -222,20 +263,21 @@ impl CmdSystem {
                     continue;
                 }
             };
-            
+
             // Lines iterator already handles comments, just trim
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            
+
             // Remove inline comments (if any)
             let command = if let Some(comment_pos) = trimmed.find("//") {
                 &trimmed[..comment_pos]
             } else {
                 trimmed
-            }.trim();
-            
+            }
+            .trim();
+
             if !command.is_empty() {
                 self.execute_command(command);
             }
