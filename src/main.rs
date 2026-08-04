@@ -1,18 +1,8 @@
-use deerpunk_engine_client::WindowRenderer;
 use deerpunk_engine_core::Engine;
 use std::time::{Duration, Instant};
 
 fn main() {
     println!("Starting deerpunk engine...");
-
-    // Initialize renderer
-    let mut renderer = match WindowRenderer::new() {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Failed to initialize renderer: {}", e);
-            return;
-        }
-    };
 
     let mut engine = Engine::new();
 
@@ -24,7 +14,7 @@ fn main() {
         return;
     }
 
-    println!("Engine started. Close window or press Ctrl+C to exit.");
+    println!("Engine started. Press Ctrl+C to exit.");
 
     let mut last_frame_time = Instant::now();
     const TARGET_FPS: f32 = 60.0;
@@ -41,14 +31,6 @@ fn main() {
             eprintln!("Frame error: {}", e);
             break;
         }
-
-        // Update renderer (draw entities from both worlds)
-        // #[cfg(feature = "client")]
-        if !renderer.update_with_worlds(engine.server_world()) {
-            break; // Window closed
-        }
-
-        println!("frame");
 
         // Frame rate limiting
         let elapsed = frame_start.elapsed();
