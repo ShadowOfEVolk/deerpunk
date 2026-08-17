@@ -13,13 +13,85 @@ use iced::{Element, Font, Length, Subscription, Task};
 use iced::widget::image::Handle as ImageHandle;
 
 use deerpunk_engine_common::frame_buffer::SharedFrameBuffer;
+use deerpunk_engine_common::ipc::IpcMessage;
 
 use parking_lot::Mutex;
+
+use iced::Event;
+use iced::keyboard::key::Named;
 
 use game_process::{BuildResult, GameProcess, LogLine, LogSource};
 use project::ProjectConfig;
 
 const SHM_NAME: &str = "deerpunk_editor_0";
+
+fn iced_key_to_vk(key: iced::keyboard::Key) -> Option<u16> {
+    match key {
+        iced::keyboard::Key::Character(c) => {
+            let s = c.as_str();
+            match s {
+                "w" | "W" => Some(0x57),
+                "a" | "A" => Some(0x41),
+                "s" | "S" => Some(0x53),
+                "d" | "D" => Some(0x44),
+                "e" | "E" => Some(0x45),
+                "q" | "Q" => Some(0x51),
+                "r" | "R" => Some(0x52),
+                "f" | "F" => Some(0x46),
+                "g" | "G" => Some(0x47),
+                "c" | "C" => Some(0x43),
+                "z" | "Z" => Some(0x5A),
+                "x" | "X" => Some(0x58),
+                "v" | "V" => Some(0x56),
+                "b" | "B" => Some(0x42),
+                "1" => Some(0x31),
+                "2" => Some(0x32),
+                "3" => Some(0x33),
+                "4" => Some(0x34),
+                "5" => Some(0x35),
+                "6" => Some(0x36),
+                "7" => Some(0x37),
+                "8" => Some(0x38),
+                "9" => Some(0x39),
+                "0" => Some(0x30),
+                _ => None,
+            }
+        }
+        iced::keyboard::Key::Named(n) => match n {
+            Named::Space => Some(0x20),
+            Named::Shift => Some(0xA0),
+            Named::Control => Some(0xA2),
+            Named::Alt => Some(0xA4),
+            Named::Enter => Some(0x0D),
+            Named::Escape => Some(0x1B),
+            Named::Tab => Some(0x09),
+            Named::Backspace => Some(0x08),
+            Named::Delete => Some(0x2E),
+            Named::ArrowUp => Some(0x26),
+            Named::ArrowDown => Some(0x28),
+            Named::ArrowLeft => Some(0x25),
+            Named::ArrowRight => Some(0x27),
+            Named::Home => Some(0x24),
+            Named::End => Some(0x23),
+            Named::PageUp => Some(0x21),
+            Named::PageDown => Some(0x22),
+            Named::F1 => Some(0x70),
+            Named::F2 => Some(0x71),
+            Named::F3 => Some(0x72),
+            Named::F4 => Some(0x73),
+            Named::F5 => Some(0x74),
+            Named::F6 => Some(0x75),
+            Named::F7 => Some(0x76),
+            Named::F8 => Some(0x77),
+            Named::F9 => Some(0x78),
+            Named::F10 => Some(0x79),
+            Named::F11 => Some(0x7A),
+            Named::F12 => Some(0x7B),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 fn main() -> iced::Result {
     iced::application("Deerpunk Editor", Editor::update, Editor::view)
@@ -34,7 +106,9 @@ enum Message {
     SpawnGame,
     GameKilled,
     Tick,
+    IcedEvent(Event),
     CopyLog,
+    EntitySelected(usize),
     NoOp,
 }
 
@@ -72,6 +146,14 @@ struct Editor {
     viewport_width: u32,
     viewport_height: u32,
 
+    // Viewport input state
+    console_input_focused: bool,
+    key_bitmap: [u8; 32],
+    mouse_dx: f32,
+    mouse_dy: f32,
+    last_cursor_pos: Option<iced::Point>,
+    ipc_connected: bool,
+
     status: String,
 }
 
@@ -94,18 +176,17 @@ impl Editor {
             console_scroll: scrollable::Id::unique(),
             console_log_text: String::new(),
             entity_list_selected: 0,
-            entities: vec![
-                "Player".into(),
-                "Enemy_A".into(),
-                "Enemy_B".into(),
-                "Light_Directional".into(),
-                "Camera_Main".into(),
-                "Trigger_Zone".into(),
-            ],
+            entities: Vec::new(),
             inspector_text: "Select an entity...".into(),
             viewport_pixels: Vec::new(),
             viewport_width: 0,
             viewport_height: 0,
+            console_input_focused: false,
+            key_bitmap: [0u8; 32],
+            mouse_dx: 0.0,
+            mouse_dy: 0.0,
+            last_cursor_pos: None,
+            ipc_connected: false,
             status: String::new(),
         };
 
@@ -204,6 +285,10 @@ impl Editor {
                     let name = project.name.clone();
                     let project_clone = project.clone();
                     self.status = format!("Building: {name}...");
+                    self.console_entries.clear();
+                    self.console_log_text.clear();
+                    self.entities.clear();
+                    self.ipc_connected = false;
 
                     let (build_tx, build_rx) = mpsc::channel();
                     let (result_tx, result_rx) = mpsc::channel();
@@ -263,6 +348,11 @@ impl Editor {
                 return iced::clipboard::write(text);
             }
 
+            Message::EntitySelected(i) => {
+                self.entity_list_selected = i;
+                return Task::none();
+            }
+
             Message::Tick => {
                 let mut new_lines: Vec<LogLine> = Vec::new();
                 let mut build_done: Option<BuildResult> = None;
@@ -288,12 +378,33 @@ impl Editor {
                             while let Some(line) = game.try_recv_log() {
                                 new_lines.push(line);
                             }
+                            while let Some(msg) = game.try_recv_ipc() {
+                                match msg {
+                                    IpcMessage::EntityList { entities } => {
+                                        self.entities = entities.iter().map(|e| {
+                                            if e.name.is_empty() {
+                                                format!("#{}", e.id)
+                                            } else {
+                                                format!("#{} {} {}", e.id, e.name, e.kind)
+                                            }
+                                        }).collect();
+                                    }
+                                    IpcMessage::Pong => {}
+                                    _ => {}
+                                }
+                            }
                         }
                     }
                     State::Idle => {}
                 }
 
                 for line in &new_lines {
+                    if line.text.contains("IPC connected") {
+                        self.ipc_connected = true;
+                    }
+                    if line.text.contains("editor disconnected") || line.text.contains("broken pipe") {
+                        self.ipc_connected = false;
+                    }
                     self.push_console_line(line.source.clone(), &line.text);
                 }
 
@@ -306,6 +417,8 @@ impl Editor {
                 } else if let Some(result) = build_done {
                     match result {
                         BuildResult::Success(bin_path) => {
+                            self.console_entries.clear();
+                            self.console_log_text.clear();
                             self.push_console_line(
                                 LogSource::Editor,
                                 "Build complete, launching game...",
@@ -333,25 +446,91 @@ impl Editor {
                     }
                 }
 
+                // Send input to game via IPC — ALWAYS, even when idle
+                // (game needs to know keys were released)
+                if !self.console_input_focused {
+                    let dx = self.mouse_dx;
+                    let dy = self.mouse_dy;
+                    self.mouse_dx = 0.0;
+                    self.mouse_dy = 0.0;
+
+                    if let Some(ref game) = self.game {
+                        game.send_ipc(&IpcMessage::InputState {
+                            mouse_dx: dx,
+                            mouse_dy: dy,
+                            mouse_buttons: 0,
+                            keys: self.key_bitmap,
+                        });
+                    }
+                }
+
                 Task::none()
             }
 
             Message::NoOp => Task::none(),
+
+            Message::IcedEvent(event) => {
+                if !matches!(self.state, State::Running) {
+                    return Task::none();
+                }
+                if self.console_input_focused {
+                    return Task::none();
+                }
+                match event {
+                    Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key, ..
+                    }) => {
+                        if let Some(vk) = iced_key_to_vk(key) {
+                            self.key_bitmap[(vk / 8) as usize] |= 1 << (vk % 8);
+                        }
+                    }
+                    Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                        key, ..
+                    }) => {
+                        if let Some(vk) = iced_key_to_vk(key) {
+                            self.key_bitmap[(vk / 8) as usize] &= !(1 << (vk % 8));
+                        }
+                    }
+                    Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                        if let Some(prev) = self.last_cursor_pos {
+                            self.mouse_dx += position.x - prev.x;
+                            self.mouse_dy += position.y - prev.y;
+                        }
+                        self.last_cursor_pos = Some(position);
+                    }
+                    _ => {}
+                }
+                Task::none()
+            }
         }
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        match &self.state {
+        let tick_sub = match &self.state {
             State::Building { .. } | State::Running => {
-                iced::time::every(Duration::from_millis(50)).map(|_| Message::Tick)
+                iced::time::every(Duration::from_millis(16)).map(|_| Message::Tick)
             }
             State::Idle => Subscription::none(),
-        }
+        };
+
+        let event_sub = iced::event::listen().map(Message::IcedEvent);
+
+        Subscription::batch([tick_sub, event_sub])
     }
 
     fn view(&self) -> Element<'_, Message> {
         let is_running = matches!(self.state, State::Running);
         let is_building = matches!(self.state, State::Building { .. });
+
+        let ipc_status = if is_running {
+            if self.ipc_connected {
+                text("IPC: connected").size(12).font(Font::MONOSPACE)
+            } else {
+                text("IPC: waiting...").size(12).font(Font::MONOSPACE)
+            }
+        } else {
+            text("IPC: off").size(12).font(Font::MONOSPACE)
+        };
 
         let toolbar = row![
             button(text("Start Game").size(12)).on_press_maybe(if is_running || is_building {
@@ -365,6 +544,8 @@ impl Editor {
                 None
             }),
             text(&self.status).size(12),
+            iced::widget::horizontal_space(),
+            ipc_status,
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
@@ -394,24 +575,37 @@ impl Editor {
     fn view_entity_list(&self) -> Element<'_, Message> {
         let title = text("Entities").size(14).width(Length::Fill);
 
-        let mut list = column![].spacing(2);
-        for (i, name) in self.entities.iter().enumerate() {
-            let is_selected = i == self.entity_list_selected;
-            let item = button(text(name).size(12))
-                .on_press(Message::NoOp)
-                .width(Length::Fill);
-
-            let item = if is_selected {
-                item.style(iced::widget::button::primary)
-            } else {
-                item.style(iced::widget::button::secondary)
+        let content = if self.entities.is_empty() {
+            let content: Element<'_, Message> = match &self.state {
+                State::Running => container(text("Waiting for entity list...").size(11)).padding(8).into(),
+                _ => container(text("Game not running").size(11)).padding(8).into(),
             };
+            content
+        } else {
+            let count = text(format!("{} entities", self.entities.len())).size(11);
+            let mut list = column![].spacing(1);
+            for (i, name) in self.entities.iter().enumerate() {
+                let is_selected = i == self.entity_list_selected;
+                let item = button(text(name).size(11).font(iced::Font::MONOSPACE))
+                    .on_press(Message::EntitySelected(i))
+                    .width(Length::Fill)
+                    .padding(iced::Padding::from([2, 4]));
 
-            list = list.push(item);
-        }
+                let item = if is_selected {
+                    item.style(iced::widget::button::primary)
+                } else {
+                    item.style(iced::widget::button::text)
+                };
 
-        container(column![title, list].spacing(4).padding(8))
-            .width(Length::Fixed(180.0))
+                list = list.push(item);
+            }
+            column![count, scrollable(list).height(Length::Fill).anchor_bottom()]
+                .spacing(4)
+                .into()
+        };
+
+        container(column![title, content].spacing(4).padding(8))
+            .width(Length::Fixed(200.0))
             .height(Length::Fill)
             .padding(4)
             .into()
@@ -425,7 +619,7 @@ impl Editor {
                 self.viewport_pixels.clone(),
             );
             container(
-                image(handle)
+                iced::widget::image(handle)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .content_fit(iced::ContentFit::Contain),

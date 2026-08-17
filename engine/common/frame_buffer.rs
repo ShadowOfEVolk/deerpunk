@@ -144,15 +144,13 @@ impl SharedFrameBuffer {
         self.header.frame_number = self.header.frame_number.wrapping_add(1);
         self.header.dirty = 1;
 
-        let header_bytes = *self.header.as_bytes();
-
-        if self.map.len() >= FrameHeader::SIZE + expected {
-            let (head, body) = self.map.split_at_mut(FrameHeader::SIZE);
-            head[..FrameHeader::SIZE].copy_from_slice(&header_bytes);
-            body[..copy_len].copy_from_slice(&rgba[..copy_len]);
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
+            let header_bytes = *self.header.as_bytes();
+            let _ = f.write_all(&header_bytes);
+            if copy_len > 0 {
+                let _ = f.write_all(&rgba[..copy_len]);
+            }
         }
-
-        let _ = self.map.flush();
     }
 
     pub fn read_frame(&mut self) -> Vec<u8> {

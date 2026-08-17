@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
+
+use deerpunk_engine_common::ipc::{IpcClient, IpcMessage};
 
 use crate::project::{EngineLaunch, ProjectConfig};
 
@@ -11,6 +14,8 @@ pub struct GameProcess {
     stdin_tx: Option<mpsc::Sender<String>>,
     log_rx: mpsc::Receiver<LogLine>,
     _threads: Vec<thread::JoinHandle<()>>,
+    ipc_tx: Option<mpsc::Sender<IpcMessage>>,
+    pub ipc_rx: mpsc::Receiver<IpcMessage>,
 }
 
 #[derive(Clone, Debug)]
@@ -26,14 +31,30 @@ pub enum LogSource {
     Editor,
 }
 
-/// Output of a build attempt.
+impl LogSource {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => LogSource::Stdout,
+            1 => LogSource::Stderr,
+            _ => LogSource::Editor,
+        }
+    }
+
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            LogSource::Stdout => 0,
+            LogSource::Stderr => 1,
+            LogSource::Editor => 2,
+        }
+    }
+}
+
 pub enum BuildResult {
     Success(PathBuf),
     Failed(String),
 }
 
 impl GameProcess {
-    /// Resolve the path to the compiled binary (without running cargo build).
     pub fn resolved_binary(project: &ProjectConfig) -> Result<PathBuf, String> {
         match &project.engine {
             EngineLaunch::Binary(path) => {
@@ -62,8 +83,6 @@ impl GameProcess {
         }
     }
 
-    /// Run `cargo build` and stream all output into `log_tx`.
-    /// Returns the path to the compiled binary on success.
     pub fn build(project: &ProjectConfig, log_tx: mpsc::Sender<LogLine>) -> BuildResult {
         let (features, bin) = match &project.engine {
             EngineLaunch::Cargo { features, bin } => (features.clone(), bin.clone()),
@@ -87,8 +106,6 @@ impl GameProcess {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let _display_cmd = format!("{:?}", cmd);
-
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -100,7 +117,6 @@ impl GameProcess {
             }
         };
 
-        // Drain stderr (cargo writes progress/warnings/errors here)
         let mut build_output = Vec::new();
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
@@ -114,7 +130,6 @@ impl GameProcess {
                 }
             }
         }
-        // Also drain stdout (some cargo output goes here)
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -152,13 +167,8 @@ impl GameProcess {
                 }
             }
             Ok(status) => {
-                let last_lines: Vec<String> = build_output
-                    .iter()
-                    .rev()
-                    .take(5)
-                    .rev()
-                    .cloned()
-                    .collect();
+                let last_lines: Vec<String> =
+                    build_output.iter().rev().take(5).rev().cloned().collect();
                 let summary = if last_lines.is_empty() {
                     format!("Build failed: {status}")
                 } else {
@@ -180,7 +190,6 @@ impl GameProcess {
         }
     }
 
-    /// Spawn the game binary (must already be built).
     pub fn spawn(project: &ProjectConfig, shm_name: &str) -> Result<Self, String> {
         let bin_path = Self::resolved_binary(project)?;
 
@@ -201,6 +210,8 @@ impl GameProcess {
 
         cmd.arg("+r_texturehandle");
         cmd.arg(shm_name);
+
+        cmd.current_dir(&project.root);
 
         let display_cmd = format!("{:?}", cmd);
 
@@ -223,7 +234,13 @@ impl GameProcess {
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            if tx.send(LogLine { source: LogSource::Stdout, text: l }).is_err() {
+                            if tx
+                                .send(LogLine {
+                                    source: LogSource::Stdout,
+                                    text: l,
+                                })
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -240,7 +257,13 @@ impl GameProcess {
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            if tx.send(LogLine { source: LogSource::Stderr, text: l }).is_err() {
+                            if tx
+                                .send(LogLine {
+                                    source: LogSource::Stderr,
+                                    text: l,
+                                })
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -260,6 +283,49 @@ impl GameProcess {
             }));
         }
 
+        let pid = child.id();
+        let (ipc_tx_user, ipc_rx_user) = mpsc::channel::<IpcMessage>();
+        let (ipc_tx_game, ipc_rx_game) = mpsc::channel::<IpcMessage>();
+
+        // IPC thread: connects to pipe, forwards messages bidirectionally
+        {
+            let log_tx = log_tx.clone();
+            threads.push(thread::spawn(move || {
+                let mut client: Option<IpcClient> = None;
+
+                loop {
+                    if let Some(ref c) = client {
+                        // Forward messages game → editor
+                        while let Some(msg) = c.try_recv() {
+                            if ipc_tx_game.send(msg).is_err() {
+                                return;
+                            }
+                        }
+                        // Forward messages editor → game
+                        while let Ok(msg) = ipc_rx_user.try_recv() {
+                            if c.send(&msg).is_err() {
+                                return;
+                            }
+                        }
+                    } else {
+                        // Try to connect (non-blocking attempt)
+                        match IpcClient::connect(pid) {
+                            Ok(c) => {
+                                let _ = log_tx.send(LogLine {
+                                    source: LogSource::Editor,
+                                    text: format!("IPC connected (pid {pid})"),
+                                });
+                                client = Some(c);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+
+                    thread::sleep(Duration::from_millis(16));
+                }
+            }));
+        }
+
         let _ = log_tx.send(LogLine {
             source: LogSource::Editor,
             text: format!("Spawned: {display_cmd}"),
@@ -270,6 +336,8 @@ impl GameProcess {
             stdin_tx: Some(stdin_tx),
             log_rx,
             _threads: threads,
+            ipc_tx: Some(ipc_tx_user),
+            ipc_rx: ipc_rx_game,
         })
     }
 
@@ -281,6 +349,16 @@ impl GameProcess {
 
     pub fn try_recv_log(&self) -> Option<LogLine> {
         self.log_rx.try_recv().ok()
+    }
+
+    pub fn try_recv_ipc(&self) -> Option<IpcMessage> {
+        self.ipc_rx.try_recv().ok()
+    }
+
+    pub fn send_ipc(&self, msg: &IpcMessage) {
+        if let Some(tx) = &self.ipc_tx {
+            let _ = tx.send(msg.clone());
+        }
     }
 
     pub fn is_running(&mut self) -> bool {

@@ -1,9 +1,9 @@
-// Common components shared between client and server
-
 pub mod cmd;
 pub mod components;
 pub mod cvar;
 pub mod fs;
+pub mod input;
+pub mod ipc;
 pub mod network;
 
 pub mod coord;
@@ -25,17 +25,16 @@ pub use network::replication::{NetworkComponent, NetworkField};
 
 pub use transform::Transform;
 
-// Built-in cvars available to all binaries that depend on engine-common.
 inventory::submit! {
     cvar::CvarDef { name: "r_texturehandle", default: "", desc: "Shared memory texture handle for editor frame output" }
 }
 inventory::submit! {
     cvar::CvarDef { name: "gamedir", default: "examples/deathmatch/gamedir", desc: "Game directory path" }
 }
+inventory::submit! {
+    cvar::CvarDef { name: "ipc_debug", default: "0", desc: "Enable IPC debug logging (1=log all messages)" }
+}
 
-/// Macro to create a singleton system
-/// Usage: singleton_system!(function_name, SystemType);
-/// Generates: static SYSTEM_NAME and pub fn function_name()
 #[macro_export]
 macro_rules! singleton_system {
     ($fn_name:ident, $system_type:ty) => {

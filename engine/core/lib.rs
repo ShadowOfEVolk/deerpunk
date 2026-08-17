@@ -9,6 +9,9 @@ pub use schedule::Schedule;
 
 pub mod common {
     pub use deerpunk_engine_common::*;
+    pub mod input { pub use deerpunk_engine_common::input::*; }
+    pub mod ipc { pub use deerpunk_engine_common::ipc::*; }
+    pub mod frame_buffer { pub use deerpunk_engine_common::frame_buffer::*; }
 }
 
 #[cfg(feature = "dedicated-server")]
