@@ -1,0 +1,11 @@
+[package]
+name = "deerpunk-editor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+deerpunk-engine-common = { path = "../engine/common" }
+iced = { version = "0.13", features = ["wgpu", "image", "tokio"] }
+memmap2 = "0.9"
+parking_lot = "0.12"
+toml = "0.8"

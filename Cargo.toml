@@ -4,6 +4,7 @@ members = [
     "engine/common",
     "engine/server",
     "engine/client",
+    "editor",
 ]
 resolver = "2"
 
@@ -18,5 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 deerpunk-engine-core = { path = "engine/core", features = ["full"] }
+deerpunk-engine-common = { path = "engine/common" }
 deerpunk-engine-client = { path = "engine/client" }
 hecs = "0.11"
+inventory = "0.3"

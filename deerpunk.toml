@@ -1,0 +1,19 @@
+[project]
+name = "deerpunk"
+
+# Gamedir (passed to engine as +gamedir)
+[engine]
+gamedir = "examples/deathmatch/gamedir"
+
+# cargo run for dev mode:
+[engine.cargo]
+bin = "deerpunk"
+
+# Or direct binary path (for release builds):
+# bin = "target/debug/deerpunk"
+
+# Commands passed to engine on launch
+[launch]
+commands = [
+    "ai_enabled 0",
+]

@@ -1,4 +1,9 @@
 use std::{cell::RefCell, collections::HashMap};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
+use std::sync::Arc;
+use std::thread;
 
 use crate::cvar::cvar;
 use crate::fs::fs;
@@ -332,5 +337,227 @@ crate::singleton_system!(cmd, CmdSystem);
 impl Default for CmdSystem {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── TCP Command Server ──────────────────────────────────────────────
+
+const DEFAULT_CMD_PORT: u16 = 9998;
+const DEFAULT_CMD_BIND: &str = "0.0.0.0";
+
+pub enum CmdResult {
+    Handled(String),
+    Pass,
+}
+
+pub type CmdHandler = Arc<dyn Fn(&str, &[&str]) -> CmdResult + Send + Sync>;
+
+pub fn spawn_stdin(handlers: Vec<CmdHandler>) {
+    thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(line) => {
+                    let response = handle_command(line.trim(), &handlers);
+                    eprint!("[stdin] {response}");
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+pub struct CmdServer {
+    handlers: Vec<CmdHandler>,
+}
+
+impl CmdServer {
+    pub fn new() -> Self {
+        Self { handlers: Vec::new() }
+    }
+
+    pub fn add_handler(&mut self, handler: CmdHandler) {
+        self.handlers.push(handler);
+    }
+
+    pub fn start(handlers: Vec<CmdHandler>) -> Self {
+        let server = Self { handlers };
+        server.spawn_tcp();
+        server
+    }
+
+    fn spawn_tcp(&self) {
+        let port = std::env::var("CMD_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_CMD_PORT);
+        let bind_host = std::env::var("CMD_BIND").unwrap_or_else(|_| DEFAULT_CMD_BIND.into());
+        let addr: SocketAddr = format!("{bind_host}:{port}")
+            .parse()
+            .unwrap_or_else(|_| {
+                eprintln!("[cmd] invalid CMD_BIND/CMD_PORT, falling back to 0.0.0.0:{DEFAULT_CMD_PORT}");
+                format!("0.0.0.0:{DEFAULT_CMD_PORT}").parse().unwrap()
+            });
+
+        let listener = match TcpListener::bind(addr) {
+            Ok(l) => l,
+            Err(err) => {
+                eprintln!("[cmd] bind {addr} failed: {err}");
+                return;
+            }
+        };
+
+        eprintln!("[cmd] listening on {addr} — <cvar> <value> or game commands");
+
+        let handlers = Arc::new(self.handlers.clone());
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let hs = handlers.clone();
+                        thread::spawn(move || {
+                            handle_client(stream, hs);
+                        });
+                    }
+                    Err(err) => eprintln!("[cmd] accept error: {err}"),
+                }
+            }
+        });
+    }
+}
+
+fn handle_client(stream: TcpStream, handlers: Arc<Vec<CmdHandler>>) {
+    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+    if let Err(err) = stream.set_nodelay(true) {
+        eprintln!("[cmd] nodelay failed for {peer}: {err}");
+    }
+
+    let reader = BufReader::new(stream.try_clone().expect("clone stream"));
+    let mut writer = stream;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let response = handle_command(line.trim(), &handlers);
+        if let Err(err) = writer.write_all(response.as_bytes()) {
+            eprintln!("[cmd] write to {peer} failed: {err}");
+            break;
+        }
+    }
+}
+
+pub fn handle_command(line: &str, handlers: &[CmdHandler]) -> String {
+    if line.is_empty() {
+        return "OK\n".into();
+    }
+    let (cmd, rest) = match line.split_once(char::is_whitespace) {
+        Some((c, r)) => (c, r.trim()),
+        None => (line, ""),
+    };
+
+    if !rest.is_empty() && cvar().set(cmd, rest) {
+        return format!("OK {cmd} = {rest}\n");
+    }
+
+    match cmd {
+        "help" | "cvarlist" => {
+            let dump = cvar().dump();
+            let mut out = String::new();
+            for (name, value) in &dump {
+                out.push_str(&format!("{name} = {value}\n"));
+            }
+            out
+        }
+        "ping" => "OK pong\n".into(),
+        "echo" => format!("{rest}\n"),
+        "toggle" => {
+            let name = rest.trim();
+            if name.is_empty() {
+                "ERR usage: toggle <cvar>\n".into()
+            } else if let Some(val) = cvar().get_string(name) {
+                let new = if val == "0" { "1" } else { "0" };
+                cvar().set(name, new);
+                format!("OK {name} = {new}\n")
+            } else {
+                format!("ERR unknown cvar '{name}'\n")
+            }
+        }
+        "exec" => {
+            let path = Path::new(rest.trim());
+            crate::cmd::cmd().exec_config_file(rest.trim());
+            format!("OK exec {}\n", path.display())
+        }
+        _ => {
+            for handler in handlers {
+                match handler(cmd, &rest.split_whitespace().collect::<Vec<_>>()) {
+                    CmdResult::Handled(response) => return response,
+                    CmdResult::Pass => {}
+                }
+            }
+            format!("ERR unknown command '{cmd}'\n")
+        }
+    }
+}
+
+pub fn collect_plus_commands<I: Iterator<Item = String>>(args: I) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending: Option<Vec<String>> = None;
+    for arg in args {
+        if let Some(cmd) = arg.strip_prefix('+') {
+            if let Some(parts) = pending.take() {
+                out.push(parts.join(" "));
+            }
+            pending = Some(vec![cmd.to_string()]);
+        } else if let Some(parts) = pending.as_mut() {
+            parts.push(arg);
+        }
+    }
+    if let Some(parts) = pending.take() {
+        out.push(parts.join(" "));
+    }
+    out
+}
+
+pub fn exec_plus_args(handlers: &[CmdHandler]) {
+    for line in collect_plus_commands(std::env::args().skip(1)) {
+        let response = handle_command(&line, handlers);
+        eprintln!("[args] {response}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_plus_commands;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn collects_plus_commands() {
+        assert_eq!(
+            collect_plus_commands(args(&["+ai_enabled", "0", "+ecs_showsystems", "1"]).into_iter()),
+            vec!["ai_enabled 0".to_string(), "ecs_showsystems 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn collects_single_arg_command() {
+        assert_eq!(
+            collect_plus_commands(args(&["+ai_enabled", "0"]).into_iter()),
+            vec!["ai_enabled 0".to_string()]
+        );
+    }
+
+    #[test]
+    fn ignores_args_without_plus_prefix() {
+        assert_eq!(
+            collect_plus_commands(
+                args(&["--features", "window", "+toggle", "show_hud"]).into_iter()
+            ),
+            vec!["toggle show_hud".to_string()]
+        );
     }
 }
