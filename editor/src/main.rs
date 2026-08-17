@@ -1,13 +1,13 @@
 mod game_process;
 mod project;
+mod shared_viewport;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use iced::widget::{
-    button, column, container, horizontal_rule, row, scrollable, text, text_input,
-    vertical_rule,
+    button, column, container, row, rule, scrollable, space, text, text_input,
 };
 use iced::{Element, Font, Length, Subscription, Task};
 use iced::widget::image::Handle as ImageHandle;
@@ -94,9 +94,10 @@ fn iced_key_to_vk(key: iced::keyboard::Key) -> Option<u16> {
 }
 
 fn main() -> iced::Result {
-    iced::application("Deerpunk Editor", Editor::update, Editor::view)
+    iced::application(Editor::new, Editor::update, Editor::view)
+        .title("Deerpunk Editor")
         .subscription(Editor::subscription)
-        .run_with(Editor::new)
+        .run()
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +135,7 @@ struct Editor {
 
     console_entries: Vec<ConsoleEntry>,
     console_input: String,
-    console_scroll: scrollable::Id,
+    console_scroll: iced::widget::Id,
     console_log_text: String,
 
     entity_list_selected: usize,
@@ -143,8 +144,11 @@ struct Editor {
     inspector_text: String,
 
     viewport_pixels: Vec<u8>,
+    viewport_image: Option<iced::widget::image::Handle>,
     viewport_width: u32,
     viewport_height: u32,
+
+    shared_texture_handle: Option<(i64, u32, u32)>,
 
     // Viewport input state
     console_input_focused: bool,
@@ -173,14 +177,16 @@ impl Editor {
             state: State::Idle,
             console_entries: Vec::new(),
             console_input: String::new(),
-            console_scroll: scrollable::Id::unique(),
+            console_scroll: iced::widget::Id::unique(),
             console_log_text: String::new(),
             entity_list_selected: 0,
             entities: Vec::new(),
             inspector_text: "Select an entity...".into(),
             viewport_pixels: Vec::new(),
+            viewport_image: None,
             viewport_width: 0,
             viewport_height: 0,
+            shared_texture_handle: None,
             console_input_focused: false,
             key_bitmap: [0u8; 32],
             mouse_dx: 0.0,
@@ -207,19 +213,27 @@ impl Editor {
         (editor, Task::none())
     }
 
-    fn push_console_line(&mut self, source: LogSource, text: &str) {
-        let prefix = match source {
-            LogSource::Stdout => "[game]",
-            LogSource::Stderr => "[err] ",
-            LogSource::Editor => "[ed]  ",
-        };
-        self.console_log_text
-            .push_str(&format!("{prefix} {text}\n"));
-        self.console_entries.push(ConsoleEntry {
-            source,
-            text: text.to_string(),
-        });
+fn push_console_line(&mut self, source: LogSource, text: &str) {
+    let prefix = match source {
+        LogSource::Stdout => "[game]",
+        LogSource::Stderr => "[err] ",
+        LogSource::Editor => "[ed]  ",
+    };
+    self.console_log_text
+        .push_str(&format!("{prefix} {text}\n"));
+    self.console_entries.push(ConsoleEntry {
+        source,
+        text: text.to_string(),
+    });
+    const MAX_LINES: usize = 5000;
+    if self.console_entries.len() > MAX_LINES {
+        let excess = self.console_entries.len() - MAX_LINES;
+        self.console_entries.drain(..excess);
+        if let Some(pos) = self.console_log_text.match_indices('\n').nth(excess) {
+            self.console_log_text.drain(..=pos.0);
+        }
     }
+}
 
     fn spawn_game_with_binary(&mut self, _bin_path: PathBuf) {
         let project_name = self.project.as_ref().map(|p| p.name.clone());
@@ -371,6 +385,7 @@ impl Editor {
                         }
                     }
                     State::Running => {
+                        let mut ipc_messages = Vec::new();
                         if let Some(ref mut game) = self.game {
                             if !game.is_running() {
                                 game_alive = false;
@@ -379,19 +394,28 @@ impl Editor {
                                 new_lines.push(line);
                             }
                             while let Some(msg) = game.try_recv_ipc() {
-                                match msg {
-                                    IpcMessage::EntityList { entities } => {
-                                        self.entities = entities.iter().map(|e| {
-                                            if e.name.is_empty() {
-                                                format!("#{}", e.id)
-                                            } else {
-                                                format!("#{} {} {}", e.id, e.name, e.kind)
-                                            }
-                                        }).collect();
-                                    }
-                                    IpcMessage::Pong => {}
-                                    _ => {}
+                                ipc_messages.push(msg);
+                            }
+                        }
+                        for msg in ipc_messages {
+                            match msg {
+                                IpcMessage::EntityList { entities } => {
+                                    self.entities = entities.iter().map(|e| {
+                                        if e.name.is_empty() {
+                                            format!("#{}", e.id)
+                                        } else {
+                                            format!("#{} {} {}", e.id, e.name, e.kind)
+                                        }
+                                    }).collect();
                                 }
+                                IpcMessage::Pong => {}
+                                IpcMessage::SharedTextureHandle { handle, width, height } => {
+                                    self.shared_texture_handle = Some((handle, width, height));
+                                    self.viewport_width = width;
+                                    self.viewport_height = height;
+                                    self.push_console_line(LogSource::Editor, &format!("Shared texture: handle={handle} {width}x{height}"));
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -439,10 +463,15 @@ impl Editor {
                 if let Some(ref fb) = self.frame_buffer {
                     let mut fb = fb.lock();
                     if fb.dirty() {
-                        let pixels = fb.read_frame();
+                        self.viewport_pixels = fb.read_frame();
                         self.viewport_width = fb.width();
                         self.viewport_height = fb.height();
-                        self.viewport_pixels = pixels;
+                        self.viewport_image = Some(ImageHandle::from_rgba(
+                            self.viewport_width,
+                            self.viewport_height,
+                            self.viewport_pixels.clone(),
+                        ));
+                        fb.clear_dirty();
                     }
                 }
 
@@ -544,7 +573,7 @@ impl Editor {
                 None
             }),
             text(&self.status).size(12),
-            iced::widget::horizontal_space(),
+            space::horizontal(),
             ipc_status,
         ]
         .spacing(8)
@@ -552,9 +581,9 @@ impl Editor {
 
         let top_row = row![
             self.view_entity_list(),
-            vertical_rule(1),
+            rule::vertical(1),
             self.view_viewport(),
-            vertical_rule(1),
+            rule::vertical(1),
             self.view_inspector(),
         ]
         .height(Length::Fill);
@@ -563,9 +592,9 @@ impl Editor {
 
         column![
             toolbar,
-            horizontal_rule(1),
+            rule::horizontal(1),
             top_row,
-            horizontal_rule(1),
+            rule::horizontal(1),
             bottom
         ]
         .height(Length::Fill)
@@ -612,14 +641,15 @@ impl Editor {
     }
 
     fn view_viewport(&self) -> Element<'_, Message> {
-        if !self.viewport_pixels.is_empty() && self.viewport_width > 0 && self.viewport_height > 0 {
-            let handle = ImageHandle::from_rgba(
-                self.viewport_width,
-                self.viewport_height,
-                self.viewport_pixels.clone(),
-            );
+        if let Some((handle, width, height)) = self.shared_texture_handle {
+            let program = shared_viewport::SharedViewportProgram { handle, width, height };
+            iced::widget::shader::Shader::new(program)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else if let Some(ref handle) = self.viewport_image {
             container(
-                iced::widget::image(handle)
+                iced::widget::image(handle.clone())
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .content_fit(iced::ContentFit::Contain),

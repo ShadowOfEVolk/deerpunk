@@ -30,8 +30,9 @@ fn shm_path(name: &str) -> PathBuf {
 
 pub struct SharedFrameBuffer {
     path: PathBuf,
-    map: memmap2::MmapMut,
     header: FrameHeader,
+    write_file: std::fs::File,
+    read_file: std::fs::File,
 }
 
 impl SharedFrameBuffer {
@@ -50,11 +51,6 @@ impl SharedFrameBuffer {
         file.set_len(total as u64)
             .map_err(|e| format!("[frame_buffer] set_len: {e}"))?;
 
-        let mut map = unsafe {
-            memmap2::MmapMut::map_mut(&file)
-                .map_err(|e| format!("[frame_buffer] mmap: {e}"))?
-        };
-
         let header = FrameHeader {
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
@@ -65,10 +61,13 @@ impl SharedFrameBuffer {
         };
 
         let header_bytes = *header.as_bytes();
-        map[..FrameHeader::SIZE].copy_from_slice(&header_bytes);
-        let _ = map.flush();
+        use std::io::Write;
+        let mut wf = file.try_clone().map_err(|e| format!("[frame_buffer] clone write: {e}"))?;
+        wf.write_all(&header_bytes).map_err(|e| format!("[frame_buffer] write header: {e}"))?;
 
-        Ok(Self { path, map, header })
+        let rf = file.try_clone().map_err(|e| format!("[frame_buffer] clone read: {e}"))?;
+
+        Ok(Self { path, header, write_file: wf, read_file: rf })
     }
 
     pub fn open(name: &str) -> Result<Self, String> {
@@ -79,14 +78,10 @@ impl SharedFrameBuffer {
             .open(&path)
             .map_err(|e| format!("[frame_buffer] open {}: {e}", path.display()))?;
 
-        let map = unsafe {
-            memmap2::MmapMut::map_mut(&file)
-                .map_err(|e| format!("[frame_buffer] mmap: {e}"))?
-        };
-
-        let header = if map.len() >= FrameHeader::SIZE {
+        let mut header = if file.metadata().map(|m| m.len() as usize).unwrap_or(0) >= FrameHeader::SIZE {
             let mut hdr_buf = [0u8; FrameHeader::SIZE];
-            hdr_buf.copy_from_slice(&map[..FrameHeader::SIZE]);
+            let mut rf = file.try_clone().map_err(|e| format!("[frame_buffer] clone read: {e}"))?;
+            rf.read_exact(&mut hdr_buf).map_err(|e| format!("[frame_buffer] read header: {e}"))?;
             unsafe { std::ptr::read(hdr_buf.as_ptr() as *const FrameHeader) }
         } else {
             FrameHeader {
@@ -98,8 +93,12 @@ impl SharedFrameBuffer {
                 _pad: [0; 3],
             }
         };
+        header.dirty = 0;
 
-        Ok(Self { path, map, header })
+        let wf = file.try_clone().map_err(|e| format!("[frame_buffer] clone write: {e}"))?;
+        let rf = file.try_clone().map_err(|e| format!("[frame_buffer] clone read: {e}"))?;
+
+        Ok(Self { path, header, write_file: wf, read_file: rf })
     }
 
     pub fn width(&self) -> u32 {
@@ -118,20 +117,16 @@ impl SharedFrameBuffer {
         self.header.frame_number
     }
 
-    pub fn dirty(&self) -> bool {
-        match std::fs::File::open(&self.path) {
-            Ok(mut f) => {
-                let offset = 4 + 4 + 4 + 4;
-                let mut buf = [0u8; 4];
-                let mut header_buf = [0u8; FrameHeader::SIZE];
-                if f.read_exact(&mut header_buf).is_ok() {
-                    buf.copy_from_slice(&header_buf[offset..offset + 4]);
-                    u32::from_ne_bytes(buf) != 0
-                } else {
-                    false
-                }
-            }
-            Err(_) => false,
+    pub fn dirty(&mut self) -> bool {
+        let offset = 4 + 4 + 4 + 4;
+        let _ = self.read_file.seek(SeekFrom::Start(0));
+        let mut header_buf = [0u8; FrameHeader::SIZE];
+        if self.read_file.read_exact(&mut header_buf).is_ok() {
+            let mut buf = [0u8; 4];
+            buf.copy_from_slice(&header_buf[offset..offset + 4]);
+            u32::from_ne_bytes(buf) != 0
+        } else {
+            false
         }
     }
 
@@ -144,12 +139,14 @@ impl SharedFrameBuffer {
         self.header.frame_number = self.header.frame_number.wrapping_add(1);
         self.header.dirty = 1;
 
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
-            let header_bytes = *self.header.as_bytes();
-            let _ = f.write_all(&header_bytes);
-            if copy_len > 0 {
-                let _ = f.write_all(&rgba[..copy_len]);
-            }
+        let _ = self.write_file.seek(SeekFrom::Start(0));
+        let header_bytes = *self.header.as_bytes();
+        let _ = self.write_file.write_all(&header_bytes);
+        if copy_len > 0 {
+            let _ = self.write_file.write_all(&rgba[..copy_len]);
+        }
+        if self.header.frame_number % 60 == 1 {
+            eprintln!("[frame_buffer] write_frame #{} ({}x{}, {} bytes)", self.header.frame_number, w, h, copy_len);
         }
     }
 
@@ -159,24 +156,21 @@ impl SharedFrameBuffer {
         let expected = w * h * BYTES_PER_PIXEL;
         let mut pixels = vec![0u8; expected];
 
-        if let Ok(mut f) = std::fs::File::open(&self.path) {
-            let mut hdr_buf = [0u8; FrameHeader::SIZE];
-            if f.read_exact(&mut hdr_buf).is_ok() {
-                self.header = unsafe { std::ptr::read(hdr_buf.as_ptr() as *const FrameHeader) };
-            }
-            let _ = f.seek(SeekFrom::Start(FrameHeader::SIZE as u64));
-            let _ = f.read_exact(&mut pixels);
+        let _ = self.read_file.seek(SeekFrom::Start(0));
+        let mut hdr_buf = [0u8; FrameHeader::SIZE];
+        if self.read_file.read_exact(&mut hdr_buf).is_ok() {
+            self.header = unsafe { std::ptr::read(hdr_buf.as_ptr() as *const FrameHeader) };
         }
+        let _ = self.read_file.seek(SeekFrom::Start(FrameHeader::SIZE as u64));
+        let _ = self.read_file.read_exact(&mut pixels);
 
         pixels
     }
 
     pub fn clear_dirty(&mut self) {
         self.header.dirty = 0;
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
-            let offset = 4 + 4 + 4 + 4;
-            let _ = f.seek(SeekFrom::Start(offset as u64));
-            let _ = f.write_all(&0u32.to_ne_bytes());
-        }
+        let offset = 4 + 4 + 4 + 4;
+        let _ = self.write_file.seek(SeekFrom::Start(offset as u64));
+        let _ = self.write_file.write_all(&0u32.to_ne_bytes());
     }
 }

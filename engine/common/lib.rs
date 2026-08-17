@@ -11,13 +11,15 @@ pub mod events;
 pub mod frame;
 pub mod frame_buffer;
 pub mod physics;
+pub mod prefab;
 pub mod resource;
 pub mod scheduler;
 pub mod transform;
 
 pub use cmd::CmdSystem;
 pub use components::{
-    NetReplicatedComponent, SimpleCircleRenderer, SimpleEntity, Terrain, TransformComponent,
+    NetReplicatedComponent, SceneNode, SimpleCircleRenderer, SimpleEntity, Terrain,
+    TransformComponent,
 };
 pub use cvar::CvarSystem;
 pub use fs::{FileStream, FileSystem};

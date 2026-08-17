@@ -16,6 +16,7 @@ pub struct GameProcess {
     _threads: Vec<thread::JoinHandle<()>>,
     ipc_tx: Option<mpsc::Sender<IpcMessage>>,
     pub ipc_rx: mpsc::Receiver<IpcMessage>,
+    shutdown: mpsc::Sender<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -286,6 +287,7 @@ impl GameProcess {
         let pid = child.id();
         let (ipc_tx_user, ipc_rx_user) = mpsc::channel::<IpcMessage>();
         let (ipc_tx_game, ipc_rx_game) = mpsc::channel::<IpcMessage>();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
         // IPC thread: connects to pipe, forwards messages bidirectionally
         {
@@ -294,6 +296,9 @@ impl GameProcess {
                 let mut client: Option<IpcClient> = None;
 
                 loop {
+                    if shutdown_rx.try_recv().is_ok() {
+                        return;
+                    }
                     if let Some(ref c) = client {
                         // Forward messages game → editor
                         while let Some(msg) = c.try_recv() {
@@ -338,6 +343,7 @@ impl GameProcess {
             _threads: threads,
             ipc_tx: Some(ipc_tx_user),
             ipc_rx: ipc_rx_game,
+            shutdown: shutdown_tx,
         })
     }
 
@@ -373,5 +379,6 @@ impl GameProcess {
 impl Drop for GameProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = self.shutdown.send(());
     }
 }
