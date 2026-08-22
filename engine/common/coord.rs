@@ -17,7 +17,6 @@ pub fn build_view_proj(
     pos_z: f32,
     yaw: f32,
     pitch: f32,
-    view_size: f32,
 ) -> [[f32; 4]; 4] {
     let aspect = crate::frame::frame_width() as f32 / crate::frame::frame_height() as f32;
 
@@ -55,10 +54,10 @@ pub fn build_view_proj(
     let vt = mat4_mul(&rx, &mat4_mul(&ry, &t));
 
     // Perspective projection (column-major, wgpu [0..1] depth range)
-    let fov_y_half = (view_size / (2.0 * pos_z)).atan();
+    let fov_y_half = (60.0_f32).to_radians() * 0.5;
     let f = 1.0 / fov_y_half.tan();
     let near = 0.1;
-    let far = pos_z * 10.0;
+    let far = 1024.0;
     let proj: [[f32; 4]; 4] = [
         [f / aspect, 0.0,  0.0,  0.0],
         [0.0,        f,    0.0,  0.0],
@@ -143,7 +142,7 @@ mod tests {
     /// Ground points in front of the camera must project to clip-space w > 0.
     #[test]
     fn view_proj_ground_in_front() {
-        let vp = build_view_proj(64.0, 64.0, 20.0, 0.0, 0.0, 25.0);
+        let vp = build_view_proj(64.0, 64.0, 20.0, 0.0, 0.0);
         // Point 10 m ahead on the ground (yaw=0 → +Y is forward)
         let p = [64.0, 74.0, 0.0, 1.0];
         let clip = mat4_mul_vec4(&vp, p);

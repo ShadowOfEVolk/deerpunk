@@ -1,4 +1,5 @@
 mod game_process;
+mod layout;
 mod project;
 mod shared_viewport;
 
@@ -7,7 +8,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use iced::widget::{
-    button, column, container, row, rule, scrollable, space, text, text_input,
+    button, column, container, pane_grid, row, rule, scrollable, space, text, text_input,
 };
 use iced::{Element, Font, Length, Subscription, Task};
 use iced::widget::image::Handle as ImageHandle;
@@ -24,6 +25,34 @@ use game_process::{BuildResult, GameProcess, LogLine, LogSource};
 use project::ProjectConfig;
 
 const SHM_NAME: &str = "deerpunk_editor_0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Panel {
+    EntityList,
+    Viewport,
+    Inspector,
+    Console,
+}
+
+fn initial_layout() -> pane_grid::Configuration<Panel> {
+    use pane_grid::{Axis, Configuration};
+    Configuration::Split {
+        axis: Axis::Vertical,
+        ratio: 0.7,
+        a: Box::new(Configuration::Split {
+            axis: Axis::Horizontal,
+            ratio: 0.2,
+            a: Box::new(Configuration::Pane(Panel::EntityList)),
+            b: Box::new(Configuration::Split {
+                axis: Axis::Horizontal,
+                ratio: 0.75,
+                a: Box::new(Configuration::Pane(Panel::Viewport)),
+                b: Box::new(Configuration::Pane(Panel::Inspector)),
+            }),
+        }),
+        b: Box::new(Configuration::Pane(Panel::Console)),
+    }
+}
 
 fn iced_key_to_vk(key: iced::keyboard::Key) -> Option<u16> {
     match key {
@@ -110,6 +139,11 @@ enum Message {
     IcedEvent(Event),
     CopyLog,
     EntitySelected(usize),
+    PaneClicked(pane_grid::Pane),
+    PaneDragged(pane_grid::DragEvent),
+    PaneResized(pane_grid::ResizeEvent),
+    Maximize(pane_grid::Pane),
+    Restore,
     NoOp,
 }
 
@@ -133,6 +167,9 @@ struct Editor {
     frame_buffer: Option<Mutex<SharedFrameBuffer>>,
     state: State,
 
+    panes: pane_grid::State<Panel>,
+    focused_pane: Option<pane_grid::Pane>,
+
     console_entries: Vec<ConsoleEntry>,
     console_input: String,
     console_scroll: iced::widget::Id,
@@ -149,8 +186,9 @@ struct Editor {
     viewport_height: u32,
 
     shared_texture_handle: Option<(i64, u32, u32)>,
+    shared_texture_handle_b: Option<i64>,
+    shared_texture_frame: u32,
 
-    // Viewport input state
     console_input_focused: bool,
     key_bitmap: [u8; 32],
     mouse_dx: f32,
@@ -170,11 +208,28 @@ impl Editor {
 
         let project = ProjectConfig::load(&project_dir).ok();
 
+        let (panes, first_pane) = match layout::load_layout() {
+            Some(config) => {
+                let mut s = pane_grid::State::with_configuration(config);
+                let p = s.iter().next().map(|(p, _)| *p).unwrap();
+                (s, p)
+            }
+            None => {
+                let mut s = pane_grid::State::with_configuration(initial_layout());
+                let p = s.iter().next().map(|(p, _)| *p).unwrap();
+                (s, p)
+            }
+        };
+
         let mut editor = Self {
             project,
             game: None,
             frame_buffer: None,
             state: State::Idle,
+
+            panes,
+            focused_pane: Some(first_pane),
+
             console_entries: Vec::new(),
             console_input: String::new(),
             console_scroll: iced::widget::Id::unique(),
@@ -187,6 +242,8 @@ impl Editor {
             viewport_width: 0,
             viewport_height: 0,
             shared_texture_handle: None,
+            shared_texture_handle_b: None,
+            shared_texture_frame: 0,
             console_input_focused: false,
             key_bitmap: [0u8; 32],
             mouse_dx: 0.0,
@@ -409,12 +466,17 @@ fn push_console_line(&mut self, source: LogSource, text: &str) {
                                     }).collect();
                                 }
                                 IpcMessage::Pong => {}
-                                IpcMessage::SharedTextureHandle { handle, width, height } => {
-                                    self.shared_texture_handle = Some((handle, width, height));
-                                    self.viewport_width = width;
-                                    self.viewport_height = height;
-                                    self.push_console_line(LogSource::Editor, &format!("Shared texture: handle={handle} {width}x{height}"));
-                                }
+                                    IpcMessage::SharedTextureHandle { handle, handle_b, frame, width, height } => {
+                                        self.shared_texture_handle = Some((handle, width, height));
+                                        self.shared_texture_handle_b = handle_b;
+                                        self.shared_texture_frame = frame;
+                                        self.viewport_width = width;
+                                        self.viewport_height = height;
+                                        self.push_console_line(LogSource::Editor, &format!("Shared texture: handle={handle} b={handle_b:?} {width}x{height}"));
+                                    }
+                                    IpcMessage::SharedTextureFrame { frame } => {
+                                        self.shared_texture_frame = frame;
+                                    }
                                 _ => {}
                             }
                         }
@@ -498,6 +560,30 @@ fn push_console_line(&mut self, source: LogSource, text: &str) {
 
             Message::NoOp => Task::none(),
 
+            Message::PaneClicked(pane) => {
+                self.focused_pane = Some(pane);
+                Task::none()
+            }
+            Message::PaneDragged(pane_grid::DragEvent::Dropped { pane, target }) => {
+                self.panes.drop(pane, target);
+                layout::save_layout(&self.panes);
+                Task::none()
+            }
+            Message::PaneDragged(_) => Task::none(),
+            Message::PaneResized(pane_grid::ResizeEvent { split, ratio }) => {
+                self.panes.resize(split, ratio);
+                layout::save_layout(&self.panes);
+                Task::none()
+            }
+            Message::Maximize(pane) => {
+                self.panes.maximize(pane);
+                Task::none()
+            }
+            Message::Restore => {
+                self.panes.restore();
+                Task::none()
+            }
+
             Message::IcedEvent(event) => {
                 if !matches!(self.state, State::Running) {
                     return Task::none();
@@ -579,31 +665,51 @@ fn push_console_line(&mut self, source: LogSource, text: &str) {
         .spacing(8)
         .align_y(iced::Alignment::Center);
 
-        let top_row = row![
-            self.view_entity_list(),
-            rule::vertical(1),
-            self.view_viewport(),
-            rule::vertical(1),
-            self.view_inspector(),
-        ]
-        .height(Length::Fill);
+        let pane_grid = pane_grid(&self.panes, |pane, panel, is_maximized| {
+            let title_text = match panel {
+                Panel::EntityList => "Entities",
+                Panel::Viewport => "Viewport",
+                Panel::Inspector => "Inspector",
+                Panel::Console => "Console",
+            };
 
-        let bottom = self.view_console();
+            let title_bar = pane_grid::TitleBar::new(
+                row![
+                    text(title_text).size(13),
+                    space::horizontal(),
+                    button(text("×").size(12)).on_press(Message::Restore),
+                ]
+                .spacing(4)
+                .align_y(iced::Alignment::Center),
+            )
+            .padding(4);
+
+            let content: Element<'_, Message> = match panel {
+                Panel::EntityList => self.view_entity_list(),
+                Panel::Viewport => self.view_viewport(),
+                Panel::Inspector => self.view_inspector(),
+                Panel::Console => self.view_console(),
+            };
+
+            pane_grid::Content::new(content)
+                .title_bar(title_bar)
+        })
+        .on_click(Message::PaneClicked)
+        .on_drag(Message::PaneDragged)
+        .on_resize(8, Message::PaneResized)
+        .width(Length::Fill)
+        .height(Length::Fill);
 
         column![
             toolbar,
             rule::horizontal(1),
-            top_row,
-            rule::horizontal(1),
-            bottom
+            pane_grid,
         ]
         .height(Length::Fill)
         .into()
     }
 
     fn view_entity_list(&self) -> Element<'_, Message> {
-        let title = text("Entities").size(14).width(Length::Fill);
-
         let content = if self.entities.is_empty() {
             let content: Element<'_, Message> = match &self.state {
                 State::Running => container(text("Waiting for entity list...").size(11)).padding(8).into(),
@@ -633,16 +739,22 @@ fn push_console_line(&mut self, source: LogSource, text: &str) {
                 .into()
         };
 
-        container(column![title, content].spacing(4).padding(8))
-            .width(Length::Fixed(200.0))
-            .height(Length::Fill)
+        container(content)
             .padding(4)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 
     fn view_viewport(&self) -> Element<'_, Message> {
         if let Some((handle, width, height)) = self.shared_texture_handle {
-            let program = shared_viewport::SharedViewportProgram { handle, width, height };
+            let program = shared_viewport::SharedViewportProgram {
+                handle_a: handle,
+                handle_b: self.shared_texture_handle_b,
+                width,
+                height,
+                frame: self.shared_texture_frame,
+            };
             iced::widget::shader::Shader::new(program)
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -682,19 +794,16 @@ fn push_console_line(&mut self, source: LogSource, text: &str) {
     }
 
     fn view_inspector(&self) -> Element<'_, Message> {
-        let title = text("Inspector").size(14).width(Length::Fill);
         let content = text(&self.inspector_text).size(12);
 
-        container(column![title, content].spacing(4).padding(8))
-            .width(Length::Fixed(220.0))
+        container(content)
+            .padding(8)
+            .width(Length::Fill)
             .height(Length::Fill)
-            .padding(4)
             .into()
     }
 
     fn view_console(&self) -> Element<'_, Message> {
-        let title = text("Console").size(14).width(Length::Fill);
-
         let mut log_lines = column![].spacing(1);
         for entry in &self.console_entries {
             let (color, prefix) = match entry.source {
@@ -729,15 +838,14 @@ fn push_console_line(&mut self, source: LogSource, text: &str) {
             .width(Length::Fill);
 
         let header = row![
-            title,
             button(text("Copy Log").size(11)).on_press(Message::CopyLog),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
 
         container(column![header, log_display, input].spacing(4).padding(8))
-            .height(Length::Fixed(250.0))
-            .padding(4)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 }

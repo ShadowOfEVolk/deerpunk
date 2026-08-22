@@ -51,10 +51,18 @@ fn log_ipc(direction: &str, msg: &IpcMessage) {
         }
         IpcMessage::SharedTextureHandle {
             handle,
+            handle_b,
+            frame,
             width,
             height,
         } => {
-            eprintln!("[ipc {direction}] SharedTextureHandle handle={handle} {width}x{height}");
+            let hb = handle_b.map(|h| format!(", handle_b={h}")).unwrap_or_default();
+            eprintln!("[ipc {direction}] SharedTextureHandle handle={handle}{hb} frame={frame} {width}x{height}");
+        }
+        IpcMessage::SharedTextureFrame { frame } => {
+            if cfg!(debug_assertions) {
+                eprintln!("[ipc {direction}] SharedTextureFrame frame={frame}");
+            }
         }
         IpcMessage::Ping => {
             eprintln!("[ipc {direction}] Ping");
@@ -80,6 +88,7 @@ pub enum MsgType {
     FrameReady = 0x11,
     EntityList = 0x12,
     SharedTextureHandle = 0x13,
+    SharedTextureFrame = 0x14,
     Ping = 0xFE,
     Pong = 0xFF,
 }
@@ -93,6 +102,7 @@ impl MsgType {
             0x11 => Some(MsgType::FrameReady),
             0x12 => Some(MsgType::EntityList),
             0x13 => Some(MsgType::SharedTextureHandle),
+            0x14 => Some(MsgType::SharedTextureFrame),
             0xFE => Some(MsgType::Ping),
             0xFF => Some(MsgType::Pong),
             _ => None,
@@ -125,8 +135,13 @@ pub enum IpcMessage {
     },
     SharedTextureHandle {
         handle: i64,
+        handle_b: Option<i64>,
+        frame: u32,
         width: u32,
         height: u32,
+    },
+    SharedTextureFrame {
+        frame: u32,
     },
     Ping,
     Pong,
@@ -148,6 +163,7 @@ impl IpcMessage {
             IpcMessage::FrameReady { .. } => MsgType::FrameReady,
             IpcMessage::EntityList { .. } => MsgType::EntityList,
             IpcMessage::SharedTextureHandle { .. } => MsgType::SharedTextureHandle,
+            IpcMessage::SharedTextureFrame { .. } => MsgType::SharedTextureFrame,
             IpcMessage::Ping => MsgType::Ping,
             IpcMessage::Pong => MsgType::Pong,
         }
@@ -196,12 +212,19 @@ impl IpcMessage {
                 }
             }
             IpcMessage::Ping | IpcMessage::Pong => {}
+            IpcMessage::SharedTextureFrame { frame } => {
+                payload.extend_from_slice(&frame.to_le_bytes());
+            }
             IpcMessage::SharedTextureHandle {
                 handle,
+                handle_b,
+                frame,
                 width,
                 height,
             } => {
                 payload.extend_from_slice(&handle.to_le_bytes());
+                payload.extend_from_slice(&handle_b.unwrap_or(0).to_le_bytes());
+                payload.extend_from_slice(&frame.to_le_bytes());
                 payload.extend_from_slice(&width.to_le_bytes());
                 payload.extend_from_slice(&height.to_le_bytes());
             }
@@ -313,20 +336,35 @@ impl IpcMessage {
                 Some(IpcMessage::EntityList { entities })
             }
             MsgType::SharedTextureHandle => {
-                if payload.len() < 16 {
+                if payload.len() < 24 {
                     return None;
                 }
                 let handle =
                     i64::from_le_bytes(payload[0..8].try_into().ok()?);
+                let handle_b_val =
+                    i64::from_le_bytes(payload[8..16].try_into().ok()?);
+                let handle_b = if handle_b_val != 0 { Some(handle_b_val) } else { None };
+                let frame =
+                    u32::from_le_bytes(payload[16..20].try_into().ok()?);
                 let width =
-                    u32::from_le_bytes(payload[8..12].try_into().ok()?);
+                    u32::from_le_bytes(payload[20..24].try_into().ok()?);
                 let height =
-                    u32::from_le_bytes(payload[12..16].try_into().ok()?);
+                    u32::from_le_bytes(payload[24..28].try_into().ok()?);
                 Some(IpcMessage::SharedTextureHandle {
                     handle,
+                    handle_b,
+                    frame,
                     width,
                     height,
                 })
+            }
+            MsgType::SharedTextureFrame => {
+                if payload.len() < 4 {
+                    return None;
+                }
+                let frame =
+                    u32::from_le_bytes(payload[0..4].try_into().ok()?);
+                Some(IpcMessage::SharedTextureFrame { frame })
             }
         }
     }

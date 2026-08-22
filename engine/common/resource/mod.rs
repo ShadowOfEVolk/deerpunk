@@ -146,6 +146,12 @@ impl Loader for FileLoader {
     }
 
     fn load(&self, path: &str, query: &str) -> Result<Box<dyn Any + Send>, String> {
+        if path.ends_with(".wgsl") {
+            let source = std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read {path}: {e}"))?;
+            return Ok(Box::new(source));
+        }
+
         let mut mesh = if path.ends_with(".obj") {
             let data = std::fs::read_to_string(path)
                 .map_err(|e| format!("cannot read {path}: {e}"))?;

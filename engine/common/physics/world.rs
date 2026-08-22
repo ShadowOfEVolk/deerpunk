@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use rapier3d::prelude::*;
-use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use glam::Quat;
+use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
+use rapier3d::prelude::*;
 
 /// Обёртка над rapier3d::PhysicsWorld + vehicle controllers.
 pub struct PhysicsWorld {
@@ -41,7 +41,9 @@ impl PhysicsWorld {
     pub fn create_body(
         &mut self,
         entity_bits: u64,
-        x: f32, y: f32, z: f32,
+        x: f32,
+        y: f32,
+        z: f32,
         yaw: f32,
         collider: &ColliderDescriptor,
     ) -> RigidBodyHandle {
@@ -62,7 +64,11 @@ impl PhysicsWorld {
     }
 
     pub fn create_tile_body(
-        &mut self, tx: i32, ty: i32, x: f32, y: f32,
+        &mut self,
+        tx: i32,
+        ty: i32,
+        x: f32,
+        y: f32,
         collider: &ColliderDescriptor,
     ) -> RigidBodyHandle {
         let handle = self.create_body(0, x, y, 0.0, 0.0, collider);
@@ -74,6 +80,7 @@ impl PhysicsWorld {
         if let Some(handle) = self.body_map.remove(&entity_bits) {
             self.inner.remove_body(handle);
         }
+        self.vehicle_map.remove(&entity_bits);
     }
 
     pub fn destroy_tile_body(&mut self, tx: i32, ty: i32) {
@@ -120,7 +127,8 @@ impl PhysicsWorld {
             ..QueryFilter::default()
         };
 
-        self.inner.cast_ray_and_get_normal(&ray, max_dist, true, filter)
+        self.inner
+            .cast_ray_and_get_normal(&ray, max_dist, true, filter)
             .map(|(_handle, hit)| {
                 let point = ray.point_at(hit.time_of_impact);
                 let n = hit.normal;
@@ -140,7 +148,9 @@ impl PhysicsWorld {
     }
 
     pub fn body_yaw(&self, handle: RigidBodyHandle) -> f32 {
-        self.inner.bodies.get(handle)
+        self.inner
+            .bodies
+            .get(handle)
             .map(|rb| {
                 let q = *rb.rotation();
                 2.0 * q.y.atan2(q.w)
@@ -155,25 +165,6 @@ impl PhysicsWorld {
             let q = *rb.rotation();
             q.to_euler(glam::EulerRot::XYZ)
         })
-    }
-
-    pub fn set_body_transform(&mut self, handle: RigidBodyHandle, x: f32, y: f32, z: f32, yaw: f32) {
-        if let Some(rb) = self.inner.bodies.get_mut(handle) {
-            rb.set_position(
-                Pose3::from_parts(
-                    Vec3::new(x, y, z).into(),
-                    Quat::from_rotation_z(yaw),
-                ),
-                true,
-            );
-        }
-    }
-
-    pub fn set_body_velocity(&mut self, handle: RigidBodyHandle, vx: f32, vy: f32, angular: f32) {
-        if let Some(rb) = self.inner.bodies.get_mut(handle) {
-            rb.set_linvel(Vec3::new(vx, vy, 0.0), true);
-            rb.set_angvel(Vec3::new(0.0, 0.0, angular), true);
-        }
     }
 
     pub fn apply_impulse(&mut self, handle: RigidBodyHandle, vx: f32, vy: f32) {
@@ -194,58 +185,64 @@ impl PhysicsWorld {
     /// Добавляет 4 колеса: 2 задних (привод), 2 передних (поворот).
     pub fn create_vehicle(&mut self, entity_bits: u64) {
         let chassis = *self.body_map.get(&entity_bits).expect("body not found");
+        if let Some(rb) = self.inner.bodies.get_mut(chassis) {
+            rb.set_linear_damping(1.0);
+            rb.set_angular_damping(1.5);
+        }
         let mut vehicle = DynamicRayCastVehicleController::new(chassis);
-        vehicle.index_up_axis = 2;      // Z-up
+        vehicle.index_up_axis = 2; // Z-up
         vehicle.index_forward_axis = 1; // Y-forward
 
         let tuning = WheelTuning {
             suspension_stiffness: 20.0,
-            suspension_compression: 4.4,
-            suspension_damping: 2.3,
-            max_suspension_travel: 0.3,
+            suspension_compression: 2.2,
+            suspension_damping: 4.0,
+            max_suspension_travel: 0.5,
             friction_slip: 3.5,
-            side_friction_stiffness: 1.0,
-            max_suspension_force: 10000.0,
+            side_friction_stiffness: 0.1,
+            max_suspension_force: 15000.0,
         };
 
-        let half_l = 1.2; // половина длины танка
-        let half_w = 0.8; // половина ширины танка
-        let wheel_radius = 0.15;
+        let half_l = 2.2;
+        let half_w = 0.6;
+        let offset_z = -0.35;
+        let wheel_radius = 0.2;
+        let rest_length = 0.05;
 
         // Задние колёса (привод)
         vehicle.add_wheel(
-            Vec3::new(-half_w, -half_l, -0.2),  // connection
-            Vec3::new(0.0, 0.0, -1.0),          // suspension down
-            Vec3::new(1.0, 0.0, 0.0),           // axle X
-            0.15,                                // rest length
+            Vec3::new(-half_w, -half_l, offset_z),
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            rest_length,
             wheel_radius,
             &tuning,
         );
 
         vehicle.add_wheel(
-            Vec3::new(half_w, -half_l, -0.2),
+            Vec3::new(half_w, -half_l, offset_z),
             Vec3::new(0.0, 0.0, -1.0),
             Vec3::new(1.0, 0.0, 0.0),
-            0.15,
+            rest_length,
             wheel_radius,
             &tuning,
         );
 
         // Передние колёса (поворот)
         vehicle.add_wheel(
-            Vec3::new(-half_w, half_l, -0.2),
+            Vec3::new(-half_w, half_l, offset_z),
             Vec3::new(0.0, 0.0, -1.0),
             Vec3::new(1.0, 0.0, 0.0),
-            0.15,
+            rest_length,
             wheel_radius,
             &tuning,
         );
 
         vehicle.add_wheel(
-            Vec3::new(half_w, half_l, -0.2),
+            Vec3::new(half_w, half_l, offset_z),
             Vec3::new(0.0, 0.0, -1.0),
             Vec3::new(1.0, 0.0, 0.0),
-            0.15,
+            rest_length,
             wheel_radius,
             &tuning,
         );
@@ -291,13 +288,15 @@ impl PhysicsWorld {
         let vehicle_keys: Vec<u64> = self.vehicle_map.keys().copied().collect();
         for entity_bits in vehicle_keys {
             if let Some(mut vehicle) = self.vehicle_map.remove(&entity_bits) {
-                let qp = self.inner.broad_phase.as_query_pipeline_mut(
-                    self.inner.narrow_phase.query_dispatcher(),
-                    &mut self.inner.bodies,
-                    &mut self.inner.colliders,
-                    QueryFilter::default(),
-                );
-                vehicle.update_vehicle(dt, qp);
+                if let Some(&chassis) = self.body_map.get(&entity_bits) {
+                    let qp = self.inner.broad_phase.as_query_pipeline_mut(
+                        self.inner.narrow_phase.query_dispatcher(),
+                        &mut self.inner.bodies,
+                        &mut self.inner.colliders,
+                        QueryFilter::exclude_dynamic().exclude_rigid_body(chassis),
+                    );
+                    vehicle.update_vehicle(dt, qp);
+                }
                 self.vehicle_map.insert(entity_bits, vehicle);
             }
         }
@@ -308,16 +307,16 @@ impl PhysicsWorld {
             ColliderShape::Box(h) => SharedShape::cuboid(h[0], h[1], h[2]),
             ColliderShape::Ball(r) => SharedShape::ball(*r),
             ColliderShape::HalfSpace(normal) => {
-                SharedShape::halfspace(
-                    Vec3::new(normal[0], normal[1], normal[2]).normalize(),
-                )
+                SharedShape::halfspace(Vec3::new(normal[0], normal[1], normal[2]).normalize())
             }
-            ColliderShape::HeightField { heights, rows, cols, scale } => {
+            ColliderShape::HeightField {
+                heights,
+                rows,
+                cols,
+                scale,
+            } => {
                 let array = rapier3d::geometry::Array2::new(*rows, *cols, heights.clone());
-                SharedShape::heightfield(
-                    array,
-                    Vec3::new(scale[0], scale[1], scale[2]).into(),
-                )
+                SharedShape::heightfield(array, Vec3::new(scale[0], scale[1], scale[2]).into())
             }
         };
 
@@ -389,7 +388,10 @@ impl ColliderDescriptor {
             body_type: BodyType::Static,
             category_bits: categories::TERRAIN,
             mask_bits: categories::TANK | categories::PROJECTILE,
-            friction: 0.5, restitution: 0.0, density: 0.0, is_sensor: false,
+            friction: 0.5,
+            restitution: 0.0,
+            density: 0.0,
+            is_sensor: false,
         }
     }
     pub fn dynamic_box(half_extents: [f32; 3]) -> Self {
@@ -398,7 +400,22 @@ impl ColliderDescriptor {
             body_type: BodyType::Dynamic,
             category_bits: categories::TANK,
             mask_bits: categories::TERRAIN | categories::TANK | categories::SENSOR,
-            friction: 0.3, restitution: 0.1, density: 1.0, is_sensor: false,
+            friction: 0.3,
+            restitution: 0.1,
+            density: 1.0,
+            is_sensor: false,
+        }
+    }
+    pub fn vehicle_chassis(half_extents: [f32; 3]) -> Self {
+        Self {
+            shape: ColliderShape::Box(half_extents),
+            body_type: BodyType::Dynamic,
+            category_bits: categories::TANK,
+            mask_bits: categories::TERRAIN | categories::TANK | categories::SENSOR,
+            friction: 0.3,
+            restitution: 0.1,
+            density: 500.0,
+            is_sensor: false,
         }
     }
     pub fn sensor(half_extents: [f32; 3]) -> Self {
@@ -407,7 +424,10 @@ impl ColliderDescriptor {
             body_type: BodyType::Static,
             category_bits: categories::SENSOR,
             mask_bits: categories::TANK,
-            friction: 0.0, restitution: 0.0, density: 0.0, is_sensor: true,
+            friction: 0.0,
+            restitution: 0.0,
+            density: 0.0,
+            is_sensor: true,
         }
     }
     pub fn static_ground(normal: [f32; 3]) -> Self {
@@ -416,18 +436,32 @@ impl ColliderDescriptor {
             body_type: BodyType::Static,
             category_bits: categories::TERRAIN,
             mask_bits: categories::TANK | categories::PROJECTILE,
-            friction: 0.5, restitution: 0.0, density: 0.0, is_sensor: false,
+            friction: 0.5,
+            restitution: 0.0,
+            density: 0.0,
+            is_sensor: false,
         }
     }
     pub fn static_heightfield(
-        heights: Vec<f32>, rows: usize, cols: usize, scale: [f32; 3],
+        heights: Vec<f32>,
+        rows: usize,
+        cols: usize,
+        scale: [f32; 3],
     ) -> Self {
         Self {
-            shape: ColliderShape::HeightField { heights, rows, cols, scale },
+            shape: ColliderShape::HeightField {
+                heights,
+                rows,
+                cols,
+                scale,
+            },
             body_type: BodyType::Static,
             category_bits: categories::TERRAIN,
             mask_bits: categories::TANK | categories::PROJECTILE,
-            friction: 0.5, restitution: 0.0, density: 0.0, is_sensor: false,
+            friction: 0.5,
+            restitution: 0.0,
+            density: 0.0,
+            is_sensor: false,
         }
     }
 }

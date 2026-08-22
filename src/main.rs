@@ -1,7 +1,7 @@
 use deerpunk_engine_common::cvar::cvar;
 use deerpunk_engine_common::cmd::{cmd, exec_plus_args};
 use deerpunk_engine_common::frame_buffer::SharedFrameBuffer;
-use deerpunk_engine_core::Engine;
+use deerpunk_engine_host::Host;
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -14,10 +14,10 @@ fn main() {
     // Process +cvar CLI args (e.g. +r_texturehandle deerpunk_editor_0)
     exec_plus_args(&[]);
 
-    let mut engine = Engine::new();
+    let mut host = Host::new();
     let gamedir = cvar().get_string("gamedir").unwrap_or_else(|| "examples/deathmatch/gamedir".to_string());
     println!("Initializing engine with gamedir: {}", gamedir);
-    if let Err(e) = engine.initialize(gamedir) {
+    if let Err(e) = host.server_engine.initialize(gamedir) {
         eprintln!("Failed to initialize engine: {}", e);
         return;
     }
@@ -53,7 +53,7 @@ fn main() {
         last_frame_time = frame_start;
 
         // Process engine frame
-        if let Err(e) = engine.frame(delta_time) {
+        if let Err(e) = host.server_engine.frame(delta_time) {
             eprintln!("Frame error: {}", e);
             break;
         }
@@ -93,5 +93,5 @@ fn main() {
     }
 
     println!("Shutting down engine...");
-    engine.shutdown();
+    host.server_engine.shutdown();
 }

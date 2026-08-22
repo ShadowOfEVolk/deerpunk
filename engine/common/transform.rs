@@ -1,8 +1,9 @@
 use glam::{Mat4, Quat, Vec3};
+use serde::Deserialize;
 
 /// 3D-transform: Z-up (X=right, Y=forward, Z=up).
 /// Rotation — around Z axis (yaw).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 pub struct Transform {
     pub position: Vec3,
     pub rotation: Quat,

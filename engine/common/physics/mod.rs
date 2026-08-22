@@ -1,10 +1,11 @@
 pub mod run;
 pub mod world;
 
-pub use run::{physics_sync_in, physics_step, physics_sync_out};
+use glam::Vec3;
+pub use run::{physics_step, physics_sync_in, physics_sync_out};
 pub use world::{
-    ColliderDescriptor, ColliderShape, PhysicsWorld, RapierProfile, RayHit, Sensor, BodyType,
-    categories,
+    categories, BodyType, ColliderDescriptor, ColliderShape, PhysicsWorld, RapierProfile, RayHit,
+    Sensor,
 };
 
 /// Компонент: объект с физическим телом в rapier.
@@ -14,8 +15,8 @@ pub use world::{
 #[derive(Clone, Copy, Debug)]
 pub struct RigidBody {
     pub handle: u64,
-    pub velocity: [f32; 3],
-    pub angular_velocity: f32,
+    pub velocity: Vec3,
+    pub angular_velocity: Vec3,
     pub active: bool,
 }
 
@@ -23,8 +24,8 @@ impl RigidBody {
     pub fn new(handle: rapier3d::prelude::RigidBodyHandle) -> Self {
         Self {
             handle: Self::encode(handle),
-            velocity: [0.0; 3],
-            angular_velocity: 0.0,
+            velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
             active: false,
         }
     }
@@ -32,8 +33,8 @@ impl RigidBody {
     pub fn active(handle: rapier3d::prelude::RigidBodyHandle) -> Self {
         Self {
             handle: Self::encode(handle),
-            velocity: [0.0; 3],
-            angular_velocity: 0.0,
+            velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
             active: true,
         }
     }

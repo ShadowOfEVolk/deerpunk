@@ -12,6 +12,7 @@ pub mod frame;
 pub mod frame_buffer;
 pub mod physics;
 pub mod prefab;
+pub mod reactive;
 pub mod resource;
 pub mod scheduler;
 pub mod transform;

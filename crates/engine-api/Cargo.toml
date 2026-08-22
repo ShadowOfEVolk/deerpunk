@@ -1,0 +1,8 @@
+[package]
+name = "deerpunk-engine-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glam = "0.33"
+hecs = "0.11"

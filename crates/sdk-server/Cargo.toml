@@ -1,0 +1,8 @@
+[package]
+name = "deerpunk-sdk-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deerpunk-engine-host = { path = "../../engine/host" }
+hecs = "0.11"

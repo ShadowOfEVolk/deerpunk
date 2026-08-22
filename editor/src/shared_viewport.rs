@@ -4,18 +4,29 @@ use iced::widget::shader::{self, Pipeline, Primitive, Program};
 use iced::widget::shader::Action;
 use iced::mouse;
 
+#[derive(Debug)]
+struct TextureSlot {
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    handle: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct SharedViewportPrimitive {
-    pub handle: i64,
+    pub handle_a: i64,
+    pub handle_b: Option<i64>,
     pub width: u32,
     pub height: u32,
+    pub frame: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct SharedViewportProgram {
-    pub handle: i64,
+    pub handle_a: i64,
+    pub handle_b: Option<i64>,
     pub width: u32,
     pub height: u32,
+    pub frame: u32,
 }
 
 impl<Message> Program<Message> for SharedViewportProgram {
@@ -39,19 +50,18 @@ impl<Message> Program<Message> for SharedViewportProgram {
         _bounds: Rectangle,
     ) -> SharedViewportPrimitive {
         SharedViewportPrimitive {
-            handle: self.handle,
+            handle_a: self.handle_a,
+            handle_b: self.handle_b,
             width: self.width,
             height: self.height,
+            frame: self.frame,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct SharedViewportPipeline {
-    imported_view: Option<wgpu::TextureView>,
-    bind_group: Option<wgpu::BindGroup>,
-    last_handle: i64,
-    last_size: (u32, u32),
+    slots: [Option<TextureSlot>; 2],
     bind_group_layout: wgpu::BindGroupLayout,
     render_pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
@@ -157,10 +167,7 @@ impl Pipeline for SharedViewportPipeline {
         });
 
         Self {
-            imported_view: None,
-            bind_group: None,
-            last_handle: 0,
-            last_size: (0, 0),
+            slots: [None, None],
             bind_group_layout,
             render_pipeline,
             sampler,
@@ -179,34 +186,14 @@ impl Primitive for SharedViewportPrimitive {
         _bounds: &Rectangle,
         _viewport: &shader::Viewport,
     ) {
-        if self.handle == 0 {
-            return;
-        }
-        if pipeline.last_handle == self.handle && pipeline.last_size == (self.width, self.height) {
+        if self.handle_a == 0 {
             return;
         }
 
-        let view = import_shared_handle(device, self.handle, self.width, self.height);
-        if let Some(view) = view {
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("shared_vp bg"),
-                layout: &pipeline.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
-                    },
-                ],
-            });
+        ensure_slot(device, pipeline, 0, self.handle_a, self.width, self.height);
 
-            pipeline.imported_view = Some(view);
-            pipeline.bind_group = Some(bind_group);
-            pipeline.last_handle = self.handle;
-            pipeline.last_size = (self.width, self.height);
+        if let Some(hb) = self.handle_b {
+            ensure_slot(device, pipeline, 1, hb, self.width, self.height);
         }
     }
 
@@ -215,14 +202,52 @@ impl Primitive for SharedViewportPrimitive {
         pipeline: &SharedViewportPipeline,
         render_pass: &mut wgpu::RenderPass<'_>,
     ) -> bool {
-        let Some(ref bg) = pipeline.bind_group else {
+        let active_idx = (self.frame % 2) as usize;
+        let Some(ref s) = pipeline.slots[active_idx] else {
             return false;
         };
         render_pass.set_pipeline(&pipeline.render_pipeline);
-        render_pass.set_bind_group(0, bg, &[]);
+        render_pass.set_bind_group(0, &s.bind_group, &[]);
         render_pass.draw(0..6, 0..1);
         true
     }
+}
+
+fn ensure_slot(
+    device: &wgpu::Device,
+    pipeline: &mut SharedViewportPipeline,
+    idx: usize,
+    handle: i64,
+    width: u32,
+    height: u32,
+) {
+    if let Some(ref s) = pipeline.slots[idx] {
+        if s.handle == handle {
+            return;
+        }
+    }
+    let Some(view) = import_shared_handle(device, handle, width, height) else {
+        return;
+    };
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("shared_vp bg"),
+        layout: &pipeline.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
+            },
+        ],
+    });
+    pipeline.slots[idx] = Some(TextureSlot {
+        view,
+        bind_group,
+        handle,
+    });
 }
 
 fn import_shared_handle(

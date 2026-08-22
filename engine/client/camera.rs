@@ -1,5 +1,6 @@
 use deerpunk_engine_common::coord;
 use deerpunk_engine_common::frame;
+use glam::Vec3;
 
 /// Размер видимой области для Follow-камеры (в метрах).
 pub const FOLLOW_VIEW_SIZE: f32 = 5.0;
@@ -28,9 +29,7 @@ pub struct FreecamInput {
 /// Чистая дата-структура камеры без ECS-зависимостей.
 /// Методы `update` и `update_camera` остаются в `game` (используют ECS World).
 pub struct Camera {
-    pub x: f32,
-    pub y: f32,
-    pub view_size: f32,
+    pub position: Vec3,
     pub mode: CameraMode,
     pub follow_target: Option<u64>,
     /// Пауза над местом смерти перед переключением на другого танка.
@@ -51,9 +50,7 @@ pub struct Camera {
 impl Camera {
     pub fn new(follow_target: Option<u64>, world_size: f32) -> Self {
         Self {
-            x: world_size * 0.5,
-            y: world_size * 0.5,
-            view_size: FOLLOW_VIEW_SIZE,
+            position: Vec3::new(world_size * 0.5, world_size * 0.5, 10.0),
             mode: CameraMode::Follow,
             follow_target,
             death_linger: 0.0,
@@ -81,8 +78,13 @@ impl Camera {
 
     /// View-projection матрица4x4 (column-major, WGSL layout).
     pub fn view_proj(&self) -> [[f32; 4]; 4] {
-        let cam_h = self.view_size * 0.8;
-        coord::build_view_proj(self.x, self.y, cam_h, self.yaw, self.pitch, self.view_size)
+        coord::build_view_proj(
+            self.position.x,
+            self.position.y,
+            self.position.z,
+            self.yaw,
+            self.pitch,
+        )
     }
 
     /// Ортографическая матрица для HUD (экраные пиксели → NDC).
@@ -120,8 +122,9 @@ impl Camera {
 }
 
 pub fn tank_in_camera_view(x: f32, y: f32, camera: &Camera) -> bool {
-    let ppm = frame::frame_ppm(camera.view_size);
+    let view_size = camera.position.z / 0.8;
+    let ppm = frame::frame_ppm(view_size);
     let half_w = frame::frame_width() as f32 / ppm * 0.5 + frame::TANK_LENGTH;
     let half_h = frame::frame_height() as f32 / ppm * 0.5 + frame::TANK_LENGTH;
-    (x - camera.x).abs() <= half_w && (y - camera.y).abs() <= half_h
+    (x - camera.position.x).abs() <= half_w && (y - camera.position.y).abs() <= half_h
 }

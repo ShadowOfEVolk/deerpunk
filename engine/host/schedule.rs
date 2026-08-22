@@ -1,12 +1,10 @@
-use hecs::World;
-
 pub trait System: Send {
-    fn run(&mut self, world: &mut World, delta_time: f32);
+    fn run(&mut self, delta_time: f32);
 }
 
-impl<F: FnMut(&mut World, f32) + Send> System for F {
-    fn run(&mut self, world: &mut World, delta_time: f32) {
-        self(world, delta_time);
+impl<F: FnMut(f32) + Send> System for F {
+    fn run(&mut self, delta_time: f32) {
+        self(delta_time);
     }
 }
 
@@ -28,9 +26,9 @@ impl Schedule {
         self.systems.clear();
     }
 
-    pub fn run(&mut self, world: &mut World, delta_time: f32) {
+    pub fn run(&mut self, delta_time: f32) {
         for system in &mut self.systems {
-            system.run(world, delta_time);
+            system.run(delta_time);
         }
     }
 }
