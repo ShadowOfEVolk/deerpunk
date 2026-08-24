@@ -3,66 +3,83 @@
 //! The engine creates a `#[repr(C)]` vtable with function pointers.
 //! This crate wraps those pointers into ergonomic Rust methods.
 
-use std::any::Any;
 use std::ffi::c_void;
 
-pub use deerpunk_engine_host::vtable::{CompGetFn, CompHasFn, CompRemoveFn, CompSetFn, EngineApiVtable};
+pub use deerpunk_engine_host::vtable::EngineApiVtable;
 
 pub type EntityId = u64;
 pub type ComponentId = u64;
 
-// ── ComponentFns trait (monomorphized per T) ──────────────────
+// ── InputApi ────────────────────────────────────────────────
 
-trait ComponentFns {
-    extern "C" fn has(world: *mut c_void, entity: u64) -> bool;
-    extern "C" fn get(world: *mut c_void, entity: u64) -> *mut c_void;
-    extern "C" fn set(world: *mut c_void, entity: u64, data: *mut c_void);
-    extern "C" fn remove(world: *mut c_void, entity: u64);
+#[derive(Clone, Copy)]
+pub struct InputApi {
+    vtable: deerpunk_engine_host::vtable::InputApiVtable,
 }
 
-struct ComponentFnsImpl<T>(std::marker::PhantomData<T>);
+impl InputApi {
+    pub fn is_key_down(&self, key: u32) -> bool {
+        (self.vtable.is_key_down)(key)
+    }
+    pub fn mouse_dx(&self) -> f32 {
+        (self.vtable.mouse_dx)()
+    }
+    pub fn mouse_dy(&self) -> f32 {
+        (self.vtable.mouse_dy)()
+    }
+}
 
-impl<T: Clone + Send + Sync + 'static> ComponentFns for ComponentFnsImpl<T> {
-    extern "C" fn has(world: *mut c_void, entity: u64) -> bool {
-        unsafe {
-            let world = &*(world as *const hecs::World);
-            let e = hecs::Entity::from_bits(entity).unwrap();
-            world.get::<&T>(e).is_ok()
-        }
+// ── ImGuiApi ────────────────────────────────────────────────
+
+pub struct ImGuiApi {
+    vtable: deerpunk_engine_host::vtable::ImGuiApiVtable,
+}
+
+impl ImGuiApi {
+    pub fn begin_window(&self, name: &str) -> bool {
+        let bytes = name.as_bytes();
+        (self.vtable.begin_window)(bytes.as_ptr(), bytes.len())
     }
 
-    extern "C" fn get(world: *mut c_void, entity: u64) -> *mut c_void {
-        unsafe {
-            let world = &*(world as *const hecs::World);
-            let e = hecs::Entity::from_bits(entity).unwrap();
-            match world.get::<&T>(e) {
-                Ok(comp) => {
-                    let owned: T = (*comp).clone();
-                    Box::into_raw(Box::new(Box::new(owned) as Box<dyn Any>)) as *mut c_void
-                }
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
+    pub fn end_window(&self) {
+        (self.vtable.end_window)();
     }
 
-    extern "C" fn set(world: *mut c_void, entity: u64, data: *mut c_void) {
-        unsafe {
-            let world = &mut *(world as *mut hecs::World);
-            let e = hecs::Entity::from_bits(entity).unwrap();
-            let outer: Box<Box<dyn Any>> = Box::from_raw(data as *mut Box<dyn Any>);
-            let inner: Box<dyn Any> = *outer;
-            if let Ok(comp) = inner.downcast::<T>() {
-                world.insert_one(e, *comp).ok();
-            }
-        }
+    pub fn text(&self, text: &str) {
+        let bytes = text.as_bytes();
+        (self.vtable.text)(bytes.as_ptr(), bytes.len());
     }
 
-    extern "C" fn remove(world: *mut c_void, entity: u64) {
-        unsafe {
-            let world = &mut *(world as *mut hecs::World);
-            let e = hecs::Entity::from_bits(entity).unwrap();
-            world.remove_one::<T>(e).ok();
-        }
+    pub fn value_f32(&self, label: &str, value: f32) {
+        let bytes = label.as_bytes();
+        (self.vtable.value_f32)(bytes.as_ptr(), bytes.len(), value);
+    }
+
+    pub fn value_vec3(&self, label: &str, x: f32, y: f32, z: f32) {
+        let bytes = label.as_bytes();
+        (self.vtable.value_vec3)(bytes.as_ptr(), bytes.len(), x, y, z);
+    }
+
+    pub fn separator(&self) {
+        (self.vtable.separator)();
+    }
+}
+
+// ── PhysicsApi ────────────────────────────────────────────────
+
+pub struct PhysicsApi {
+    vtable: deerpunk_engine_host::vtable::PhysicsApiVtable,
+}
+
+impl PhysicsApi {
+    pub fn spawn_dynamic_box(
+        &self,
+        entity: EntityId,
+        x: f32, y: f32, z: f32,
+        half_x: f32, half_y: f32, half_z: f32,
+        mass: f32,
+    ) {
+        (self.vtable.spawn_dynamic_box)(entity, x, y, z, half_x, half_y, half_z, mass);
     }
 }
 
@@ -71,6 +88,9 @@ impl<T: Clone + Send + Sync + 'static> ComponentFns for ComponentFnsImpl<T> {
 pub struct EngineApi {
     pub world: WorldApi,
     pub schedule: ScheduleApi,
+    pub input: InputApi,
+    pub imgui: ImGuiApi,
+    pub physics: PhysicsApi,
     raw: EngineApiVtable,
 }
 unsafe impl Send for EngineApi {}
@@ -81,17 +101,21 @@ impl EngineApi {
         Self {
             world: WorldApi { vtable: vtable.world },
             schedule: ScheduleApi { vtable: vtable.schedule },
+            input: InputApi { vtable: vtable.input },
+            imgui: ImGuiApi { vtable: vtable.imgui },
+            physics: PhysicsApi { vtable: vtable.physics },
             raw: *vtable,
         }
     }
 
     pub fn from_handle(handle: deerpunk_engine_host::vtable::EngineApiHandle) -> Self {
-        // Copy vtable data from the handle, then let handle drop normally.
-        // Do NOT Box::from_raw on the handle's pointer — that would double-free.
         let raw = unsafe { *handle.vtable_ptr() };
         Self {
             world: WorldApi { vtable: raw.world },
             schedule: ScheduleApi { vtable: raw.schedule },
+            input: InputApi { vtable: raw.input },
+            imgui: ImGuiApi { vtable: raw.imgui },
+            physics: PhysicsApi { vtable: raw.physics },
             raw,
         }
     }
@@ -100,6 +124,9 @@ impl EngineApi {
         Self {
             world: self.world.clone(),
             schedule: self.schedule.clone(),
+            input: self.input,
+            imgui: ImGuiApi { vtable: self.raw.imgui },
+            physics: PhysicsApi { vtable: self.raw.physics },
             raw: self.raw,
         }
     }
@@ -110,12 +137,12 @@ impl EngineApi {
 
     pub fn initialize(&self, gamedir: &str) -> Result<(), String> {
         let bytes = gamedir.as_bytes();
-        (self.raw.initialize)(self.raw.world.ctx, bytes.as_ptr(), bytes.len());
+        (self.raw.initialize)(bytes.as_ptr(), bytes.len());
         Ok(())
     }
 
     pub fn frame(&self, delta_time: f32) -> Result<(), String> {
-        if (self.raw.frame)(self.raw.world.ctx, delta_time) == 0 {
+        if (self.raw.frame)(delta_time) == 0 {
             Ok(())
         } else {
             Err("frame failed".to_string())
@@ -123,32 +150,21 @@ impl EngineApi {
     }
 
     pub fn shutdown(&self) {
-        (self.raw.shutdown)(self.raw.world.ctx);
-    }
-
-    /// Transitional bridge: passes `&mut World` to a closure.
-    /// Accesses ecs_world field directly via raw pointer to avoid aliasing.
-    pub fn with_world_mut<R>(&self, f: impl FnOnce(&mut hecs::World) -> R) -> R {
-        let world_ptr = unsafe {
-            deerpunk_engine_host::world_ptr_from_ctx(self.raw.world.ctx)
-        };
-        f(unsafe { &mut *world_ptr })
+        (self.raw.shutdown)();
     }
 
     // ── Physics ─────────────────────────────────────────────────
 
-    /// Borrow PhysicsWorld immutably. Uses field-level access on the ctx pointer.
     pub fn with_physics<R>(&self, f: impl FnOnce(&deerpunk_engine_host::common::physics::PhysicsWorld) -> R) -> R {
         let physics_ptr = unsafe {
-            deerpunk_engine_host::physics_ptr_from_ctx(self.raw.world.ctx)
+            deerpunk_engine_host::physics_ptr_from_ctx()
         };
         f(unsafe { &*physics_ptr })
     }
 
-    /// Borrow PhysicsWorld mutably. Uses field-level access on the ctx pointer.
     pub fn with_physics_mut<R>(&self, f: impl FnOnce(&mut deerpunk_engine_host::common::physics::PhysicsWorld) -> R) -> R {
         let physics_ptr = unsafe {
-            deerpunk_engine_host::physics_ptr_from_ctx(self.raw.world.ctx)
+            deerpunk_engine_host::physics_ptr_from_ctx()
         };
         f(unsafe { &mut *physics_ptr })
     }
@@ -172,16 +188,30 @@ pub struct WorldApi {
 }
 
 impl WorldApi {
-    pub fn register_component<T: Clone + Send + Sync + 'static>(&self, name: &str) -> ComponentId {
+    /// Register a component by name.
+    /// Returns a ComponentId that is stable across DLL boundaries.
+    /// The engine already registered this component and knows its size.
+    /// For engine-registered components (Transform, CameraComponent, etc.), this returns the existing ID.
+    /// For DLL-registered components, pass the correct size via `register_component_with_size`.
+    pub fn register_component(&self, name: &str) -> ComponentId {
         let name_bytes = name.as_bytes();
         (self.vtable.register_component)(
-            self.vtable.ctx,
             name_bytes.as_ptr(),
             name_bytes.len(),
-            ComponentFnsImpl::<T>::has,
-            ComponentFnsImpl::<T>::get,
-            ComponentFnsImpl::<T>::set,
-            ComponentFnsImpl::<T>::remove,
+            0, // size=0: engine uses its registered size (for engine types like Transform)
+            0, // alignment=0: engine uses its registered alignment
+        )
+    }
+
+    /// Register a DLL-owned component by name with explicit size and alignment.
+    /// Use std::mem::size_of::<T>() and std::mem::align_of::<T>() for the correct values.
+    pub fn register_component_with_size<T>(&self, name: &str) -> ComponentId {
+        let name_bytes = name.as_bytes();
+        (self.vtable.register_component)(
+            name_bytes.as_ptr(),
+            name_bytes.len(),
+            std::mem::size_of::<T>(),
+            std::mem::align_of::<T>(),
         )
     }
 
@@ -189,7 +219,6 @@ impl WorldApi {
         let max = 4096;
         let mut buf = vec![0u64; max];
         let count = (self.vtable.query)(
-            self.vtable.ctx,
             require.as_ptr(),
             require.len(),
             exclude.as_ptr(),
@@ -201,35 +230,79 @@ impl WorldApi {
         buf
     }
 
-    pub fn get<T: Clone + 'static>(&self, entity: EntityId, comp: ComponentId) -> Option<T> {
-        let ptr = (self.vtable.get)(self.vtable.ctx, entity, comp);
-        if ptr.is_null() {
-            return None;
-        }
-        let boxed = unsafe { Box::from_raw(ptr as *mut Box<dyn Any>) };
-        (*boxed).downcast::<T>().ok().map(|b| *b)
+    /// Get a raw pointer to a component on an entity.
+    /// The returned pointer is valid as long as the entity exists and the component is not removed.
+    pub fn get_raw(&self, entity: EntityId, comp: ComponentId) -> Option<*const c_void> {
+        let ptr = (self.vtable.get)(entity, comp);
+        if ptr.is_null() { None } else { Some(ptr as *const c_void) }
     }
 
-    pub fn set<T: Any>(&self, entity: EntityId, comp: ComponentId, value: T) {
-        let ptr = Box::into_raw(Box::new(Box::new(value) as Box<dyn Any>)) as *mut c_void;
-        (self.vtable.set)(self.vtable.ctx, entity, comp, ptr);
+    /// Get a copy of a component on an entity.
+    /// The type T must have the same layout as the registered component.
+    /// Uses raw pointer copy — safe for types that are repr(C) and have the same size.
+    pub fn get<T: 'static>(&self, entity: EntityId, comp: ComponentId) -> Option<T> {
+        let ptr = (self.vtable.get)(entity, comp);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::ptr::read_unaligned(ptr as *const T) })
+        }
+    }
+
+    /// Set a component on an entity from raw pointer.
+    pub fn set_raw(&self, entity: EntityId, comp: ComponentId, ptr: *const c_void, size: usize) {
+        (self.vtable.set)(entity, comp, ptr as *mut c_void);
+    }
+
+    /// Set a component on an entity.
+    /// The value is passed by pointer; Flecs copies the registered size bytes.
+    pub fn set<T>(&self, entity: EntityId, comp: ComponentId, value: T) {
+        let ptr = &value as *const T as *mut c_void;
+        (self.vtable.set)(entity, comp, ptr);
+        std::mem::forget(value); // Don't drop — Flecs owns the data now
     }
 
     pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {
-        (self.vtable.has)(self.vtable.ctx, entity, comp)
+        (self.vtable.has)(entity, comp)
     }
 
     pub fn remove(&self, entity: EntityId, comp: ComponentId) {
-        (self.vtable.remove)(self.vtable.ctx, entity, comp);
+        (self.vtable.remove)(entity, comp);
     }
 
     pub fn spawn(&self) -> EntityId {
-        (self.vtable.spawn)(self.vtable.ctx)
+        (self.vtable.spawn)()
     }
 
+    /// Spawn an entity with components. Each component is (id, data_ptr, size).
+    /// The data must be valid raw bytes of the component.
+    pub fn spawn_bundle_raw(
+        &self,
+        components: &[(ComponentId, *const c_void, usize)],
+    ) -> EntityId {
+        let count = components.len();
+        if count == 0 {
+            return self.spawn();
+        }
+
+        let ids: Vec<u64> = components.iter().map(|(id, _, _)| *id).collect();
+        let data: Vec<*mut c_void> = components.iter()
+            .map(|(_, ptr, _)| *ptr as *mut c_void)
+            .collect();
+
+        (self.vtable.spawn_bundle)(
+            ids.as_ptr(),
+            data.as_ptr(),
+            count,
+        )
+    }
+
+    /// Spawn an entity with components. Each component is a (component_id, Box<dyn Any>).
+    /// The Box<dyn Any>'s data pointer is extracted and passed to the engine as raw bytes.
+    /// This is for backward compatibility — prefer spawn_bundle_raw for new code.
     pub fn spawn_bundle(
         &self,
-        components: Vec<(ComponentId, Box<dyn Any>)>,
+        components: Vec<(ComponentId, Box<dyn std::any::Any>)>,
     ) -> EntityId {
         let count = components.len();
         if count == 0 {
@@ -239,29 +312,41 @@ impl WorldApi {
         let ids: Vec<u64> = components.iter().map(|(id, _)| *id).collect();
         let data: Vec<*mut c_void> = components
             .into_iter()
-            .map(|(_, d)| Box::into_raw(Box::new(d)) as *mut c_void)
+            .map(|(_, d)| {
+                // Extract the data pointer from the Box<dyn Any> fat pointer.
+                // For a Box<T>, this gives a pointer to the T value on the heap.
+                // The engine copies registered_size bytes from this pointer into Flecs.
+                // NOTE: the Box will drop the T after this, potentially freeing Vec data.
+                // This is safe for Copy types and types without heap allocations.
+                let raw = Box::into_raw(d) as *const u8 as *mut c_void;
+                raw
+            })
             .collect();
 
         let result = (self.vtable.spawn_bundle)(
-            self.vtable.ctx,
             ids.as_ptr(),
             data.as_ptr(),
             count,
         );
+
+        // Note: we intentionally do NOT free the Box-allocated data here.
+        // The engine has copied the bytes into Flecs storage via ecs_set_id.
+        // The Box-allocated memory will be leaked as a temporary measure.
+        // TODO: implement proper deep-copy for non-Copy types.
+
         result
     }
 
     pub fn destroy(&self, entity: EntityId) {
-        (self.vtable.destroy)(self.vtable.ctx, entity);
+        (self.vtable.destroy)(entity);
     }
 
     pub fn clear(&self) {
-        (self.vtable.clear)(self.vtable.ctx);
+        (self.vtable.clear)();
     }
 
     pub fn query_count(&self, require: &[ComponentId], exclude: &[ComponentId]) -> usize {
         (self.vtable.query_count)(
-            self.vtable.ctx,
             require.as_ptr(),
             require.len(),
             exclude.as_ptr(),
@@ -276,13 +361,18 @@ impl WorldApi {
         exclude: &[ComponentId],
     ) -> bool {
         (self.vtable.query_matches)(
-            self.vtable.ctx,
             entity,
             require.as_ptr(),
             require.len(),
             exclude.as_ptr(),
             exclude.len(),
         )
+    }
+
+    pub fn resolve_component(&self, name: &str) -> Option<ComponentId> {
+        let name_bytes = name.as_bytes();
+        let id = (self.vtable.resolve_component)(name_bytes.as_ptr(), name_bytes.len());
+        if id == u64::MAX { None } else { Some(id) }
     }
 }
 
@@ -306,14 +396,14 @@ impl ScheduleApi {
         }
 
         let boxed = Box::into_raw(Box::new(system)) as *mut c_void;
-        (self.vtable.add_system)(self.vtable.ctx, tramp::<S>, boxed);
+        (self.vtable.add_system)(tramp::<S>, boxed);
     }
 
     pub fn clear(&self) {
-        (self.vtable.clear)(self.vtable.ctx);
+        (self.vtable.clear)();
     }
 
     pub fn run(&self, delta_time: f32) {
-        (self.vtable.run)(self.vtable.ctx, delta_time);
+        (self.vtable.run)(delta_time);
     }
 }

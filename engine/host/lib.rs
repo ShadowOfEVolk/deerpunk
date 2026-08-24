@@ -32,15 +32,30 @@ pub mod client {
     pub use deerpunk_engine_client::*;
 }
 
-/// Access world directly from ctx pointer without creating &mut ServerEngine.
-/// Used by sdk-server's with_world_mut bridge to avoid aliasing during schedule.run().
-pub unsafe fn world_ptr_from_ctx(ctx: *mut std::ffi::c_void) -> *mut hecs::World {
-    unsafe { &mut (*(ctx as *mut ServerEngine)).ecs_world as *mut hecs::World }
+// ── Global engine context (singleton) ─────────────────────────
+
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::ffi::c_void;
+
+static ENGINE_CTX: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+fn set_engine_ctx(ctx: *mut c_void) {
+    ENGINE_CTX.store(ctx, Ordering::Release);
 }
 
-/// Access physics_world directly from ctx pointer without creating &mut ServerEngine.
-pub unsafe fn physics_ptr_from_ctx(ctx: *mut std::ffi::c_void) -> *mut deerpunk_engine_common::physics::PhysicsWorld {
-    unsafe { &mut (*(ctx as *mut ServerEngine)).physics_world as *mut deerpunk_engine_common::physics::PhysicsWorld }
+fn engine_ctx() -> *mut c_void {
+    ENGINE_CTX.load(Ordering::Acquire)
+}
+
+/// Access world directly from global engine context.
+/// Used by sdk-server's with_world_mut bridge.
+pub unsafe fn world_ptr_from_ctx() -> *mut hecs::World {
+    unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).ecs_world as *mut hecs::World }
+}
+
+/// Access physics_world directly from global engine context.
+pub unsafe fn physics_ptr_from_ctx() -> *mut deerpunk_engine_common::physics::PhysicsWorld {
+    unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).physics_world as *mut deerpunk_engine_common::physics::PhysicsWorld }
 }
 
 pub struct Host {
@@ -59,11 +74,11 @@ impl Host {
     pub fn build_vtable(&mut self) -> vtable::EngineApiHandle {
         use crate::vtable::{EngineApiHandle, EngineApiVtable, ScheduleApiVtable, WorldApiVtable};
 
-        let ctx = &mut self.server_engine as *mut ServerEngine as *mut std::ffi::c_void;
+        let ctx = &mut self.server_engine as *mut ServerEngine as *mut c_void;
+        set_engine_ctx(ctx);
 
         let world_vtable = WorldApiVtable {
-            ctx,
-            register_component: tramp_register_component,
+             register_component: tramp_register_component,
             get: tramp_get,
             set: tramp_set,
             has: tramp_has,
@@ -79,7 +94,6 @@ impl Host {
         };
 
         let schedule_vtable = ScheduleApiVtable {
-            ctx,
             add_system: tramp_add_system,
             clear: tramp_clear_systems,
             run: tramp_schedule_run,
@@ -105,10 +119,10 @@ impl Default for Host {
     }
 }
 
-// ── extern "C" trampolines ──────────────────────────────────────
+// ── Helper: get ServerEngine from global static ────────────────
 
-unsafe fn from_ptr<'a>(ptr: *mut std::ffi::c_void) -> &'a mut ServerEngine {
-    unsafe { &mut *(ptr as *mut ServerEngine) }
+unsafe fn from_engine() -> &'static mut ServerEngine {
+    unsafe { &mut *(engine_ctx() as *mut ServerEngine) }
 }
 
 /// Access individual fields via raw pointer WITHOUT creating &mut ServerEngine.
@@ -116,40 +130,38 @@ unsafe fn from_ptr<'a>(ptr: *mut std::ffi::c_void) -> &'a mut ServerEngine {
 /// (e.g. during schedule.run() where tramp_frame holds the ServerEngine while
 /// system callbacks call tramp_get/tramp_set).
 mod field {
-    use super::ServerEngine;
-    use std::ffi::c_void;
     use std::collections::HashMap;
-    use super::api::{ComponentEntry, ComponentId};
+    use super::{ServerEngine, api::{ComponentEntry, ComponentId}};
+    use super::engine_ctx;
 
-    pub unsafe fn ecs_world(ctx: *mut c_void) -> &'static mut hecs::World {
-        unsafe { &mut (*(ctx as *mut ServerEngine)).ecs_world }
+    pub unsafe fn ecs_world() -> &'static mut hecs::World {
+        unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).ecs_world }
     }
 
-    pub unsafe fn components(ctx: *mut c_void) -> &'static HashMap<ComponentId, ComponentEntry> {
-        unsafe { &(*(ctx as *mut ServerEngine)).components }
+    pub unsafe fn components() -> &'static HashMap<ComponentId, ComponentEntry> {
+        unsafe { &(*(engine_ctx() as *mut ServerEngine)).components }
     }
 
-    pub unsafe fn components_mut(ctx: *mut c_void) -> &'static mut HashMap<ComponentId, ComponentEntry> {
-        unsafe { &mut (*(ctx as *mut ServerEngine)).components }
+    pub unsafe fn components_mut() -> &'static mut HashMap<ComponentId, ComponentEntry> {
+        unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).components }
     }
 
-    pub unsafe fn schedule(ctx: *mut c_void) -> &'static mut super::Schedule {
-        unsafe { &mut (*(ctx as *mut ServerEngine)).schedule }
+    pub unsafe fn schedule() -> &'static mut super::Schedule {
+        unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).schedule }
     }
 
-    pub unsafe fn entities(ctx: *mut c_void) -> &'static mut Vec<u64> {
-        unsafe { &mut (*(ctx as *mut ServerEngine)).entities }
+    pub unsafe fn entities() -> &'static mut Vec<u64> {
+        unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).entities }
     }
 
-    pub unsafe fn physics_world(ctx: *mut c_void) -> &'static mut deerpunk_engine_common::physics::PhysicsWorld {
-        unsafe { &mut (*(ctx as *mut ServerEngine)).physics_world }
+    pub unsafe fn physics_world() -> &'static mut deerpunk_engine_common::physics::PhysicsWorld {
+        unsafe { &mut (*(engine_ctx() as *mut ServerEngine)).physics_world }
     }
 }
 
 use std::any::Any;
 
 extern "C" fn tramp_register_component(
-    ctx: *mut std::ffi::c_void,
     name: *const u8,
     name_len: usize,
     has_fn: crate::vtable::CompHasFn,
@@ -157,7 +169,7 @@ extern "C" fn tramp_register_component(
     set_fn: crate::vtable::CompSetFn,
     remove_fn: crate::vtable::CompRemoveFn,
 ) -> u64 {
-    let se = unsafe { from_ptr(ctx) };
+    let se = unsafe { from_engine() };
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name, name_len))
     };
@@ -165,30 +177,28 @@ extern "C" fn tramp_register_component(
 }
 
 extern "C" fn tramp_get(
-    ctx: *mut std::ffi::c_void,
     entity: u64,
     comp: u64,
-) -> *mut std::ffi::c_void {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
+) -> *mut c_void {
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
     let entity = api::entity_to_hecs(entity);
     let Some(entry) = components.get(&comp) else {
         return std::ptr::null_mut();
     };
     match (entry.get_boxed)(world, entity) {
-        Some(bx) => Box::into_raw(Box::new(bx)) as *mut std::ffi::c_void,
+        Some(bx) => Box::into_raw(Box::new(bx)) as *mut c_void,
         None => std::ptr::null_mut(),
     }
 }
 
 extern "C" fn tramp_set(
-    ctx: *mut std::ffi::c_void,
     entity: u64,
     comp: u64,
-    data: *mut std::ffi::c_void,
+    data: *mut c_void,
 ) {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
     let boxed = unsafe { Box::from_raw(data as *mut Box<dyn Any>) };
     let entity = api::entity_to_hecs(entity);
     if let Some(entry) = components.get(&comp) {
@@ -197,12 +207,11 @@ extern "C" fn tramp_set(
 }
 
 extern "C" fn tramp_has(
-    ctx: *mut std::ffi::c_void,
     entity: u64,
     comp: u64,
 ) -> bool {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
     let entity = api::entity_to_hecs(entity);
     let Some(entry) = components.get(&comp) else {
         return false;
@@ -211,30 +220,28 @@ extern "C" fn tramp_has(
 }
 
 extern "C" fn tramp_remove(
-    ctx: *mut std::ffi::c_void,
     entity: u64,
     comp: u64,
 ) {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
     let entity = api::entity_to_hecs(entity);
     if let Some(entry) = components.get(&comp) {
         (entry.remove)(world, entity);
     }
 }
 
-extern "C" fn tramp_spawn(ctx: *mut std::ffi::c_void) -> u64 {
-    let se = unsafe { from_ptr(ctx) };
+extern "C" fn tramp_spawn() -> u64 {
+    let se = unsafe { from_engine() };
     se.spawn()
 }
 
 extern "C" fn tramp_spawn_bundle(
-    ctx: *mut std::ffi::c_void,
     comp_ids: *const u64,
-    comp_data: *const *mut std::ffi::c_void,
+    comp_data: *const *mut c_void,
     count: usize,
 ) -> u64 {
-    let se = unsafe { from_ptr(ctx) };
+    let se = unsafe { from_engine() };
     let ids = unsafe { std::slice::from_raw_parts(comp_ids, count) };
     let data = unsafe { std::slice::from_raw_parts(comp_data, count) };
     let mut components = Vec::with_capacity(count);
@@ -245,21 +252,20 @@ extern "C" fn tramp_spawn_bundle(
     se.spawn_bundle(components)
 }
 
-extern "C" fn tramp_destroy(ctx: *mut std::ffi::c_void, entity: u64) {
-    let world = unsafe { field::ecs_world(ctx) };
-    let entities = unsafe { field::entities(ctx) };
+extern "C" fn tramp_destroy(entity: u64) {
+    let world = unsafe { field::ecs_world() };
+    let entities = unsafe { field::entities() };
     let hecs_entity = api::entity_to_hecs(entity);
     let _ = world.despawn(hecs_entity);
     entities.retain(|&e| e != entity);
 }
 
-extern "C" fn tramp_clear_world(ctx: *mut std::ffi::c_void) {
-    let se = unsafe { from_ptr(ctx) };
+extern "C" fn tramp_clear_world() {
+    let se = unsafe { from_engine() };
     se.clear();
 }
 
 extern "C" fn tramp_query(
-    ctx: *mut std::ffi::c_void,
     require: *const u64,
     require_n: usize,
     exclude: *const u64,
@@ -267,9 +273,9 @@ extern "C" fn tramp_query(
     out: *mut u64,
     max: usize,
 ) -> usize {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
-    let entities = unsafe { field::entities(ctx) };
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
+    let entities = unsafe { field::entities() };
     let req = unsafe { std::slice::from_raw_parts(require, require_n) };
     let exc = if exclude.is_null() || exclude_n == 0 {
         &[]
@@ -316,15 +322,14 @@ extern "C" fn tramp_query(
 }
 
 extern "C" fn tramp_query_count(
-    ctx: *mut std::ffi::c_void,
     require: *const u64,
     require_n: usize,
     exclude: *const u64,
     exclude_n: usize,
 ) -> usize {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
-    let entities = unsafe { field::entities(ctx) };
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
+    let entities = unsafe { field::entities() };
     let req = unsafe { std::slice::from_raw_parts(require, require_n) };
     let exc = if exclude.is_null() || exclude_n == 0 {
         &[]
@@ -359,15 +364,14 @@ extern "C" fn tramp_query_count(
 }
 
 extern "C" fn tramp_query_matches(
-    ctx: *mut std::ffi::c_void,
     entity: u64,
     require: *const u64,
     require_n: usize,
     exclude: *const u64,
     exclude_n: usize,
 ) -> bool {
-    let world = unsafe { field::ecs_world(ctx) };
-    let components = unsafe { field::components(ctx) };
+    let world = unsafe { field::ecs_world() };
+    let components = unsafe { field::components() };
     let req = unsafe { std::slice::from_raw_parts(require, require_n) };
     let exc = if exclude.is_null() || exclude_n == 0 {
         &[]
@@ -386,7 +390,7 @@ extern "C" fn tramp_query_matches(
     req.iter().all(|&c| has_comp(c)) && !exc.iter().any(|&c| has_comp(c))
 }
 
-extern "C" fn tramp_free_value(ptr: *mut std::ffi::c_void) {
+extern "C" fn tramp_free_value(ptr: *mut c_void) {
     if !ptr.is_null() {
         unsafe {
             drop(Box::from_raw(ptr as *mut Box<dyn Any>));
@@ -396,7 +400,7 @@ extern "C" fn tramp_free_value(ptr: *mut std::ffi::c_void) {
 
 struct VtableSystem {
     func: crate::vtable::ExternSystemFn,
-    data: *mut std::ffi::c_void,
+    data: *mut c_void,
 }
 unsafe impl Send for VtableSystem {}
 
@@ -407,41 +411,39 @@ impl crate::schedule::System for VtableSystem {
 }
 
 extern "C" fn tramp_add_system(
-    ctx: *mut std::ffi::c_void,
     system_fn: crate::vtable::ExternSystemFn,
-    user_data: *mut std::ffi::c_void,
+    user_data: *mut c_void,
 ) {
-    let se = unsafe { from_ptr(ctx) };
+    let se = unsafe { from_engine() };
     let system = VtableSystem { func: system_fn, data: user_data };
     se.schedule.add_system(system);
 }
 
-extern "C" fn tramp_clear_systems(ctx: *mut std::ffi::c_void) {
-    let se = unsafe { from_ptr(ctx) };
+extern "C" fn tramp_clear_systems() {
+    let se = unsafe { from_engine() };
     se.schedule.clear();
 }
 
-extern "C" fn tramp_schedule_run(ctx: *mut std::ffi::c_void, delta_time: f32) {
+extern "C" fn tramp_schedule_run(delta_time: f32) {
     unsafe {
-        let schedule = field::schedule(ctx);
+        let schedule = field::schedule();
         schedule.run(delta_time);
     }
 }
 
-extern "C" fn tramp_initialize(ctx: *mut std::ffi::c_void, gamedir: *const u8, gamedir_len: usize) {
-    let se = unsafe { from_ptr(ctx) };
+extern "C" fn tramp_initialize(gamedir: *const u8, gamedir_len: usize) {
+    let se = unsafe { from_engine() };
     let gamedir = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(gamedir, gamedir_len)) };
     let _ = se.initialize(gamedir);
 }
 
-extern "C" fn tramp_frame(ctx: *mut std::ffi::c_void, delta_time: f32) -> i32 {
+extern "C" fn tramp_frame(delta_time: f32) -> i32 {
     unsafe {
         deerpunk_engine_common::cmd::cmd().frame();
-        let schedule = field::schedule(ctx);
+        let schedule = field::schedule();
         schedule.run(delta_time);
-        // Engine-internal: physics sync runs after all game systems
-        let world = field::ecs_world(ctx);
-        let physics = field::physics_world(ctx);
+        let world = field::ecs_world();
+        let physics = field::physics_world();
         deerpunk_engine_common::physics::physics_sync_in(physics, world);
         deerpunk_engine_common::physics::physics_step(physics, delta_time);
         deerpunk_engine_common::physics::physics_sync_out(physics, world);
@@ -449,33 +451,30 @@ extern "C" fn tramp_frame(ctx: *mut std::ffi::c_void, delta_time: f32) -> i32 {
     0
 }
 
-extern "C" fn tramp_shutdown(ctx: *mut std::ffi::c_void) {
-    let se = unsafe { from_ptr(ctx) };
+extern "C" fn tramp_shutdown() {
+    let se = unsafe { from_engine() };
     se.shutdown();
 }
 
 extern "C" fn tramp_with_world_mut(
-    ctx: *mut std::ffi::c_void,
     callback: crate::vtable::WorldMutCallback,
-    user_data: *mut std::ffi::c_void,
+    user_data: *mut c_void,
     _free_user_data: crate::vtable::FreeUserDataFn,
 ) {
-    let world = unsafe { field::ecs_world(ctx) };
-    callback(world as *mut hecs::World as *mut std::ffi::c_void, user_data);
+    let world = unsafe { field::ecs_world() };
+    callback(world as *mut hecs::World as *mut c_void, user_data);
 }
 
 // ── Physics trampolines ────────────────────────────────────────
 
-
-type PhysicsCallback = extern "C" fn(physics: *mut std::ffi::c_void, user_data: *mut std::ffi::c_void);
+type PhysicsCallback = extern "C" fn(physics: *mut c_void, user_data: *mut c_void);
 
 extern "C" fn tramp_with_physics(
-    ctx: *mut std::ffi::c_void,
     callback: PhysicsCallback,
-    user_data: *mut std::ffi::c_void,
+    user_data: *mut c_void,
 ) {
     unsafe {
-        let physics = field::physics_world(ctx);
-        callback(physics as *mut deerpunk_engine_common::physics::PhysicsWorld as *mut std::ffi::c_void, user_data);
+        let physics = field::physics_world();
+        callback(physics as *mut deerpunk_engine_common::physics::PhysicsWorld as *mut c_void, user_data);
     }
 }

@@ -19,6 +19,8 @@ tiny-skia = "0.11"
 pollster = "0.4"
 bytemuck = "1"
 raw-window-handle = "0.6"
+imgui = "0.12"
+imgui-wgpu = { path = "C:/Users/elekt/dev/imgui-wgpu-rs" }
 
 [package]
 name = "deerpunk"
@@ -33,5 +35,11 @@ path = "src/main.rs"
 deerpunk-engine-host = { path = "engine/host", features = ["full"] }
 deerpunk-engine-common = { path = "engine/common" }
 deerpunk-engine-client = { path = "engine/client" }
+deerpunk-engine-renderer = { path = "engine/renderer" }
+winit = "0.30"
+wgpu = "30"
+glam = "0.33"
 hecs = "0.11"
 inventory = "0.3"
+libloading = "0.8"
+image = "0.25"

@@ -44,7 +44,7 @@ impl PhysicsWorld {
         x: f32,
         y: f32,
         z: f32,
-        yaw: f32,
+        rotation: [f32; 3],
         collider: &ColliderDescriptor,
     ) -> RigidBodyHandle {
         let rb = match collider.body_type {
@@ -54,8 +54,8 @@ impl PhysicsWorld {
         };
 
         let (handle, _) = self.inner.insert(
-            rb.translation(Vec3::new(x, y, z))
-                .rotation(Vec3::new(0.0, 0.0, yaw)),
+            rb.translation(glam::Vec3::new(x, y, z))
+                .rotation(glam::Vec3::new(rotation[0], rotation[1], rotation[2])),
             self.make_collider(collider),
         );
 
@@ -71,7 +71,7 @@ impl PhysicsWorld {
         y: f32,
         collider: &ColliderDescriptor,
     ) -> RigidBodyHandle {
-        let handle = self.create_body(0, x, y, 0.0, 0.0, collider);
+        let handle = self.create_body(0, x, y, 0.0, [0.0; 3], collider);
         self.tile_body_map.insert((tx, ty), handle);
         handle
     }

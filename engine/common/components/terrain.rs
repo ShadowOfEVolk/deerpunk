@@ -1,3 +1,6 @@
+use crate::resource::mesh::Mesh;
+
+#[repr(C)]
 #[derive(Clone, Debug)]
 pub struct Terrain {
     pub heights: Vec<f32>,
@@ -54,5 +57,47 @@ impl Terrain {
         let x = x.max(0).min(self.cols as isize - 1) as usize;
         let z = z.max(0).min(self.rows as isize - 1) as usize;
         self.heights[z * self.cols + x]
+    }
+
+    pub fn build_mesh(&self) -> Mesh {
+        let mut positions = Vec::with_capacity(self.rows * self.cols * 4);
+        let mut normals = Vec::with_capacity(self.rows * self.cols * 4);
+        let mut uvs = Vec::with_capacity(self.rows * self.cols * 4);
+        let mut indices = Vec::with_capacity((self.rows - 1) * (self.cols - 1) * 6);
+
+        for z in 0..self.rows {
+            for x in 0..self.cols {
+                let px = x as f32 * self.cell_size;
+                let py = z as f32 * self.cell_size;
+                let h = self.world_height_at(x, z);
+                positions.push([px, py, h]);
+                uvs.push([x as f32 / (self.cols - 1) as f32, z as f32 / (self.rows - 1) as f32]);
+            }
+        }
+
+        for z in 0..self.rows {
+            for x in 0..self.cols {
+                let h_l = self.world_height_at(x.saturating_sub(1), z);
+                let h_r = self.world_height_at((x + 1).min(self.cols - 1), z);
+                let h_d = self.world_height_at(x, z.saturating_sub(1));
+                let h_u = self.world_height_at(x, (z + 1).min(self.rows - 1));
+                let dx = h_r - h_l;
+                let dy = h_u - h_d;
+                let len = (dx * dx + dy * dy + 4.0 * self.cell_size * self.cell_size).sqrt();
+                normals.push([-dx / len, -dy / len, 2.0 * self.cell_size / len]);
+            }
+        }
+
+        for z in 0..(self.rows - 1) {
+            for x in 0..(self.cols - 1) {
+                let tl = (z * self.cols + x) as u32;
+                let tr = (z * self.cols + x + 1) as u32;
+                let bl = ((z + 1) * self.cols + x) as u32;
+                let br = ((z + 1) * self.cols + x + 1) as u32;
+                indices.extend_from_slice(&[tl, tr, bl, tr, br, bl]);
+            }
+        }
+
+        Mesh { positions, normals, uvs, indices }
     }
 }

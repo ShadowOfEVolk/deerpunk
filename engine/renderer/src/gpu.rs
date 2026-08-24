@@ -323,6 +323,10 @@ pub struct Renderer {
     target_exposure: f32,
 
     shaders: ShaderSources,
+
+    // ImGui
+    imgui_ctx: Option<imgui::Context>,
+    imgui_wgpu: Option<imgui_wgpu::Renderer>,
 }
 
 impl Renderer {
@@ -1011,6 +1015,13 @@ impl Renderer {
             target_exposure: 0.5,
 
             shaders,
+
+            imgui_ctx: {
+                let mut ctx = imgui::Context::create();
+                ctx.set_ini_filename(None);
+                Some(ctx)
+            },
+            imgui_wgpu: None,
         }
     }
 
@@ -1051,6 +1062,22 @@ impl Renderer {
 
         self.ensure_hdr_texture(width, height);
         self.ensure_tonemap_pipeline(format);
+
+        // Initialize imgui-wgpu renderer with the surface format
+        if let Some(ctx) = &mut self.imgui_ctx {
+            let config = imgui_wgpu::RendererConfig {
+                texture_format: format,
+                depth_format: None,
+                sample_count: 1,
+                ..Default::default()
+            };
+            self.imgui_wgpu = Some(imgui_wgpu::Renderer::new(
+                ctx,
+                &self.device,
+                &self.queue,
+                config,
+            ));
+        }
     }
 
     fn ensure_hdr_texture(&mut self, width: u32, height: u32) {
@@ -1354,8 +1381,52 @@ impl Renderer {
         self.tonemap_mode = mode;
     }
 
+    // ── ImGui ────────────────────────────────────────────────────
+
+    pub fn imgui_context_ptr(&self) -> *mut std::ffi::c_void {
+        self.imgui_ctx.as_ref().map_or(std::ptr::null_mut(), |ctx| ctx as *const imgui::Context as *mut std::ffi::c_void)
+    }
+
+    pub fn imgui_begin_frame(&mut self, width: f32, height: f32) {
+        if let Some(ctx) = &mut self.imgui_ctx {
+            ctx.io_mut().display_size = [width, height];
+            unsafe { imgui::sys::igNewFrame(); }
+        }
+    }
+
+    pub fn imgui_end_frame_and_render(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+    ) {
+        if self.imgui_ctx.is_none() || self.imgui_wgpu.is_none() { return; }
+
+        unsafe { imgui::sys::igRender(); }
+
+        let draw_data_ptr = unsafe { imgui::sys::igGetDrawData() };
+        if draw_data_ptr.is_null() { return; }
+        let draw_data = unsafe { &*(draw_data_ptr as *const imgui::DrawData) };
+
+        if let Some(renderer) = &mut self.imgui_wgpu {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("imgui"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            let _ = renderer.render(draw_data, &self.queue, &self.device, &mut rpass);
+        }
+    }
+
     pub fn render_to_surface(&mut self, snapshot: &RenderSnapshot) -> Result<(), FrameError> {
-        // 1. Read back previous frame's luminance (if ready)
         // 1. Read back previous frame's luminance (if ready)
         self.process_lum_readback();
 
@@ -1381,6 +1452,9 @@ impl Renderer {
 
         let hdr_view = self.hdr_view.clone().expect("HDR texture not initialized");
         let mut encoder = self.encode_frame(snapshot, &hdr_view, format, Some(&surface_view));
+
+        // ImGui render pass (after all 3D passes, before present)
+        self.imgui_end_frame_and_render(&mut encoder, &surface_view);
 
         // 2. Copy luminance texture to staging buffer for next frame's readback
         if let (Some(lum_tex), false) = (&self.lum_texture, self.lum_mapped) {
@@ -2391,6 +2465,30 @@ impl Renderer {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.sky_globals_bg, &[]);
             pass.draw(0..3, 0..1);
+        } else {
+            // No sky — just clear to background color
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: snapshot.clear[0] as f64,
+                            g: snapshot.clear[1] as f64,
+                            b: snapshot.clear[2] as f64,
+                            a: snapshot.clear[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            drop(pass);
         }
 
         // --- Pass 0.5: volumetric clouds (after sky, before 3D) ---

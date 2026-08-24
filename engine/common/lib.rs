@@ -1,6 +1,8 @@
 pub mod cmd;
 pub mod components;
 pub mod cvar;
+pub mod flecs_sys;
+pub mod flecs_world;
 pub mod fs;
 pub mod input;
 pub mod ipc;
@@ -19,7 +21,8 @@ pub mod transform;
 
 pub use cmd::CmdSystem;
 pub use components::{
-    NetReplicatedComponent, SceneNode, SimpleCircleRenderer, SimpleEntity, Terrain,
+    CameraComponent, MeshRenderer, MeshTexture, NetReplicatedComponent, SceneNode,
+    SimpleCircleRenderer, SimpleEntity, Terrain, TerrainCollider, TerrainRenderer,
     TransformComponent,
 };
 pub use cvar::CvarSystem;

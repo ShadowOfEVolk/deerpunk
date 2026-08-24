@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 const KEYMAP_SIZE: usize = 32; // 256 keys
 
@@ -51,6 +51,11 @@ pub fn is_pressed(vk: VirtualKey) -> bool {
 
 pub fn is_up(vk: VirtualKey) -> bool {
     !is_down(vk)
+}
+
+pub fn set_mouse_delta(dx: f32, dy: f32) {
+    MOUSE_DX.fetch_add(dx as i32, Ordering::Relaxed);
+    MOUSE_DY.fetch_add(dy as i32, Ordering::Relaxed);
 }
 
 pub fn mouse_dx() -> f32 {

@@ -9,20 +9,7 @@ use std::sync::Arc;
 
 use tiny_skia::Pixmap;
 
-/// Текстура для 3D меша. Игра определяет слоты через `MeshTexture::slot(n)`.
-/// Движок предоставляет только `WHITE` (1×1 белая текстура по умолчанию).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MeshTexture(pub u32);
-
-impl MeshTexture {
-    /// Белая текстура по умолчанию (slot 0).
-    pub const WHITE: Self = Self(0);
-
-    /// Создаёт слот текстуры с произвольным номером.
-    pub const fn slot(n: u32) -> Self {
-        Self(n)
-    }
-}
+pub use deerpunk_engine_common::MeshTexture;
 
 /// Один draw-вызов меша в3D.
 #[derive(Clone)]

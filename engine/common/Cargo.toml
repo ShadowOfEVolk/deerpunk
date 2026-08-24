@@ -19,3 +19,6 @@ bincode = "1.3"
 rapier3d = { version = "0.35", features = ["dim3", "profiler"] }
 memmap2 = "0.9"
 interprocess = "2"
+
+[build-dependencies]
+cc = "1"
