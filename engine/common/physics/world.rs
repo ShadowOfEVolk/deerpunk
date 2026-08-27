@@ -315,7 +315,13 @@ impl PhysicsWorld {
                 cols,
                 scale,
             } => {
-                let array = rapier3d::geometry::Array2::new(*rows, *cols, heights.clone());
+                let mut cm = Vec::with_capacity(rows * cols);
+                for j in 0..*cols {
+                    for i in 0..*rows {
+                        cm.push(heights[i * cols + j]);
+                    }
+                }
+                let array = rapier3d::geometry::Array2::new(*rows, *cols, cm);
                 SharedShape::heightfield(array, Vec3::new(scale[0], scale[1], scale[2]).into())
             }
         };

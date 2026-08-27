@@ -1,0 +1,133 @@
+use crate::engine_api::engine_api::EngineApiMethod;
+use std::ffi::c_void;
+
+// ── World trampolines ─────────────────────────────────────────
+
+pub extern "C" fn tramp_get(engine: *mut u8, entity: u64, comp: u64) -> *mut c_void {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    let ptr = host.server_engine.world.get_raw(entity, comp);
+    if ptr.is_null() {
+        std::ptr::null_mut()
+    } else {
+        ptr as *mut c_void
+    }
+}
+
+pub extern "C" fn tramp_set(
+    engine: *mut u8,
+    entity: u64,
+    comp: u64,
+    data: *const c_void,
+    size: usize,
+) {
+    println!("set: entity={}, comp={}, size={}", entity, comp, size);
+    let host = unsafe { &*(engine as *const crate::Host) };
+    host.server_engine.world.set_raw(entity, comp, data, size);
+}
+
+pub extern "C" fn tramp_has(engine: *mut u8, entity: u64, comp: u64) -> bool {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    host.server_engine.world.has(entity, comp)
+}
+
+pub extern "C" fn tramp_remove(engine: *mut u8, entity: u64, comp: u64) {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    host.server_engine.world.remove(entity, comp);
+}
+
+pub extern "C" fn tramp_spawn(engine: *mut u8) -> u64 {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    host.server_engine.world.spawn()
+}
+
+pub extern "C" fn tramp_destroy(engine: *mut u8, entity: u64) {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    host.server_engine.world.destroy(entity);
+}
+
+pub extern "C" fn tramp_clear_world(engine: *mut u8) {
+    // TODO: clear all entities
+}
+
+pub extern "C" fn tramp_spawn_bundle(
+    _engine: *mut u8,
+    _comp_ids: *const u64,
+    _comp_data: *const *mut c_void,
+    _count: usize,
+) -> u64 {
+    // TODO: implement spawn_bundle
+    0
+}
+
+pub extern "C" fn tramp_query(
+    _engine: *mut u8,
+    _require: *const u64,
+    _require_n: usize,
+    _exclude: *const u64,
+    _exclude_n: usize,
+    _out: *mut u64,
+    _max: usize,
+) -> usize {
+    0
+}
+
+pub extern "C" fn tramp_query_count(
+    _engine: *mut u8,
+    _require: *const u64,
+    _require_n: usize,
+    _exclude: *const u64,
+    _exclude_n: usize,
+) -> usize {
+    0
+}
+
+pub extern "C" fn tramp_query_matches(
+    _engine: *mut u8,
+    _entity: u64,
+    _require: *const u64,
+    _require_n: usize,
+    _exclude: *const u64,
+    _exclude_n: usize,
+) -> bool {
+    false
+}
+
+pub extern "C" fn tramp_free_value(_engine: *mut u8, _ptr: *mut c_void) {
+    // get returns a pointer to Flecs internal storage — do NOT free it
+}
+
+pub extern "C" fn tramp_component_init_raw(
+    engine: *mut u8,
+    name_ptr: *const u8,
+    name_len: usize,
+    size: usize,
+    align: usize,
+) -> u64 {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    let name = unsafe {
+        let bytes = std::slice::from_raw_parts(name_ptr, name_len);
+        std::str::from_utf8_unchecked(bytes)
+    };
+    let desc = crate::world::ComponentDescriptor {
+        name: name.to_string(),
+        size,
+        align,
+    };
+    host.server_engine.world.component_init_raw(&desc)
+}
+
+// ── Inventory registrations ──────────────────────────────────
+
+inventory::submit! { EngineApiMethod { name: "v1:world:get", callback: tramp_get as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:set", callback: tramp_set as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:has", callback: tramp_has as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:remove", callback: tramp_remove as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:spawn", callback: tramp_spawn as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:destroy", callback: tramp_destroy as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:clear", callback: tramp_clear_world as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:spawn_bundle", callback: tramp_spawn_bundle as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:query", callback: tramp_query as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:query_count", callback: tramp_query_count as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:query_matches", callback: tramp_query_matches as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:free_value", callback: tramp_free_value as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:component_init_raw", callback: tramp_component_init_raw as *const (), flags: 0 } }

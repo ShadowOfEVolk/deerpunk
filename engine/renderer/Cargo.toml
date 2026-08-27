@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 deerpunk-engine-common = { path = "../common" }
-deerpunk-engine-client = { path = "../client" }
+glam = { version = "0.33", features = ["serde"] }
 tiny-skia.workspace = true
 wgpu.workspace = true
 pollster.workspace = true

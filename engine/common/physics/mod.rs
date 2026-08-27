@@ -2,7 +2,7 @@ pub mod run;
 pub mod world;
 
 use glam::Vec3;
-pub use run::{physics_step, physics_sync_in, physics_sync_out};
+pub use run::physics_step;
 pub use world::{
     categories, BodyType, ColliderDescriptor, ColliderShape, PhysicsWorld, RapierProfile, RayHit,
     Sensor,
@@ -40,8 +40,8 @@ impl RigidBodyHandle {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhysicsBodyDesc {
-    pub body_type: u32,      // 0=static, 1=dynamic, 2=kinematic
-    pub shape_type: u32,     // 0=box, 1=ball, 2=capsule
+    pub body_type: u32,         // 0=static, 1=dynamic, 2=kinematic
+    pub shape_type: u32,        // 0=box, 1=ball, 2=capsule
     pub shape_params: [f32; 4], // box=[hx,hy,hz,0], ball=[r,0,0,0], capsule=[hh,r,0,0]
     pub category_bits: u32,
     pub mask_bits: u32,
@@ -106,7 +106,11 @@ impl PhysicsBodyDesc {
 
     pub fn to_collider_descriptor(&self) -> ColliderDescriptor {
         let shape = match self.shape_type {
-            0 => ColliderShape::Box([self.shape_params[0], self.shape_params[1], self.shape_params[2]]),
+            0 => ColliderShape::Box([
+                self.shape_params[0],
+                self.shape_params[1],
+                self.shape_params[2],
+            ]),
             1 => ColliderShape::Ball(self.shape_params[0]),
             _ => ColliderShape::Box([0.5, 0.5, 0.5]),
         };

@@ -1,57 +1,176 @@
-/// Entity handle — opaque u64 wrapping hecs::Entity bits.
+use std::ffi::c_void;
+
+use crate::Resolver;
+
 pub type EntityId = u64;
+pub type ComponentId = u64;
 
-/// Type-erased system closure: receives world reference + delta time.
-pub type SystemFn = Box<dyn FnMut(&mut hecs::World, f32) + Send>;
+fn resolve(r: Resolver, name: &str) -> *const () {
+    let bytes = name.as_bytes();
+    let ptr = r(bytes.as_ptr(), bytes.len());
+    if ptr.is_null() {
+        panic!("[engine-api] unresolved method: {}", name);
+    }
+    ptr
+}
 
-/// Access to the ECS world: entity lifecycle, component management,
-/// system registration, and prefab spawning.
-pub trait WorldApi {
-    // ── Registration ──────────────────────────────────────────
+pub struct WorldApiResolved {
+    ctx: *mut u8,
+    get_fn: extern "C" fn(*mut u8, u64, u64) -> *mut c_void,
+    set_fn: extern "C" fn(*mut u8, u64, u64, *const c_void, usize),
+    has_fn: extern "C" fn(*mut u8, u64, u64) -> bool,
+    remove_fn: extern "C" fn(*mut u8, u64, u64),
+    spawn_fn: extern "C" fn(*mut u8) -> u64,
+    spawn_bundle_fn: extern "C" fn(*mut u8, *const u64, *const *mut c_void, usize) -> u64,
+    destroy_fn: extern "C" fn(*mut u8, u64),
+    clear_fn: extern "C" fn(*mut u8),
+    query_fn:
+        extern "C" fn(*mut u8, *const u64, usize, *const u64, usize, *mut u64, usize) -> usize,
+    query_count_fn: extern "C" fn(*mut u8, *const u64, usize, *const u64, usize) -> usize,
+    query_matches_fn: extern "C" fn(*mut u8, u64, *const u64, usize, *const u64, usize) -> bool,
+    component_init_raw_fn: extern "C" fn(*mut u8, *const u8, usize, usize, usize) -> u64,
+}
 
-    /// Register a component type by name for prefab deserialization.
-    fn components_register(&self, type_name: &str);
+unsafe impl Send for WorldApiResolved {}
+unsafe impl Sync for WorldApiResolved {}
 
-    /// Register a system closure that runs each frame on the world.
-    fn add_system(&self, system: SystemFn);
+impl WorldApiResolved {
+    pub fn new(ctx: *mut u8, r: Resolver) -> Self {
+        Self {
+            ctx,
+            get_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:get")) },
+            set_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:set")) },
+            has_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:has")) },
+            remove_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:remove")) },
+            spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn")) },
+            spawn_bundle_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn_bundle")) },
+            destroy_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:destroy")) },
+            clear_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:clear")) },
+            query_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query")) },
+            query_count_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_count")) },
+            query_matches_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_matches")) },
+            component_init_raw_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:component_init_raw")) },
+        }
+    }
 
-    // ── Entity lifecycle ──────────────────────────────────────
+    pub fn get_raw(&self, entity: EntityId, comp: ComponentId) -> Option<*const c_void> {
+        let ptr = (self.get_fn)(self.ctx, entity, comp);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(ptr as *const c_void)
+        }
+    }
 
-    /// Spawn an empty entity. Returns its id.
-    fn spawn(&self) -> EntityId;
+    pub fn get<T: Copy>(&self, entity: EntityId, comp: ComponentId) -> Option<T> {
+        let ptr = (self.get_fn)(self.ctx, entity, comp);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::ptr::read_unaligned(ptr as *const T) })
+        }
+    }
 
-    /// Destroy an entity and all its components.
-    fn destroy(&self, entity: EntityId);
+    pub fn set_raw(&self, entity: EntityId, comp: ComponentId, ptr: *const c_void, size: usize) {
+        (self.set_fn)(self.ctx, entity, comp, ptr, size);
+    }
 
-    /// Spawn entities from a prefab file at `path`.
-    fn spawn_prefab(&self, path: &str) -> Vec<EntityId>;
+    pub fn set<T>(&self, entity: EntityId, comp: ComponentId, value: T) {
+        let ptr = &value as *const T as *const c_void;
+        let size = std::mem::size_of::<T>();
+        (self.set_fn)(self.ctx, entity, comp, ptr, size);
+        std::mem::forget(value);
+    }
 
-    /// Remove all entities from the world.
-    fn clear(&self);
+    pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {
+        (self.has_fn)(self.ctx, entity, comp)
+    }
 
-    // ── Component access ──────────────────────────────────────
+    pub fn remove(&self, entity: EntityId, comp: ComponentId) {
+        (self.remove_fn)(self.ctx, entity, comp);
+    }
 
-    /// Add a component to an existing entity.
-    fn components_add(&self, entity: EntityId, type_name: &str, data: &[u8]);
+    pub fn spawn(&self) -> EntityId {
+        (self.spawn_fn)(self.ctx)
+    }
 
-    /// Read a component's raw bytes (copy).
-    fn components_get(&self, entity: EntityId, type_name: &str) -> Option<Vec<u8>>;
+    pub fn spawn_bundle_raw(&self, components: &[(ComponentId, *const c_void, usize)]) -> EntityId {
+        let count = components.len();
+        if count == 0 {
+            return self.spawn();
+        }
+        let ids: Vec<u64> = components.iter().map(|(id, _, _)| *id).collect();
+        let data: Vec<*mut c_void> = components
+            .iter()
+            .map(|(_, ptr, _)| *ptr as *mut c_void)
+            .collect();
+        (self.spawn_bundle_fn)(self.ctx, ids.as_ptr(), data.as_ptr(), count)
+    }
 
-    /// Mutable access to a component's raw bytes (copy).
-    fn components_get_mut(&self, entity: EntityId, type_name: &str) -> Option<Vec<u8>>;
+    pub fn spawn_bundle(&self, components: Vec<(ComponentId, Box<dyn std::any::Any>)>) -> EntityId {
+        let count = components.len();
+        if count == 0 {
+            return self.spawn();
+        }
+        let ids: Vec<u64> = components.iter().map(|(id, _)| *id).collect();
+        let data: Vec<*mut c_void> = components
+            .into_iter()
+            .map(|(_, d)| Box::into_raw(d) as *const u8 as *mut c_void)
+            .collect();
+        (self.spawn_bundle_fn)(self.ctx, ids.as_ptr(), data.as_ptr(), count)
+    }
 
-    /// Remove a component from an entity.
-    fn components_remove(&self, entity: EntityId, type_name: &str);
+    pub fn destroy(&self, entity: EntityId) {
+        (self.destroy_fn)(self.ctx, entity);
+    }
 
-    // ── Queries ───────────────────────────────────────────────
+    pub fn clear(&self) {
+        (self.clear_fn)(self.ctx);
+    }
 
-    /// Entity ids that possess every component in `require`
-    /// and none in `exclude`.
-    fn query(&self, require: &[&str], exclude: &[&str]) -> Vec<EntityId>;
+    pub fn query(&self, require: &[ComponentId], exclude: &[ComponentId]) -> Vec<EntityId> {
+        let max = 4096;
+        let mut buf = vec![0u64; max];
+        let count = (self.query_fn)(
+            self.ctx,
+            require.as_ptr(),
+            require.len(),
+            exclude.as_ptr(),
+            exclude.len(),
+            buf.as_mut_ptr(),
+            max,
+        );
+        buf.truncate(count);
+        buf
+    }
 
-    /// Count entities matching the query.
-    fn query_count(&self, require: &[&str], exclude: &[&str]) -> usize;
+    pub fn query_count(&self, require: &[ComponentId], exclude: &[ComponentId]) -> usize {
+        (self.query_count_fn)(
+            self.ctx,
+            require.as_ptr(),
+            require.len(),
+            exclude.as_ptr(),
+            exclude.len(),
+        )
+    }
 
-    /// Check if a specific entity matches the query.
-    fn query_matches(&self, entity: EntityId, require: &[&str], exclude: &[&str]) -> bool;
+    pub fn query_matches(
+        &self,
+        entity: EntityId,
+        require: &[ComponentId],
+        exclude: &[ComponentId],
+    ) -> bool {
+        (self.query_matches_fn)(
+            self.ctx,
+            entity,
+            require.as_ptr(),
+            require.len(),
+            exclude.as_ptr(),
+            exclude.len(),
+        )
+    }
+
+    pub fn component_init_raw(&self, name: &str, size: usize, align: usize) -> ComponentId {
+        (self.component_init_raw_fn)(self.ctx, name.as_ptr(), name.len(), size, align)
+    }
 }

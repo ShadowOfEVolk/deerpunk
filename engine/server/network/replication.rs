@@ -57,5 +57,3 @@ impl ServerReplication {
         }
     }
 }
-
-deerpunk_engine_common::singleton_system!(server_replication, ServerReplication);

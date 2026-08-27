@@ -283,3 +283,154 @@ pub fn rgba_u8_4(rgba: [u8; 4]) -> [f32; 4] {
         rgba[3] as f32 / 255.0,
     ]
 }
+
+// ── Scene building ───────────────────────────────────────────────────
+
+/// Куда камера рендерит (аналог Unity Camera.target).
+#[derive(Clone, Debug)]
+pub enum RenderTarget {
+    Surface,
+    Texture {
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    },
+    None,
+}
+
+/// Определение камеры в сцене.
+#[derive(Clone)]
+pub struct CameraDefinition {
+    pub position: [f32; 3],
+    pub rotation: glam::Quat,
+    pub fov_y: f32,
+    pub near: f32,
+    pub far: f32,
+    pub target: RenderTarget,
+    pub dirty: bool,
+}
+
+impl Default for CameraDefinition {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0, 5.0],
+            rotation: glam::Quat::IDENTITY,
+            fov_y: 60.0_f32.to_radians(),
+            near: 0.1,
+            far: 1024.0,
+            target: RenderTarget::Surface,
+            dirty: true,
+        }
+    }
+}
+
+impl CameraDefinition {
+    pub fn view_matrix(&self) -> glam::Mat4 {
+        let eye = glam::Vec3::from(self.position);
+        let forward = self.rotation * glam::Vec3::NEG_Z;
+        let up = self.rotation * glam::Vec3::Y;
+        glam::Mat4::look_to_rh(eye, forward, up)
+    }
+
+    pub fn projection_matrix(&self, aspect: f32) -> glam::Mat4 {
+        glam::Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far)
+    }
+}
+
+/// Render graph привязанный к камере. Перестраивается при dirty flag.
+pub struct CameraRenderGraph {
+    pub graph: crate::render_graph::RenderGraph,
+    pub dirty: bool,
+}
+
+impl CameraRenderGraph {
+    pub fn new(graph: crate::render_graph::RenderGraph) -> Self {
+        Self { graph, dirty: true }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+}
+
+/// Геометрия сцены — всё что можно рендерить.
+#[derive(Clone)]
+pub struct SceneGeometry {
+    pub mesh_draws: Vec<MeshDraw>,
+    pub sky: Option<SkyDraw>,
+}
+
+impl Default for SceneGeometry {
+    fn default() -> Self {
+        Self {
+            mesh_draws: Vec::new(),
+            sky: None,
+        }
+    }
+}
+
+/// Собранный снапшот одной камеры: видимая геометрия + матрицы.
+#[derive(Clone)]
+pub struct CameraRenderSnapshot {
+    pub view: glam::Mat4,
+    pub projection: glam::Mat4,
+    pub view_proj: glam::Mat4,
+    pub visible_meshes: Vec<MeshDraw>,
+    pub sky: Option<SkyDraw>,
+    pub clear: [f32; 4],
+    pub game_time: f32,
+    pub target: RenderTarget,
+}
+
+/// Полная сцена рендеринга — камеры + геометрия.
+pub struct RenderScene {
+    pub cameras: Vec<CameraDefinition>,
+    pub geometry: SceneGeometry,
+    pub clear: [f32; 4],
+    pub game_time: f32,
+}
+
+impl RenderScene {
+    pub fn new() -> Self {
+        Self {
+            cameras: Vec::new(),
+            geometry: SceneGeometry::default(),
+            clear: [0.1, 0.1, 0.15, 1.0],
+            game_time: 0.0,
+        }
+    }
+
+    pub fn push_camera(&mut self, cam: CameraDefinition) {
+        self.cameras.push(cam);
+    }
+
+    pub fn set_geometry(&mut self, geo: SceneGeometry) {
+        self.geometry = geo;
+    }
+
+    /// Для каждой камеры строит CameraRenderSnapshot с frustum-culled
+    /// геометрией и view/proj матрицами.
+    pub fn build_snapshots(&self, aspect: f32) -> Vec<CameraRenderSnapshot> {
+        self.cameras
+            .iter()
+            .map(|cam| {
+                let view = cam.view_matrix();
+                let projection = cam.projection_matrix(aspect);
+                let view_proj = projection * view;
+
+                let visible_meshes = self.geometry.mesh_draws.clone();
+
+                CameraRenderSnapshot {
+                    view,
+                    projection,
+                    view_proj,
+                    visible_meshes,
+                    sky: self.geometry.sky,
+                    clear: self.clear,
+                    game_time: self.game_time,
+                    target: cam.target.clone(),
+                }
+            })
+            .collect()
+    }
+}

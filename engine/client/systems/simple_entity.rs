@@ -1,6 +1,5 @@
 use deerpunk_engine_common::{SimpleEntity, TransformComponent};
 use glam::Quat;
-use hecs::{Entity, World};
 
 const SCREEN_WIDTH: f32 = 800.0;
 const SCREEN_HEIGHT: f32 = 600.0;

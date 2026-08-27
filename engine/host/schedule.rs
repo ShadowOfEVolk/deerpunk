@@ -14,7 +14,9 @@ pub struct Schedule {
 
 impl Schedule {
     pub fn new() -> Self {
-        Self { systems: Vec::new() }
+        Self {
+            systems: Vec::new(),
+        }
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) -> &mut Self {

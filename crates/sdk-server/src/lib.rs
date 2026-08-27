@@ -155,19 +155,8 @@ impl EngineApi {
 
     // ── Physics ─────────────────────────────────────────────────
 
-    pub fn with_physics<R>(&self, f: impl FnOnce(&deerpunk_engine_host::common::physics::PhysicsWorld) -> R) -> R {
-        let physics_ptr = unsafe {
-            deerpunk_engine_host::physics_ptr_from_ctx()
-        };
-        f(unsafe { &*physics_ptr })
-    }
-
-    pub fn with_physics_mut<R>(&self, f: impl FnOnce(&mut deerpunk_engine_host::common::physics::PhysicsWorld) -> R) -> R {
-        let physics_ptr = unsafe {
-            deerpunk_engine_host::physics_ptr_from_ctx()
-        };
-        f(unsafe { &mut *physics_ptr })
-    }
+    // Note: physics access now goes through engine context (MethodDB resolver pattern).
+    // Direct physics world access via global ctx is removed.
 
     // ── Schedule shortcuts ─────────────────────────────────────
 

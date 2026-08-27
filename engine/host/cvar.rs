@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-/// Регистрируется через `inventory::submit!` в любом крейте бинарника.
-/// Автоматически собирается при `CvarSystem::initialize()`.
 pub struct CvarDef {
     pub name: &'static str,
     pub default: &'static str,
@@ -11,7 +9,6 @@ pub struct CvarDef {
 
 inventory::collect!(CvarDef);
 
-/// Runtime-репозиторий кваров. Значения — строки, парсятся на месте.
 pub struct CvarSystem {
     initialized: bool,
     values: RwLock<HashMap<String, String>>,
@@ -25,7 +22,6 @@ impl CvarSystem {
         }
     }
 
-    /// Собирает все `CvarDef` из inventory и применяет дефолты.
     pub fn initialize(&mut self) {
         self.initialized = true;
         let mut values = self.values.write().expect("cvars write lock");
@@ -39,7 +35,6 @@ impl CvarSystem {
         self.values.write().expect("cvars write lock").clear();
     }
 
-    /// Установить значение квара. Возвращает `false` если кvar не найден.
     pub fn set(&self, name: &str, value: &str) -> bool {
         let mut map = self.values.write().expect("cvars write lock");
         if map.contains_key(name) {
@@ -50,7 +45,6 @@ impl CvarSystem {
         }
     }
 
-    /// Установить значение квара, создав его если нет (для .cfg где мог быть опечатан).
     pub fn set_or_create(&self, name: &str, value: &str) {
         self.values.write().expect("cvars write lock").insert(name.to_string(), value.to_string());
     }
@@ -88,7 +82,6 @@ impl CvarSystem {
         self.get_bool(name).unwrap_or(default)
     }
 
-    /// Список всех зарегистрированных кваров с их текущими значениями.
     pub fn dump(&self) -> Vec<(String, String)> {
         let map = self.values.read().expect("cvars read lock");
         let mut list: Vec<_> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -96,8 +89,6 @@ impl CvarSystem {
         list
     }
 }
-
-crate::singleton_system!(cvar, CvarSystem);
 
 impl Default for CvarSystem {
     fn default() -> Self {

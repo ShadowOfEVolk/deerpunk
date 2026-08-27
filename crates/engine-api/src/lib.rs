@@ -2,19 +2,95 @@ pub mod app;
 pub mod audio;
 pub mod cmd;
 pub mod cvar;
+pub mod imgui;
+pub mod input;
 pub mod physics;
 pub mod renderer;
 pub mod resources;
+pub mod schedule;
 pub mod version;
 pub mod world;
 
-pub trait EngineApi {
-    fn app(&self) -> &dyn app::AppApi;
-    fn renderer(&self) -> &dyn renderer::RendererApi;
-    fn audio(&self) -> &dyn audio::AudioApi;
-    fn physics(&self) -> &dyn physics::PhysicsApi;
-    fn world(&self) -> &dyn world::WorldApi;
-    fn cmd(&self) -> &dyn cmd::CmdApi;
-    fn cvar(&self) -> &dyn cvar::CvarApi;
-    fn resources(&self) -> &dyn resources::ResourcesApi;
+use std::ffi::c_void;
+
+pub type EntityId = u64;
+pub type ComponentId = u64;
+
+pub type Resolver = extern "C" fn(*const u8, usize) -> *const ();
+
+// ── ServerInitData (mirrors host's repr(C) struct) ──────────
+
+#[repr(C)]
+pub struct ServerInitData {
+    pub version: u32,
+    pub ctx: *mut u8,
+    pub resolver: Resolver,
+}
+
+// ── EngineApi (top-level) ──────────────────────────────────────
+
+pub struct EngineApi {
+    pub ctx: *mut u8,
+    pub world: world::WorldApiResolved,
+    pub schedule: schedule::ScheduleApi,
+    pub input: input::InputApi,
+    pub imgui: imgui::ImGuiApi,
+    pub physics: physics::PhysicsApiResolved,
+
+    pub initialize: extern "C" fn(*mut u8, *const u8, usize),
+    pub frame: extern "C" fn(*mut u8, f32) -> i32,
+    pub shutdown: extern "C" fn(*mut u8),
+    pub with_world_mut: extern "C" fn(
+        *mut u8,
+        callback: extern "C" fn(*mut c_void, *mut c_void),
+        user_data: *mut c_void,
+        free_user_data: extern "C" fn(*mut c_void),
+    ),
+}
+
+fn resolve_fn(r: Resolver, name: &str) -> *const () {
+    let bytes = name.as_bytes();
+    let ptr = r(bytes.as_ptr(), bytes.len());
+    if ptr.is_null() {
+        panic!("[engine-api] unresolved method: {}", name);
+    }
+    ptr
+}
+
+unsafe impl Send for EngineApi {}
+unsafe impl Sync for EngineApi {}
+
+impl EngineApi {
+    pub fn new(ctx: *mut u8, resolver: Resolver) -> Self {
+        Self {
+            ctx,
+            world: world::WorldApiResolved::new(ctx, resolver),
+            schedule: schedule::ScheduleApi::new(ctx, resolver),
+            input: input::InputApi::new(ctx, resolver),
+            imgui: imgui::ImGuiApi::new(ctx, resolver),
+            physics: physics::PhysicsApiResolved::new(ctx, resolver),
+
+            initialize: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:initialize")) },
+            frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },
+            shutdown: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:shutdown")) },
+            with_world_mut: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:with_world_mut")) },
+        }
+    }
+
+    pub fn initialize_api(&self, gamedir: &str) {
+        let bytes = gamedir.as_bytes();
+        (self.initialize)(self.ctx, bytes.as_ptr(), bytes.len());
+    }
+
+    pub fn frame_api(&self, delta_time: f32) -> Result<(), String> {
+        if (self.frame)(self.ctx, delta_time) == 0 {
+            Ok(())
+        } else {
+            Err("frame failed".to_string())
+        }
+    }
+
+    pub fn shutdown_api(&self) {
+        (self.shutdown)(self.ctx);
+    }
 }

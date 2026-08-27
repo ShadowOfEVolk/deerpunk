@@ -1,12 +1,18 @@
 pub mod debug_draw;
 pub mod font;
 pub mod gpu;
+pub mod mesh_allocator;
+pub mod render_graph;
 pub mod snapshot;
 pub mod text_util;
 
 pub use gpu::{FrameError, Renderer, ShaderSources};
+pub use mesh_allocator::{MeshAllocator, MeshHandle, MESH_INDEX_SIZE, MESH_VERTEX_SIZE};
+pub use render_graph::{GraphError, Node, NodeContext, RenderGraph, ResId, Resource, TexturePool};
 pub use snapshot::{
-    Instance, MeshTexture, RenderSnapshot, Shape, SkyDraw, StormDraw, TexSel, rgba_u8, rgba_u8_4,
+    CameraDefinition, CameraRenderGraph, CameraRenderSnapshot, Instance, MeshTexture, RenderScene,
+    RenderSnapshot, RenderTarget, SceneGeometry, Shape, SkyDraw, StormDraw, TexSel, rgba_u8,
+    rgba_u8_4,
 };
 pub use font::{
     build_font_atlas, push_char, push_text, push_text_centered_shadow, push_text_shadow,
