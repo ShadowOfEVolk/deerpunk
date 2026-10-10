@@ -29,6 +29,8 @@ pub struct WorldApiResolved {
     query_count_fn: extern "C" fn(*mut u8, *const u64, usize, *const u64, usize) -> usize,
     query_matches_fn: extern "C" fn(*mut u8, u64, *const u64, usize, *const u64, usize) -> bool,
     component_init_raw_fn: extern "C" fn(*mut u8, *const u8, usize, usize, usize) -> u64,
+    query_prepare_fn: extern "C" fn(*mut u8, *const u8, usize) -> u32,
+    query_execute_fn: extern "C" fn(*mut u8, u32, extern "C" fn(u64, *const *const c_void, usize, *mut c_void), *mut c_void),
 }
 
 unsafe impl Send for WorldApiResolved {}
@@ -50,6 +52,8 @@ impl WorldApiResolved {
             query_count_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_count")) },
             query_matches_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_matches")) },
             component_init_raw_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:component_init_raw")) },
+            query_prepare_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_prepare")) },
+            query_execute_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_execute")) },
         }
     }
 
@@ -172,5 +176,18 @@ impl WorldApiResolved {
 
     pub fn component_init_raw(&self, name: &str, size: usize, align: usize) -> ComponentId {
         (self.component_init_raw_fn)(self.ctx, name.as_ptr(), name.len(), size, align)
+    }
+
+    pub fn query_prepare(&self, expression: &str) -> u32 {
+        (self.query_prepare_fn)(self.ctx, expression.as_ptr(), expression.len())
+    }
+
+    pub fn query_execute(
+        &self,
+        query_id: u32,
+        callback: extern "C" fn(u64, *const *const c_void, usize, *mut c_void),
+        ctx: *mut c_void,
+    ) {
+        (self.query_execute_fn)(self.ctx, query_id, callback, ctx);
     }
 }

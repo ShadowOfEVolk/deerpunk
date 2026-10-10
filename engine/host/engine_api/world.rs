@@ -46,7 +46,13 @@ pub extern "C" fn tramp_destroy(engine: *mut u8, entity: u64) {
 }
 
 pub extern "C" fn tramp_clear_world(engine: *mut u8) {
-    // TODO: clear all entities
+    let host = unsafe { &*(engine as *const crate::Host) };
+    let world = &host.server_engine.world;
+    let ids: Vec<u64> = world.inspect_entities().into_iter().map(|e| e.id).collect();
+    log::info!("[world] clear — destroying {} entities", ids.len());
+    for id in ids {
+        world.destroy(id);
+    }
 }
 
 pub extern "C" fn tramp_spawn_bundle(
@@ -92,6 +98,43 @@ pub extern "C" fn tramp_query_matches(
     false
 }
 
+pub extern "C" fn tramp_query_prepare(
+    engine: *mut u8,
+    expr_ptr: *const u8,
+    expr_len: usize,
+) -> u32 {
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    let expr = unsafe {
+        let bytes = std::slice::from_raw_parts(expr_ptr, expr_len);
+        std::str::from_utf8_unchecked(bytes)
+    };
+    host.server_engine.world.query_prepare(expr) as u32
+}
+
+pub extern "C" fn tramp_query_execute(
+    engine: *mut u8,
+    query_id: u32,
+    callback: extern "C" fn(u64, *const *const c_void, usize, *mut c_void),
+    ctx: *mut c_void,
+) {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    let qid = query_id as usize;
+    if let Some(batches) = host.server_engine.world.query_batches(qid) {
+        for batch in batches {
+            let entities = unsafe {
+                std::slice::from_raw_parts(batch.entities, batch.count)
+            };
+            let field_count = batch.columns.len();
+            for (i, &entity) in entities.iter().enumerate() {
+                let fields: Vec<*const c_void> = (0..field_count)
+                    .map(|f| unsafe { batch.columns[f].add(i * batch.sizes[f]) })
+                    .collect();
+                callback(entity, fields.as_ptr(), field_count, ctx);
+            }
+        }
+    }
+}
+
 pub extern "C" fn tramp_free_value(_engine: *mut u8, _ptr: *mut c_void) {
     // get returns a pointer to Flecs internal storage — do NOT free it
 }
@@ -131,3 +174,5 @@ inventory::submit! { EngineApiMethod { name: "v1:world:query_count", callback: t
 inventory::submit! { EngineApiMethod { name: "v1:world:query_matches", callback: tramp_query_matches as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:world:free_value", callback: tramp_free_value as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:world:component_init_raw", callback: tramp_component_init_raw as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:query_prepare", callback: tramp_query_prepare as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:world:query_execute", callback: tramp_query_execute as *const (), flags: 0 } }

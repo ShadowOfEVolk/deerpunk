@@ -3,6 +3,8 @@ pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    /// Per-vertex texture-array layer (empty → layer 0). Used by BSP world buckets.
+    pub tex_layers: Vec<f32>,
     pub indices: Vec<u32>,
 }
 
@@ -12,6 +14,7 @@ impl Mesh {
             positions: Vec::new(),
             normals: Vec::new(),
             uvs: Vec::new(),
+            tex_layers: Vec::new(),
             indices: Vec::new(),
         }
     }
@@ -42,7 +45,13 @@ impl Mesh {
     /// Создаёт простой куб как fallback-меш (центрирован, 2×2×2, 6 граней по 2 треугольника).
     pub fn cube() -> Self {
         let (p, n, u, i) = build_cube();
-        Self { positions: p, normals: n, uvs: u, indices: i }
+        Self {
+            positions: p,
+            normals: n,
+            uvs: u,
+            tex_layers: Vec::new(),
+            indices: i,
+        }
     }
 }
 
@@ -65,7 +74,7 @@ fn build_cube() -> (Vec<[f32;3]>, Vec<[f32;3]>, Vec<[f32;2]>, Vec<u32>) {
         pos.extend_from_slice(&[*v0, *v1, *v2, *v3]);
         nrm.extend_from_slice(&[*n, *n, *n, *n]);
         uv.extend_from_slice(&uvs);
-        idx.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+        idx.extend_from_slice(&[base, base+2, base+1, base, base+3, base+2]);
     }
     (pos, nrm, uv, idx)
 }

@@ -1,2 +1,0 @@
-[cfg] executing configs/autoexec.cfg
-[frame] 1280x720

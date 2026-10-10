@@ -1,0 +1,18 @@
+[package]
+name = "deerpunk-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "RmlUi integration for deerpunk (document-as-entity UI)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+log = { workspace = true }
+deerpunk-engine-common = { path = "../../engine/common" }
+image = "0.25"
+
+[build-dependencies]
+bindgen = "0.69"
+cmake = "0.1"

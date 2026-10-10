@@ -9,6 +9,25 @@ fn resolve(r: Resolver, name: &str) -> *const () {
     ptr
 }
 
+// USB HID Scancode constants (cross-platform, layout-independent)
+pub const KEY_A: u16 = 4;
+pub const KEY_D: u16 = 7;
+pub const KEY_S: u16 = 22;
+pub const KEY_W: u16 = 26;
+pub const KEY_SPACE: u16 = 44;
+pub const KEY_TAB: u16 = 43;
+pub const KEY_ESCAPE: u16 = 41;
+pub const KEY_RIGHT: u16 = 79;
+pub const KEY_LEFT: u16 = 80;
+pub const KEY_DOWN: u16 = 81;
+pub const KEY_UP: u16 = 82;
+pub const KEY_F1: u16 = 58;
+pub const KEY_F2: u16 = 59;
+pub const KEY_F3: u16 = 60;
+pub const KEY_F4: u16 = 61;
+pub const KEY_LCTRL: u16 = 224;
+pub const KEY_LSHIFT: u16 = 225;
+
 pub struct InputApi {
     ctx: *mut u8,
     is_key_down_fn: extern "C" fn(*mut u8, u32) -> bool,

@@ -14,13 +14,31 @@ pub use deerpunk_engine_common::MeshTexture;
 /// Один draw-вызов меша в3D.
 #[derive(Clone)]
 pub struct MeshDraw {
-    pub mesh: deerpunk_engine_common::resource::mesh::Mesh,
+    pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
     pub model_mat: [[f32; 4]; 4],
-    pub color: [f32; 4],
+    pub material_id: u32,
     pub texture: MeshTexture,
-    /// Направление на солнце (xyz), w = диффузная интенсивность (0 = без света).
+    pub normal: MeshTexture,
+    pub orm: MeshTexture,
     pub sun_dir: [f32; 4],
-    /// Ambient-цвет (rgb), добавляется всегда.
+    pub ambient: [f32; 4],
+    pub material: Option<deerpunk_engine_common::components::material::Material>,
+    /// If set, sample `texture_2d_array` (Repeat) instead of 2D albedo.
+    pub tex_array: Option<u32>,
+    pub tex_layer: u32,
+    /// Submesh index range into `mesh.indices`. `index_count == 0` → full mesh.
+    pub first_index: u32,
+    pub index_count: u32,
+}
+
+/// Один draw-вызов террейна со сплат-маппингом.
+#[derive(Clone)]
+pub struct TerrainSplatDraw {
+    pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    pub model_mat: [[f32; 4]; 4],
+    pub layers: [MeshTexture; 4],
+    pub splat_map: MeshTexture,
+    pub sun_dir: [f32; 4],
     pub ambient: [f32; 4],
 }
 
@@ -195,8 +213,14 @@ pub struct RenderSnapshot {
     pub view_proj: [[f32; 4]; 4],
     /// Inverse view-projection (computed from view_proj).
     pub inv_view_proj: [[f32; 4]; 4],
+    /// World-space camera position.
+    pub camera_pos: [f32; 3],
     /// Меши для отрисовки.
     pub mesh_draws: Vec<MeshDraw>,
+    /// Террейн со сплат-маппингом.
+    pub terrain_splat_draws: Vec<TerrainSplatDraw>,
+    /// Forward point lights (capped by renderer).
+    pub point_lights: Vec<PointLightDraw>,
     /// Фоновое небо (если задано — рисуется перед 3D-сценой).
     pub sky: Option<SkyDraw>,
     /// Debug-примитивы (линии, сферы, текст) — рисуются поверх 3D-сцены.
@@ -214,6 +238,8 @@ impl RenderSnapshot {
             instances: Vec::new(),
             hud: Vec::new(),
             mesh_draws: Vec::new(),
+            terrain_splat_draws: Vec::new(),
+            point_lights: Vec::new(),
             sky: None,
             debug_draw: Vec::new(),
             storm: None,
@@ -230,6 +256,7 @@ impl RenderSnapshot {
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            camera_pos: [0.0, 0.0, 0.0],
         }
     }
 
@@ -241,25 +268,39 @@ impl RenderSnapshot {
         self.hud.push(inst);
     }
 
-    pub fn push_mesh(&mut self, mesh: deerpunk_engine_common::resource::mesh::Mesh, model_mat: [[f32; 4]; 4], color: [f32; 4], texture: MeshTexture) {
+    pub fn push_mesh(&mut self, mesh: deerpunk_engine_common::resource::mesh::Mesh, model_mat: [[f32; 4]; 4], material_id: u32, texture: MeshTexture) {
         self.mesh_draws.push(MeshDraw {
-            mesh,
+            mesh: Arc::new(mesh),
             model_mat,
-            color,
+            material_id,
             texture,
+            normal: MeshTexture::WHITE,
+            orm: MeshTexture::WHITE,
             sun_dir: [0.0, 0.0, 1.0, 0.0],
             ambient: [1.0, 1.0, 1.0, 0.0],
+            material: None,
+            tex_array: None,
+            tex_layer: 0,
+            first_index: 0,
+            index_count: 0,
         });
     }
 
-    pub fn push_mesh_lit(&mut self, mesh: deerpunk_engine_common::resource::mesh::Mesh, model_mat: [[f32; 4]; 4], color: [f32; 4], texture: MeshTexture, sun_dir: [f32; 4], ambient: [f32; 4]) {
+    pub fn push_mesh_lit(&mut self, mesh: deerpunk_engine_common::resource::mesh::Mesh, model_mat: [[f32; 4]; 4], material_id: u32, texture: MeshTexture, sun_dir: [f32; 4], ambient: [f32; 4]) {
         self.mesh_draws.push(MeshDraw {
-            mesh,
+            mesh: Arc::new(mesh),
             model_mat,
-            color,
+            material_id,
             texture,
+            normal: MeshTexture::WHITE,
+            orm: MeshTexture::WHITE,
             sun_dir,
             ambient,
+            material: None,
+            tex_array: None,
+            tex_layer: 0,
+            first_index: 0,
+            index_count: 0,
         });
     }
 }
@@ -327,8 +368,8 @@ impl Default for CameraDefinition {
 impl CameraDefinition {
     pub fn view_matrix(&self) -> glam::Mat4 {
         let eye = glam::Vec3::from(self.position);
-        let forward = self.rotation * glam::Vec3::NEG_Z;
-        let up = self.rotation * glam::Vec3::Y;
+        let forward = self.rotation * glam::Vec3::Y;
+        let up = self.rotation * glam::Vec3::Z;
         glam::Mat4::look_to_rh(eye, forward, up)
     }
 
@@ -353,18 +394,31 @@ impl CameraRenderGraph {
     }
 }
 
+/// One forward point light for the frame.
+#[derive(Clone, Copy, Debug)]
+pub struct PointLightDraw {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub range: f32,
+}
+
 /// Геометрия сцены — всё что можно рендерить.
 #[derive(Clone)]
 pub struct SceneGeometry {
     pub mesh_draws: Vec<MeshDraw>,
+    pub terrain_splat_draws: Vec<TerrainSplatDraw>,
     pub sky: Option<SkyDraw>,
+    pub point_lights: Vec<PointLightDraw>,
 }
 
 impl Default for SceneGeometry {
     fn default() -> Self {
         Self {
             mesh_draws: Vec::new(),
+            terrain_splat_draws: Vec::new(),
             sky: None,
+            point_lights: Vec::new(),
         }
     }
 }
@@ -376,6 +430,7 @@ pub struct CameraRenderSnapshot {
     pub projection: glam::Mat4,
     pub view_proj: glam::Mat4,
     pub visible_meshes: Vec<MeshDraw>,
+    pub point_lights: Vec<PointLightDraw>,
     pub sky: Option<SkyDraw>,
     pub clear: [f32; 4],
     pub game_time: f32,
@@ -419,12 +474,14 @@ impl RenderScene {
                 let view_proj = projection * view;
 
                 let visible_meshes = self.geometry.mesh_draws.clone();
+                let point_lights = self.geometry.point_lights.clone();
 
                 CameraRenderSnapshot {
                     view,
                     projection,
                     view_proj,
                     visible_meshes,
+                    point_lights,
                     sky: self.geometry.sky,
                     clear: self.clear,
                     game_time: self.game_time,

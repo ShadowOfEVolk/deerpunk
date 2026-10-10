@@ -41,8 +41,8 @@ pub struct MeshAllocator {
     default_index_cap: u32,
 }
 
-/// Vertex format: position [f32;3] + normal [f32;3] + uv [f32;2] = 32 bytes
-pub const MESH_VERTEX_SIZE: u32 = 32;
+/// Vertex format: position[3] + normal[3] + uv[2] + layer[1] = 36 bytes (`MeshVertex` in gpu.rs).
+pub const MESH_VERTEX_SIZE: u32 = 36;
 pub const MESH_INDEX_SIZE: u32 = 4;
 
 impl MeshAllocator {
@@ -107,11 +107,12 @@ impl MeshAllocator {
             vertices,
         );
 
-        let offset_indices: Vec<u32> = indices.iter().map(|&i| i + vertex_offset).collect();
+        // Indices stay mesh-local: draws bind a sliced VB/IB, so index 0 = first
+        // vertex of this mesh (not an absolute slab vertex).
         queue.write_buffer(
             &slab.index_buf,
             (index_offset * MESH_INDEX_SIZE) as u64,
-            bytemuck::cast_slice(&offset_indices),
+            bytemuck::cast_slice(indices),
         );
 
         slab.vertex_used += vertex_count;

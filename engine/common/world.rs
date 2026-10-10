@@ -134,9 +134,28 @@ impl World {
         );
     }
 
+    /// Store `value` in Flecs by bitwise copy.
+    ///
+    /// Flecs does not run Rust `Drop`. Callers used to `ecs_set_id` then drop the
+    /// temporary — that freed `Vec`/heap inside components like [`Mesh3D`] while
+    /// Flecs still held the same pointers (dangling → UB on extract/clone).
+    ///
+    /// We drop any previous value in place, then `ManuallyDrop` the new one so
+    /// ownership of heap resources lives in Flecs storage until overwritten.
     pub fn set<T>(&self, entity: EntityId, comp: ComponentId, value: T) {
-        let ptr = &value as *const T as *const std::ffi::c_void;
-        self.set_raw(entity, comp, ptr, std::mem::size_of::<T>());
+        unsafe {
+            let existing = sys::ecs_get_id(self.inner, entity, comp) as *mut T;
+            if !existing.is_null() {
+                std::ptr::drop_in_place(existing);
+            }
+        }
+        let value = std::mem::ManuallyDrop::new(value);
+        self.set_raw(
+            entity,
+            comp,
+            (&*value) as *const T as *const std::ffi::c_void,
+            std::mem::size_of::<T>(),
+        );
     }
 
     pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {
@@ -318,6 +337,103 @@ impl<'a> Iterator for QueryBatches<'a> {
                 sizes,
             })
         }
+    }
+}
+
+/// Alive entity for inspector listing (component *names* only — no field values).
+#[derive(Clone, Debug)]
+pub struct InspectEntity {
+    pub id: EntityId,
+    pub name: String,
+    pub components: Vec<String>,
+}
+
+/// Component type names registered by the engine / gamelib (not flecs builtins).
+fn is_game_component_token(token: &str) -> bool {
+    // Skip flecs pairs like `(Identifier,Name)` / `(ChildOf,flecs.core)`.
+    if token.starts_with('(') {
+        return false;
+    }
+    let base = token.rsplit('.').next().unwrap_or(token);
+    matches!(
+        base,
+        "TransformComponent"
+            | "Mesh3D"
+            | "Material"
+            | "CameraComponent"
+            | "Worldspawn"
+            | "PointLight"
+            | "MapKv"
+            | "UiDocumentComponent"
+            | "SimpleEntity"
+            | "Terrain"
+            | "TerrainSplatMaterial"
+            | "TerrainNeedRebuild"
+            | "TerrainCollider"
+            | "TerrainRenderer"
+            | "MeshParts"
+            | "PendingBspArrays"
+            | "MeshRenderer"
+            | "NetReplicatedComponent"
+    )
+}
+
+impl World {
+    /// Snapshot of **game** entities (skips flecs builtins/modules/component types).
+    ///
+    /// `ecs_get_entities` returns the entire flecs ID space (~200+ core entities).
+    /// We only keep entities that own at least one engine/gamelib component.
+    pub fn inspect_entities(&self) -> Vec<InspectEntity> {
+        let mut out = Vec::new();
+        unsafe {
+            let entities = sys::ecs_get_entities(self.inner);
+            // Flecs packs alive IDs in `[0 .. alive_count)`.
+            let n = entities.alive_count.max(0) as usize;
+            let ids = std::slice::from_raw_parts(entities.ids, n);
+            for &entity in ids {
+                if !sys::ecs_is_alive(self.inner, entity) {
+                    continue;
+                }
+
+                let mut raw_parts: Vec<String> = Vec::new();
+                let type_ptr = sys::ecs_get_type(self.inner, entity);
+                if !type_ptr.is_null() {
+                    let tp = sys::ecs_type_str(self.inner, type_ptr);
+                    if !tp.is_null() {
+                        let s = CStr::from_ptr(tp).to_string_lossy().into_owned();
+                        if let Some(free_fn) = sys::ecs_os_api.free_ {
+                            free_fn(tp as *mut std::ffi::c_void);
+                        }
+                        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                            raw_parts.push(part.to_string());
+                        }
+                    }
+                }
+
+                let components: Vec<String> = raw_parts
+                    .iter()
+                    .filter(|p| is_game_component_token(p))
+                    .cloned()
+                    .collect();
+                if components.is_empty() {
+                    continue;
+                }
+
+                let name_ptr = sys::ecs_get_name(self.inner, entity);
+                let name = if name_ptr.is_null() {
+                    format!("0x{entity:x}")
+                } else {
+                    CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+                };
+
+                out.push(InspectEntity {
+                    id: entity,
+                    name,
+                    components,
+                });
+            }
+        }
+        out
     }
 }
 

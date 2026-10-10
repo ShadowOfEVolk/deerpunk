@@ -1,16 +1,22 @@
+pub mod asset_inventory;
 pub mod debug_draw;
 pub mod font;
 pub mod gpu;
+pub mod material_allocator;
 pub mod mesh_allocator;
 pub mod render_graph;
 pub mod snapshot;
 pub mod text_util;
+pub mod ui_pass;
 
+pub use asset_inventory::{AssetEntry, AssetKind};
 pub use gpu::{FrameError, Renderer, ShaderSources};
+pub use material_allocator::{MaterialAllocator, MaterialGpuEntry, MATERIAL_WHITE_ID};
 pub use mesh_allocator::{MeshAllocator, MeshHandle, MESH_INDEX_SIZE, MESH_VERTEX_SIZE};
 pub use render_graph::{GraphError, Node, NodeContext, RenderGraph, ResId, Resource, TexturePool};
 pub use snapshot::{
-    CameraDefinition, CameraRenderGraph, CameraRenderSnapshot, Instance, MeshTexture, RenderScene,
+    CameraDefinition, CameraRenderGraph, CameraRenderSnapshot, Instance, MeshTexture, PointLightDraw,
+    RenderScene,
     RenderSnapshot, RenderTarget, SceneGeometry, Shape, SkyDraw, StormDraw, TexSel, rgba_u8,
     rgba_u8_4,
 };

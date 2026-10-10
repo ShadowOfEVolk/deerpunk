@@ -1,6 +1,6 @@
 # deerpunk engine
 
-Экспериментальный игровой движок на Rust. Vtable-based архитектура с hot-reload DLL, Flecs ECS, Rapier3D физикой и wgpu рендером.
+Экспериментальный игровой движок на Rust. MethodDB resolver API с hot-reload DLL, Flecs ECS, Rapier3D физикой и wgpu рендером.
 
 ## Модули
 
@@ -13,10 +13,9 @@ deerpunk/
 │   ├── renderer/    # wgpu pipeline: sprites, meshes, sky, clouds, HDR tonemap, fonts
 │   └── server/      # Server-side логика
 ├── crates/
-│   ├── sdk-server/  # Safe Rust обёртка над vtable для game code
 │   ├── sdk-client/  # Client SDK
 │   ├── sdk-common/  # Общие типы SDK
-│   └── engine-api/  # Типы API (glam + hecs)
+│   └── engine-api/  # Safe Rust обёртка MethodDB для game DLL
 ├── editor/          # Level editor (iced GUI, IPC viewport)
 └── src/main.rs      # Engine binary: загружает game DLL через libloading
 ```
@@ -82,12 +81,14 @@ Flecs подключается через C FFI: `flecs_sys.rs` (bindings) + `fl
 
 ## Архитектура
 
-### Vtable FFI
+### MethodDB FFI
 
-Движок раскрывает C vtable для game DLL. Все функции через глобальный `ENGINE_CTX`. Трамплины в `host/lib.rs` разруливают вызовы.
+Host передаёт game DLL `ServerInitData { version, ctx, resolver }`.
+DLL резолвит методы по имени (`v1:world:get` …) через `MethodDB` (inventory).
+Safe-обёртка — `crates/engine-api`.
 
 ```
-game DLL → vtable (extern "C") → trampolines → ServerEngine
+game DLL → resolver("v1:…") → trampolines → Host / ServerEngine
 ```
 
 ### Hot-reload DLL
@@ -105,8 +106,8 @@ Game server компилируется как `cdylib`. Движок загру�
 ### Sub-crate dependencies
 
 ```
-sdk-server → engine-host → engine-common (Flecs, physics, resources, IPC)
-sdk-client → sdk-common
+engine-api  → (C ABI / MethodDB, без линка на host)
+sdk-client  → sdk-common
 engine-client → engine-common
 engine-renderer → engine-common + engine-client
 editor → engine-common + iced

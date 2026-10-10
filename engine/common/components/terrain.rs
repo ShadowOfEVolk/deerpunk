@@ -98,6 +98,12 @@ impl Terrain {
             }
         }
 
-        Mesh { positions, normals, uvs, indices }
+        Mesh {
+            positions,
+            normals,
+            uvs,
+            tex_layers: Vec::new(),
+            indices,
+        }
     }
 }

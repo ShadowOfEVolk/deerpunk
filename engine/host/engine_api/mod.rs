@@ -1,12 +1,20 @@
+pub mod cmd;
 pub mod engine_api;
 pub mod world;
 pub mod physics;
 pub mod input;
 pub mod imgui;
 pub mod schedule;
+pub mod renderer;
+pub mod resources;
+pub mod scene;
+pub mod ui;
 
 pub use world::*;
 pub use physics::*;
 pub use input::*;
 pub use imgui::*;
 pub use schedule::*;
+pub use renderer::*;
+pub use scene::*;
+pub use ui::*;

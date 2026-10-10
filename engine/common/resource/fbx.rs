@@ -120,7 +120,13 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         i += 1;
     }
 
-    Ok(Mesh { positions: verts, normals, uvs, indices })
+    Ok(Mesh {
+        positions: verts,
+        normals,
+        uvs,
+        tex_layers: Vec::new(),
+        indices,
+    })
 }
 
 fn read_f64_array(data: &[u8], prop_start: usize, np: usize) -> Option<Vec<f64>> {

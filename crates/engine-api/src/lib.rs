@@ -7,7 +7,9 @@ pub mod input;
 pub mod physics;
 pub mod renderer;
 pub mod resources;
+pub mod scene;
 pub mod schedule;
+pub mod ui;
 pub mod version;
 pub mod world;
 
@@ -36,6 +38,11 @@ pub struct EngineApi {
     pub input: input::InputApi,
     pub imgui: imgui::ImGuiApi,
     pub physics: physics::PhysicsApiResolved,
+    pub renderer: renderer::RendererApiResolved,
+    pub scene: scene::SceneApi,
+    pub ui: ui::UiApi,
+    pub cmd: cmd::CmdApi,
+    pub resources: resources::ResourcesApi,
 
     pub initialize: extern "C" fn(*mut u8, *const u8, usize),
     pub frame: extern "C" fn(*mut u8, f32) -> i32,
@@ -69,6 +76,11 @@ impl EngineApi {
             input: input::InputApi::new(ctx, resolver),
             imgui: imgui::ImGuiApi::new(ctx, resolver),
             physics: physics::PhysicsApiResolved::new(ctx, resolver),
+            renderer: renderer::RendererApiResolved::new(ctx, resolver),
+            scene: scene::SceneApi::new(ctx, resolver),
+            ui: ui::UiApi::new(ctx, resolver),
+            cmd: cmd::CmdApi::new(ctx, resolver),
+            resources: resources::ResourcesApi::new(ctx, resolver),
 
             initialize: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:initialize")) },
             frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },

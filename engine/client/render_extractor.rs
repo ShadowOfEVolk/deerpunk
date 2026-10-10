@@ -1,18 +1,34 @@
-use deerpunk_engine_common::components::{CameraComponent, MeshRenderer, TransformComponent};
+use std::sync::Arc;
+
+use deerpunk_engine_common::components::material::Material;
+use deerpunk_engine_common::components::mesh3d::Mesh3D;
+use deerpunk_engine_common::components::mesh_parts::MeshParts;
+use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
+use deerpunk_engine_common::components::{CameraComponent, PointLight, TransformComponent};
 use deerpunk_engine_common::resource::mesh::Mesh;
-use deerpunk_engine_common::world::{QueryId, World};
-use deerpunk_engine_renderer::snapshot::{CameraDefinition, MeshDraw, RenderScene, RenderTarget};
+use deerpunk_engine_common::world::{ComponentId, QueryId, World};
+use deerpunk_engine_renderer::snapshot::{
+    CameraDefinition, MeshDraw, PointLightDraw, RenderScene, RenderTarget, TerrainSplatDraw,
+};
 
 pub struct RenderExtractor {
     q_cameras: QueryId,
     q_meshes: QueryId,
+    q_terrain_splat: QueryId,
+    q_lights: QueryId,
+    mesh_parts_id: ComponentId,
 }
 
 impl RenderExtractor {
     pub fn new(world: &mut World) -> Self {
+        let mesh_parts_id = world.component_init::<MeshParts>();
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
-            q_meshes: world.query_prepare("TransformComponent, MeshRenderer"),
+            q_meshes: world.query_prepare("TransformComponent, Mesh3D, Material"),
+            q_terrain_splat: world
+                .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
+            q_lights: world.query_prepare("TransformComponent, PointLight"),
+            mesh_parts_id,
         }
     }
 
@@ -49,6 +65,7 @@ impl RenderExtractor {
 
         if let Some(batches) = world.query_batches(self.q_meshes) {
             for batch in batches {
+                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 let transforms = unsafe {
                     std::slice::from_raw_parts(
                         batch.columns[0] as *const TransformComponent,
@@ -56,19 +73,123 @@ impl RenderExtractor {
                     )
                 };
                 let meshes = unsafe {
-                    std::slice::from_raw_parts(batch.columns[1] as *const MeshRenderer, batch.count)
+                    std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
                 };
-                for (t, m) in transforms.iter().zip(meshes.iter()) {
+                let materials = unsafe {
+                    std::slice::from_raw_parts(batch.columns[2] as *const Material, batch.count)
+                };
+                for i in 0..batch.count {
+                    let t = &transforms[i];
+                    let m = &meshes[i];
+                    let mat = &materials[i];
+                    let ent = entities[i];
+                    let model_mat = glam::Mat4::from_scale_rotation_translation(
+                        t.scale, t.rotation, t.position,
+                    )
+                    .to_cols_array_2d();
+                    let mesh = m
+                        .mesh
+                        .clone()
+                        .unwrap_or_else(|| Arc::new(Mesh::cube()));
+
+                    let parts_ptr = world.get_raw(ent, self.mesh_parts_id) as *const MeshParts;
+                    if !parts_ptr.is_null() {
+                        let parts = unsafe { &*parts_ptr };
+                        if !parts.parts.is_empty() {
+                            for p in &parts.parts {
+                                scene.geometry.mesh_draws.push(MeshDraw {
+                                    mesh: mesh.clone(),
+                                    model_mat,
+                                    material_id: 0,
+                                    texture: mat.albedo,
+                                    normal: mat.normal,
+                                    orm: mat.ao_roughness_metallic,
+                                    sun_dir: mat.sun_dir,
+                                    ambient: mat.ambient,
+                                    material: Some(mat.clone()),
+                                    tex_array: Some(p.array_id),
+                                    tex_layer: p.layer,
+                                    first_index: p.first_index,
+                                    index_count: p.index_count,
+                                });
+                            }
+                            continue;
+                        }
+                    }
+
+                    scene.geometry.mesh_draws.push(MeshDraw {
+                        mesh,
+                        model_mat,
+                        material_id: 0,
+                        texture: mat.albedo,
+                        normal: mat.normal,
+                        orm: mat.ao_roughness_metallic,
+                        sun_dir: mat.sun_dir,
+                        ambient: mat.ambient,
+                        material: Some(mat.clone()),
+                        tex_array: None,
+                        tex_layer: 0,
+                        first_index: 0,
+                        index_count: 0,
+                    });
+                }
+            }
+        }
+
+        if let Some(batches) = world.query_batches(self.q_terrain_splat) {
+            for batch in batches {
+                let transforms = unsafe {
+                    std::slice::from_raw_parts(
+                        batch.columns[0] as *const TransformComponent,
+                        batch.count,
+                    )
+                };
+                let meshes = unsafe {
+                    std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
+                };
+                let splats = unsafe {
+                    std::slice::from_raw_parts(
+                        batch.columns[2] as *const TerrainSplatMaterial,
+                        batch.count,
+                    )
+                };
+                for ((t, m), s) in transforms.iter().zip(meshes.iter()).zip(splats.iter()) {
                     let model_mat = glam::Mat4::from_scale_rotation_translation(
                         t.scale, t.rotation, t.position,
                     );
-                    scene.geometry.mesh_draws.push(MeshDraw {
-                        mesh: m.mesh.clone().unwrap_or_else(Mesh::cube),
+                    let mesh = m
+                        .mesh
+                        .clone()
+                        .unwrap_or_else(|| Arc::new(Mesh::cube()));
+                    scene.geometry.terrain_splat_draws.push(TerrainSplatDraw {
+                        mesh,
                         model_mat: model_mat.to_cols_array_2d(),
-                        color: m.color,
-                        texture: m.texture,
-                        sun_dir: m.sun_dir,
-                        ambient: m.ambient,
+                        layers: s.layers,
+                        splat_map: s.splat_map,
+                        sun_dir: s.sun_dir,
+                        ambient: s.ambient,
+                    });
+                }
+            }
+        }
+
+        if let Some(batches) = world.query_batches(self.q_lights) {
+            for batch in batches {
+                let transforms = unsafe {
+                    std::slice::from_raw_parts(
+                        batch.columns[0] as *const TransformComponent,
+                        batch.count,
+                    )
+                };
+                let lights = unsafe {
+                    std::slice::from_raw_parts(batch.columns[1] as *const PointLight, batch.count)
+                };
+                for (t, l) in transforms.iter().zip(lights.iter()) {
+                    scene.geometry.point_lights.push(PointLightDraw {
+                        position: [t.position.x, t.position.y, t.position.z],
+                        color: l.color,
+                        intensity: l.intensity,
+                        range: l.range,
                     });
                 }
             }

@@ -187,14 +187,19 @@ impl CmdSystem {
     }
 
     pub fn exec_config_file(&self, path: &str) {
-        let content = match std::fs::read_to_string(path) {
+        let resolved = if !self.fs.is_null() {
+            self.fs().resolve_path(path)
+        } else {
+            Path::new(path).to_path_buf()
+        };
+        let content = match std::fs::read_to_string(&resolved) {
             Ok(c) => c,
             Err(err) => {
-                eprintln!("[cfg] can't read {}: {err}", path);
+                eprintln!("[cfg] can't read {}: {err}", resolved.display());
                 return;
             }
         };
-        eprintln!("[cfg] executing {path}");
+        eprintln!("[cfg] executing {}", resolved.display());
         let mut executed = 0;
         for line in content.lines() {
             let line = line.trim();
@@ -203,7 +208,7 @@ impl CmdSystem {
             }
             if let Some((name, value)) = line.split_once(char::is_whitespace) {
                 let name = name.trim();
-                let value = value.trim();
+                let value = strip_cfg_quotes(value.trim());
                 if !self.cvar().set(name, value) {
                     self.cvar().set_or_create(name, value);
                 }
@@ -257,6 +262,20 @@ impl Default for CmdSystem {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Strip matching surrounding quotes from a cfg value (`"0.0.0.0"` → `0.0.0.0`).
+fn strip_cfg_quotes(value: &str) -> &str {
+    let v = value.trim();
+    if v.len() >= 2 {
+        let bytes = v.as_bytes();
+        if (bytes[0] == b'"' && bytes[v.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[v.len() - 1] == b'\'')
+        {
+            return &v[1..v.len() - 1];
+        }
+    }
+    v
 }
 
 pub fn collect_plus_commands<I: Iterator<Item = String>>(args: I) -> Vec<String> {

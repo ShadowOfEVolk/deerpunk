@@ -23,7 +23,11 @@ impl FileSystem {
         self.gamedir = gamedir.as_ref().to_path_buf();
     }
 
-    fn resolve_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+    pub fn gamedir(&self) -> &Path {
+        &self.gamedir
+    }
+
+    pub fn resolve_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
         if path.as_ref().is_absolute() {
             path.as_ref().to_path_buf()
         } else {
@@ -51,6 +55,29 @@ impl FileSystem {
 
     pub fn file_exists<P: AsRef<Path>>(&self, path: P) -> bool {
         self.resolve_path(path).exists()
+    }
+
+    /// UI asset root: `{gamedir}/ui` or `examples/ui_hello/ui` (absolute).
+    pub fn resolve_ui_dir(&self) -> PathBuf {
+        let candidates = [
+            self.gamedir.join("ui"),
+            PathBuf::from("examples/ui_hello/ui"),
+            // when cwd is target/debug
+            PathBuf::from("../../examples/ui_hello/ui"),
+            PathBuf::from("../../examples/deathmatch/gamedir/ui"),
+        ];
+        for c in candidates {
+            if c.join("widgets").exists() || c.join("fonts").exists() {
+                return c.canonicalize().unwrap_or(c);
+            }
+        }
+        let fallback = self.gamedir.join("ui");
+        log::error!(
+            "[fs] UI dir not found (tried gamedir/ui and examples/ui_hello/ui). cwd={:?} fallback={}",
+            std::env::current_dir().ok(),
+            fallback.display()
+        );
+        fallback
     }
 }
 

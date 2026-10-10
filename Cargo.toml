@@ -7,8 +7,9 @@ members = [
     "engine/renderer",
     "crates/sdk-common",
     "crates/sdk-client",
-    "crates/sdk-server",
     "crates/engine-api",
+    "crates/ui",
+    "crates/inspector-protocol",
     "editor",
 ]
 resolver = "2"
