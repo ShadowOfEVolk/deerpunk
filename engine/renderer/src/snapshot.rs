@@ -23,9 +23,8 @@ pub struct MeshDraw {
     pub sun_dir: [f32; 4],
     pub ambient: [f32; 4],
     pub material: Option<deerpunk_engine_common::components::material::Material>,
-    /// If set, sample `texture_2d_array` (Repeat) instead of 2D albedo.
-    pub tex_array: Option<u32>,
-    pub tex_layer: u32,
+    /// If set, use atlas+lightmap pipeline (`texture` = 2D albedo, this = LM id; `0` = white).
+    pub lightmap: Option<u32>,
     /// Submesh index range into `mesh.indices`. `index_count == 0` → full mesh.
     pub first_index: u32,
     pub index_count: u32,
@@ -268,7 +267,13 @@ impl RenderSnapshot {
         self.hud.push(inst);
     }
 
-    pub fn push_mesh(&mut self, mesh: deerpunk_engine_common::resource::mesh::Mesh, model_mat: [[f32; 4]; 4], material_id: u32, texture: MeshTexture) {
+    pub fn push_mesh(
+        &mut self,
+        mesh: deerpunk_engine_common::resource::mesh::Mesh,
+        model_mat: [[f32; 4]; 4],
+        material_id: u32,
+        texture: MeshTexture,
+    ) {
         self.mesh_draws.push(MeshDraw {
             mesh: Arc::new(mesh),
             model_mat,
@@ -279,14 +284,21 @@ impl RenderSnapshot {
             sun_dir: [0.0, 0.0, 1.0, 0.0],
             ambient: [1.0, 1.0, 1.0, 0.0],
             material: None,
-            tex_array: None,
-            tex_layer: 0,
+            lightmap: None,
             first_index: 0,
             index_count: 0,
         });
     }
 
-    pub fn push_mesh_lit(&mut self, mesh: deerpunk_engine_common::resource::mesh::Mesh, model_mat: [[f32; 4]; 4], material_id: u32, texture: MeshTexture, sun_dir: [f32; 4], ambient: [f32; 4]) {
+    pub fn push_mesh_lit(
+        &mut self,
+        mesh: deerpunk_engine_common::resource::mesh::Mesh,
+        model_mat: [[f32; 4]; 4],
+        material_id: u32,
+        texture: MeshTexture,
+        sun_dir: [f32; 4],
+        ambient: [f32; 4],
+    ) {
         self.mesh_draws.push(MeshDraw {
             mesh: Arc::new(mesh),
             model_mat,
@@ -297,8 +309,7 @@ impl RenderSnapshot {
             sun_dir,
             ambient,
             material: None,
-            tex_array: None,
-            tex_layer: 0,
+            lightmap: None,
             first_index: 0,
             index_count: 0,
         });

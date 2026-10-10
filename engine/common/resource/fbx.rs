@@ -124,7 +124,9 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         positions: verts,
         normals,
         uvs,
-        tex_layers: Vec::new(),
+        lightmap_uvs: Vec::new(),
+        lightmap_styles: Vec::new(),
+        atlas_rects: Vec::new(),
         indices,
     })
 }

@@ -1092,6 +1092,7 @@ dependencies = [
  "deerpunk-engine-common",
  "deerpunk-engine-server",
  "deerpunk-inspector-protocol",
+ "deerpunk-ui",
  "glam 0.33.3",
  "image",
  "imgui",

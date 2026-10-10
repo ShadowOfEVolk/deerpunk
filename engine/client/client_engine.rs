@@ -14,6 +14,8 @@ use crate::ui_controller::UiController;
 pub struct ClientEngine {
     pub(crate) app: App,
     renderer: Renderer,
+    /// Client-side ECS (replicated renderables / linked cameras). Not simulated.
+    pub world: World,
     extractor: Option<RenderExtractor>,
     pub input: Input,
     ui: Option<UiRuntime>,
@@ -27,11 +29,7 @@ impl ClientEngine {
         let instance = wgpu::Instance::default();
         let surface = app.create_wgpu_surface(&instance);
 
-        let mut renderer = Renderer::new(
-            load_shader_sources(resources),
-            &instance,
-            Some(&surface),
-        );
+        let mut renderer = Renderer::new(load_shader_sources(resources), &instance, Some(&surface));
 
         let (w, h) = app.window_size();
         renderer.set_surface(surface, w, h);
@@ -39,6 +37,7 @@ impl ClientEngine {
         Self {
             app,
             renderer,
+            world: World::new(),
             extractor: None,
             input: Input::new(),
             ui: None,
@@ -60,8 +59,15 @@ impl ClientEngine {
         self.ui = Some(ui);
     }
 
-    pub fn init_extractor(&mut self, world: &mut World) {
-        self.extractor = Some(RenderExtractor::new(world));
+    pub fn init_extractor(&mut self) {
+        self.extractor = Some(RenderExtractor::new(&mut self.world));
+    }
+
+    pub fn extract_scene(&self) -> RenderScene {
+        self.extractor
+            .as_ref()
+            .map(|e| e.extract(&self.world))
+            .unwrap_or_else(RenderScene::new)
     }
 
     pub fn ui_runtime(&self) -> Option<&UiRuntime> {
@@ -97,6 +103,16 @@ impl ClientEngine {
     ) -> bool {
         if !self.app.poll_events(&mut self.input) {
             return false;
+        }
+
+        // Feed OS mouse into ImGui (console / debug windows).
+        {
+            let (mx, my) = self.input.mouse_position();
+            let b = self.input.mouse_buttons();
+            self.renderer.set_imgui_input(
+                [mx, my],
+                [b & 1 != 0, b & 2 != 0, b & 4 != 0, false, false],
+            );
         }
 
         let (w, h) = self.app.window_size();
@@ -135,9 +151,7 @@ impl ClientEngine {
 
         // No cameras (e.g. menu-only) still need a surface pass so the UI overlay runs.
         let aspect = w as f32 / h as f32;
-        let snapshots = scene
-            .map(|s| s.build_snapshots(aspect))
-            .unwrap_or_default();
+        let snapshots = scene.map(|s| s.build_snapshots(aspect)).unwrap_or_default();
         let mut rendered_surface = false;
         let mut first = true;
         for snap in &snapshots {
@@ -184,13 +198,6 @@ impl ClientEngine {
         true
     }
 
-    pub fn extract(&self, world: &World) -> RenderScene {
-        self.extractor
-            .as_ref()
-            .map(|e| e.extract(world))
-            .unwrap_or_else(RenderScene::new)
-    }
-
     pub fn window_size(&self) -> (u32, u32) {
         self.app.window_size()
     }
@@ -228,9 +235,7 @@ fn load_shader_sources(rm: &mut ResourceManager) -> ShaderSources {
     let ui_path = shader_dir.join("ui.wgsl");
     let ui_uri = path_to_file_uri(&ui_path);
     let ui_handle = rm.load::<String>(&ui_uri);
-    let ui = ui_handle
-        .try_get()
-        .unwrap_or_else(|| include_str!("../../shaders/ui.wgsl").to_string());
+    let ui = ui_handle.try_get().unwrap();
 
     ShaderSources {
         sprite: load_wgsl_required(rm, shader_dir, "sprite"),

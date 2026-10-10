@@ -1,7 +1,8 @@
 pub mod atlas;
 pub mod bsp30;
-pub mod bsp_buckets;
+pub mod bsp_debug;
 pub mod bsp_entities;
+pub mod bsp_lightmap;
 pub mod components;
 pub mod input;
 pub mod ipc;
@@ -21,10 +22,12 @@ pub mod transform;
 pub mod ui_draw;
 
 pub use components::{
-    CameraComponent, MapKv, MeshPart, MeshParts, MeshRenderer, MeshTexture, NetReplicatedComponent,
-    PendingBspArrays, PointLight, SimpleEntity, Terrain, TerrainCollider, TerrainNeedRebuild,
-    TerrainRenderer, TerrainSplatMaterial, TransformComponent, UiDocumentComponent, Worldspawn,
+    BspWorldDebug, CameraComponent, LightmapId, LightstyleTable, MapKv, MeshRenderer, MeshTexture,
+    NetReplicatedComponent, PendingBspAtlas, PendingLightmap, PointLight, SimpleEntity, Terrain,
+    TerrainCollider, TerrainNeedRebuild, TerrainRenderer, TerrainSplatMaterial, TransformComponent,
+    UiDocumentComponent, Worldspawn, MAX_LIGHTSTYLES,
 };
+pub use bsp_debug::{raycast_mesh, raycast_tris, BspFaceDebug, BspPickHit};
 pub use network::replication::{NetworkComponent, NetworkField};
 
 pub use transform::Transform;

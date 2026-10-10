@@ -10,6 +10,7 @@ path = "lib.rs"
 deerpunk-engine-common = { path = "../common" }
 deerpunk-engine-server = { path = "../server", optional = true }
 deerpunk-engine-client = { path = "../client", optional = true }
+deerpunk-ui = { path = "../../crates/ui", optional = true }
 
 log = { workspace = true }
 glam = "0.33"
@@ -27,5 +28,5 @@ base64 = "0.22"
 [features]
 default = []
 dedicated-server = ["deerpunk-engine-server"]
-client = ["deerpunk-engine-client", "deerpunk-engine-server"]
-full = ["deerpunk-engine-server", "deerpunk-engine-client"]
+client = ["deerpunk-engine-client", "deerpunk-engine-server", "deerpunk-ui"]
+full = ["deerpunk-engine-server", "deerpunk-engine-client", "deerpunk-ui"]

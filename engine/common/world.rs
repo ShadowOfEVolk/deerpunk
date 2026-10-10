@@ -123,15 +123,7 @@ impl World {
         data: *const std::ffi::c_void,
         size: usize,
     ) {
-        println!(
-            "set_raw_pre: entity={}, comp={}, size={}",
-            entity, comp, size
-        );
         unsafe { sys::ecs_set_id(self.inner, entity, comp, size, data) }
-        println!(
-            "set_raw_post: entity={}, comp={}, size={}",
-            entity, comp, size
-        );
     }
 
     /// Store `value` in Flecs by bitwise copy.
@@ -371,8 +363,11 @@ fn is_game_component_token(token: &str) -> bool {
             | "TerrainNeedRebuild"
             | "TerrainCollider"
             | "TerrainRenderer"
-            | "MeshParts"
-            | "PendingBspArrays"
+            | "PendingBspAtlas"
+            | "PendingLightmap"
+            | "LightmapId"
+            | "LightstyleTable"
+            | "BspWorldDebug"
             | "MeshRenderer"
             | "NetReplicatedComponent"
     )

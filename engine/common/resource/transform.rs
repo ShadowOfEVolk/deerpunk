@@ -155,7 +155,9 @@ mod tests {
             positions: vec![[1.0, 0.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]],
             uvs: vec![[0.0, 0.0]],
-            tex_layers: Vec::new(),
+            lightmap_uvs: Vec::new(),
+            lightmap_styles: Vec::new(),
+            atlas_rects: Vec::new(),
             indices: vec![0],
         };
         apply_mesh_transform(&mut m, &MeshTransform {
@@ -173,7 +175,9 @@ mod tests {
             positions: vec![[0.0, 0.0, 1.0]],
             normals: vec![[0.0, 0.0, 1.0]],
             uvs: vec![[0.0, 0.0]],
-            tex_layers: Vec::new(),
+            lightmap_uvs: Vec::new(),
+            lightmap_styles: Vec::new(),
+            atlas_rects: Vec::new(),
             indices: vec![0],
         };
         apply_mesh_transform(&mut m, &MeshTransform {

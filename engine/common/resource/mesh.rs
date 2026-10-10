@@ -3,8 +3,12 @@ pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
-    /// Per-vertex texture-array layer (empty → layer 0). Used by BSP world buckets.
-    pub tex_layers: Vec<f32>,
+    /// Per-vertex lightmap UVs (empty → [0,0], sample white LM).
+    pub lightmap_uvs: Vec<[f32; 2]>,
+    /// Per-vertex lightstyle indices (f32, 255 = unused). Empty → all unused.
+    pub lightmap_styles: Vec<[f32; 4]>,
+    /// Per-vertex albedo atlas rect `[min_u, min_v, size_u, size_v]` (empty → full [0,0,1,1]).
+    pub atlas_rects: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -14,7 +18,9 @@ impl Mesh {
             positions: Vec::new(),
             normals: Vec::new(),
             uvs: Vec::new(),
-            tex_layers: Vec::new(),
+            lightmap_uvs: Vec::new(),
+            lightmap_styles: Vec::new(),
+            atlas_rects: Vec::new(),
             indices: Vec::new(),
         }
     }
@@ -49,7 +55,9 @@ impl Mesh {
             positions: p,
             normals: n,
             uvs: u,
-            tex_layers: Vec::new(),
+            lightmap_uvs: Vec::new(),
+            lightmap_styles: Vec::new(),
+            atlas_rects: Vec::new(),
             indices: i,
         }
     }

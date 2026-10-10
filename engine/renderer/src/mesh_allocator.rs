@@ -41,8 +41,8 @@ pub struct MeshAllocator {
     default_index_cap: u32,
 }
 
-/// Vertex format: position[3] + normal[3] + uv[2] + layer[1] = 36 bytes (`MeshVertex` in gpu.rs).
-pub const MESH_VERTEX_SIZE: u32 = 36;
+/// Vertex format: pos+nrm+uv+atlas_rect+lm_uv+lm_styles+pad = 80 bytes (`MeshVertex` in gpu.rs).
+pub const MESH_VERTEX_SIZE: u32 = 80;
 pub const MESH_INDEX_SIZE: u32 = 4;
 
 impl MeshAllocator {

@@ -4,6 +4,7 @@ pub mod cmd;
 pub mod cvar;
 pub mod imgui;
 pub mod input;
+pub mod net;
 pub mod physics;
 pub mod renderer;
 pub mod resources;
@@ -42,6 +43,7 @@ pub struct EngineApi {
     pub scene: scene::SceneApi,
     pub ui: ui::UiApi,
     pub cmd: cmd::CmdApi,
+    pub net: net::NetApi,
     pub resources: resources::ResourcesApi,
 
     pub initialize: extern "C" fn(*mut u8, *const u8, usize),
@@ -80,6 +82,7 @@ impl EngineApi {
             scene: scene::SceneApi::new(ctx, resolver),
             ui: ui::UiApi::new(ctx, resolver),
             cmd: cmd::CmdApi::new(ctx, resolver),
+            net: net::NetApi::new(ctx, resolver),
             resources: resources::ResourcesApi::new(ctx, resolver),
 
             initialize: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:initialize")) },

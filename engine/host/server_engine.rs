@@ -8,6 +8,8 @@ pub struct ServerEngine {
     pub world: World,
     pub physics_world: PhysicsWorld,
     pub(crate) initialized: bool,
+    /// When false, host does not simulate / call server_frame game logic.
+    pub enabled: bool,
     terrain_bodies: HashSet<u64>,
 }
 
@@ -17,6 +19,7 @@ impl ServerEngine {
             world: World::new(),
             physics_world: PhysicsWorld::new(),
             initialized: false,
+            enabled: false,
             terrain_bodies: HashSet::new(),
         }
     }
@@ -29,9 +32,17 @@ impl ServerEngine {
         Ok(())
     }
 
+    pub fn set_enabled(&mut self, on: bool) {
+        self.enabled = on;
+        log::info!("[server] world enabled={on}");
+    }
+
     pub fn frame(&self, delta_time: f32) -> Result<(), String> {
         if !self.initialized {
             return Err("Engine not initialized".to_string());
+        }
+        if !self.enabled {
+            return Ok(());
         }
         self.world.simulate(delta_time);
         Ok(())
@@ -40,6 +51,7 @@ impl ServerEngine {
     pub fn shutdown(&mut self) {
         if self.initialized {
             self.initialized = false;
+            self.enabled = false;
         }
     }
 }

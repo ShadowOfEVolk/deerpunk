@@ -80,7 +80,9 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
         positions: out_positions,
         normals: out_normals,
         uvs: out_uvs,
-        tex_layers: Vec::new(),
+        lightmap_uvs: Vec::new(),
+        lightmap_styles: Vec::new(),
+        atlas_rects: Vec::new(),
         indices,
     })
 }

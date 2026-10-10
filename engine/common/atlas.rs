@@ -98,22 +98,19 @@ fn blit(src: &RgbaImage, dst: &mut [u8], dst_w: u32, rect: &AtlasRect, pad: u32)
 
     for y in y0..y1 {
         for x in x0..x1 {
-            let sx = x.saturating_sub(rect.x).min(src.width.saturating_sub(1));
-            let sy = y.saturating_sub(rect.y).min(src.height.saturating_sub(1));
-            // Clamp sample into src for padding border.
             let sx = if x < rect.x {
                 0
             } else if x >= rect.x + rect.w {
                 src.width.saturating_sub(1)
             } else {
-                sx
+                x.saturating_sub(rect.x).min(src.width.saturating_sub(1))
             };
             let sy = if y < rect.y {
                 0
             } else if y >= rect.y + rect.h {
                 src.height.saturating_sub(1)
             } else {
-                sy
+                y.saturating_sub(rect.y).min(src.height.saturating_sub(1))
             };
             let si = ((sy * src.width + sx) * 4) as usize;
             let di = ((y * dst_w + x) * 4) as usize;
@@ -124,17 +121,20 @@ fn blit(src: &RgbaImage, dst: &mut [u8], dst_w: u32, rect: &AtlasRect, pad: u32)
     }
 }
 
-/// Map tiled UV in texels → atlas UV. Uses fract so GoldSrc tiling still works.
-pub fn map_uv(u_texels: f32, v_texels: f32, rect: &AtlasRect, atlas_w: u32, atlas_h: u32) -> [f32; 2] {
+/// Normalized atlas rect for shader wrap: `[min_u, min_v, size_u, size_v]`.
+/// Half-texel inset reduces bleeding into padding.
+pub fn rect_norm(rect: &AtlasRect, atlas_w: u32, atlas_h: u32) -> [f32; 4] {
+    let aw = atlas_w.max(1) as f32;
+    let ah = atlas_h.max(1) as f32;
+    let inset = 0.5;
     let tw = rect.w.max(1) as f32;
     let th = rect.h.max(1) as f32;
-    let fu = u_texels / tw;
-    let fv = v_texels / th;
-    let fu = fu - fu.floor();
-    let fv = fv - fv.floor();
-    // Inset half texel to reduce bleeding.
-    let inset = 0.5;
-    let u = (rect.x as f32 + inset + fu * (tw - inset * 2.0)) / atlas_w.max(1) as f32;
-    let v = (rect.y as f32 + inset + fv * (th - inset * 2.0)) / atlas_h.max(1) as f32;
-    [u, v]
+    let w = (tw - inset * 2.0).max(1.0);
+    let h = (th - inset * 2.0).max(1.0);
+    [
+        (rect.x as f32 + inset) / aw,
+        (rect.y as f32 + inset) / ah,
+        w / aw,
+        h / ah,
+    ]
 }

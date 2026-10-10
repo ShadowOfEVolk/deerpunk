@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use deerpunk_engine_common::components::material::Material;
 use deerpunk_engine_common::components::mesh3d::Mesh3D;
-use deerpunk_engine_common::components::mesh_parts::MeshParts;
+use deerpunk_engine_common::components::pending_lightmap::LightmapId;
 use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::{CameraComponent, PointLight, TransformComponent};
 use deerpunk_engine_common::resource::mesh::Mesh;
@@ -16,19 +16,25 @@ pub struct RenderExtractor {
     q_meshes: QueryId,
     q_terrain_splat: QueryId,
     q_lights: QueryId,
-    mesh_parts_id: ComponentId,
+    lightmap_id: ComponentId,
 }
 
 impl RenderExtractor {
     pub fn new(world: &mut World) -> Self {
-        let mesh_parts_id = world.component_init::<MeshParts>();
+        let _ = world.component_init::<TransformComponent>();
+        let _ = world.component_init::<CameraComponent>();
+        let _ = world.component_init::<Mesh3D>();
+        let _ = world.component_init::<Material>();
+        let _ = world.component_init::<TerrainSplatMaterial>();
+        let _ = world.component_init::<PointLight>();
+        let lightmap_id = world.component_init::<LightmapId>();
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
             q_meshes: world.query_prepare("TransformComponent, Mesh3D, Material"),
             q_terrain_splat: world
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
-            mesh_parts_id,
+            lightmap_id,
         }
     }
 
@@ -92,30 +98,15 @@ impl RenderExtractor {
                         .clone()
                         .unwrap_or_else(|| Arc::new(Mesh::cube()));
 
-                    let parts_ptr = world.get_raw(ent, self.mesh_parts_id) as *const MeshParts;
-                    if !parts_ptr.is_null() {
-                        let parts = unsafe { &*parts_ptr };
-                        if !parts.parts.is_empty() {
-                            for p in &parts.parts {
-                                scene.geometry.mesh_draws.push(MeshDraw {
-                                    mesh: mesh.clone(),
-                                    model_mat,
-                                    material_id: 0,
-                                    texture: mat.albedo,
-                                    normal: mat.normal,
-                                    orm: mat.ao_roughness_metallic,
-                                    sun_dir: mat.sun_dir,
-                                    ambient: mat.ambient,
-                                    material: Some(mat.clone()),
-                                    tex_array: Some(p.array_id),
-                                    tex_layer: p.layer,
-                                    first_index: p.first_index,
-                                    index_count: p.index_count,
-                                });
-                            }
-                            continue;
+                    // LightmapId → BSP atlas + LM pipeline (id 0 = white LM fallback).
+                    let lightmap = {
+                        let ptr = world.get_raw(ent, self.lightmap_id) as *const LightmapId;
+                        if ptr.is_null() {
+                            None
+                        } else {
+                            Some(unsafe { (*ptr).id })
                         }
-                    }
+                    };
 
                     scene.geometry.mesh_draws.push(MeshDraw {
                         mesh,
@@ -127,8 +118,7 @@ impl RenderExtractor {
                         sun_dir: mat.sun_dir,
                         ambient: mat.ambient,
                         material: Some(mat.clone()),
-                        tex_array: None,
-                        tex_layer: 0,
+                        lightmap,
                         first_index: 0,
                         index_count: 0,
                     });

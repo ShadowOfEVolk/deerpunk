@@ -12,6 +12,7 @@ fn resolve(r: Resolver, name: &str) -> *const () {
 // USB HID Scancode constants (cross-platform, layout-independent)
 pub const KEY_A: u16 = 4;
 pub const KEY_D: u16 = 7;
+pub const KEY_E: u16 = 8;
 pub const KEY_S: u16 = 22;
 pub const KEY_W: u16 = 26;
 pub const KEY_SPACE: u16 = 44;

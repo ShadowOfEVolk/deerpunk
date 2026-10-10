@@ -102,7 +102,9 @@ impl Terrain {
             positions,
             normals,
             uvs,
-            tex_layers: Vec::new(),
+            lightmap_uvs: Vec::new(),
+            lightmap_styles: Vec::new(),
+            atlas_rects: Vec::new(),
             indices,
         }
     }

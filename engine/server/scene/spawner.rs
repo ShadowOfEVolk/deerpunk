@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use deerpunk_engine_common::bsp30::BspSubmodel;
 use deerpunk_engine_common::bsp_entities::{parse_vec3_str, EntityKv};
 use deerpunk_engine_common::components::{MapKv, TransformComponent};
 use deerpunk_engine_common::resource::ResourceManager;
@@ -78,12 +79,13 @@ impl EntitySpawner {
         gamedir: &Path,
         resources: &mut ResourceManager,
         desc: EntitySpawnDescriptor,
+        submodels: &[BspSubmodel],
     ) -> Result<EntityId, SpawnError> {
         let def = self.prefabs.resolve(gamedir, &desc.classname)?;
         if def.components.is_empty() {
             return Err(SpawnError::EmptyDef);
         }
-        let id = spawn_prefab(world, gamedir, resources, &desc, &def);
+        let id = spawn_prefab(world, gamedir, resources, &desc, &def, submodels);
         log::info!(
             "[spawn] {} (def={}) → entity={id:#x}",
             desc.classname,
@@ -99,6 +101,7 @@ fn spawn_prefab(
     resources: &mut ResourceManager,
     desc: &EntitySpawnDescriptor,
     def: &EntityDef,
+    submodels: &[BspSubmodel],
 ) -> EntityId {
     let entity = world.spawn();
 
@@ -112,7 +115,7 @@ fn spawn_prefab(
         }
     }
 
-    apply_transform_from_map(world, entity, desc);
+    apply_transform_from_map(world, entity, desc, submodels);
 
     let kv_id = world.component_init::<MapKv>();
     world.set(entity, kv_id, MapKv::new(desc.kv.clone()));
@@ -129,15 +132,40 @@ fn angles_to_quat(angles: Vec3) -> Quat {
     Quat::from_euler(EulerRot::ZYX, yaw, pitch, roll)
 }
 
-fn apply_transform_from_map(world: &World, entity: EntityId, desc: &EntitySpawnDescriptor) {
-    if desc.origin.is_none() && desc.angles.is_none() {
+fn parse_star_model_index(model: &str) -> Option<usize> {
+    let s = model.trim();
+    let num = s.strip_prefix('*')?;
+    num.parse().ok()
+}
+
+fn origin_from_submodel(kv: &EntityKv, submodels: &[BspSubmodel]) -> Option<Vec3> {
+    let model = kv.get("model")?;
+    let idx = parse_star_model_index(model)?;
+    let sm = *submodels.get(idx)?;
+    // Prefer non-zero model origin; else AABB center (typical for HL brush ents).
+    if sm.origin.iter().any(|v| *v != 0.0) {
+        Some(Vec3::from_array(sm.origin))
+    } else {
+        Some(Vec3::from_array(sm.center()))
+    }
+}
+
+fn apply_transform_from_map(
+    world: &World,
+    entity: EntityId,
+    desc: &EntitySpawnDescriptor,
+    submodels: &[BspSubmodel],
+) {
+    let brush_origin = origin_from_submodel(&desc.kv, submodels);
+    let origin = desc.origin.or(brush_origin);
+    if origin.is_none() && desc.angles.is_none() {
         return;
     }
     let t_id = world.component_init::<TransformComponent>();
     let mut t = world
         .get::<TransformComponent>(entity, t_id)
         .unwrap_or_default();
-    if let Some(origin) = desc.origin {
+    if let Some(origin) = origin {
         t.position = origin;
     }
     if let Some(angles) = desc.angles {
@@ -152,6 +180,7 @@ pub fn spawn_map_entities(
     gamedir: &Path,
     resources: &mut ResourceManager,
     entities_lump: &str,
+    submodels: &[BspSubmodel],
 ) -> (u32, u32) {
     use deerpunk_engine_common::bsp_entities::parse_entity_blocks;
 
@@ -168,7 +197,7 @@ pub fn spawn_map_entities(
             continue;
         }
         let desc = EntitySpawnDescriptor::from_kv(classname.clone(), &block);
-        match spawner.spawn(world, gamedir, resources, desc) {
+        match spawner.spawn(world, gamedir, resources, desc, submodels) {
             Ok(_) => spawned += 1,
             Err(e) => {
                 log::warn!("[spawn] skip {classname}: {e}");

@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -14,6 +16,26 @@ use crate::paths;
 static GEOM: Mutex<Option<UiGeometryBuilder>> = Mutex::new(None);
 static START: Mutex<Option<Instant>> = Mutex::new(None);
 static DUMMY_RENDER_API: Mutex<Option<Box<ffi::rmlui_render_api_t>>> = Mutex::new(None);
+/// Kept alive for RmlUi (`g_callbacks` stores a raw pointer).
+static CALLBACKS: Mutex<Option<Box<ffi::rmlui_callbacks_t>>> = Mutex::new(None);
+static UI_CMD_QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+static FILES_LIST_JSON: Mutex<Option<CString>> = Mutex::new(None);
+
+/// Gamedir root for `eng_get_files_list` (e.g. `…/content/darkdemo`).
+pub fn set_content_root(path: impl Into<PathBuf>) {
+    if let Ok(mut g) = CONTENT_ROOT.lock() {
+        *g = Some(path.into());
+    }
+}
+
+/// Drain console commands queued by RmlUi Lua `cmd(...)`.
+pub fn drain_commands() -> Vec<String> {
+    let Ok(mut q) = UI_CMD_QUEUE.lock() else {
+        return Vec::new();
+    };
+    q.drain(..).collect()
+}
 
 fn with_geom<R>(f: impl FnOnce(&mut UiGeometryBuilder) -> R) -> Option<R> {
     let mut g = GEOM.lock().ok()?;
@@ -62,18 +84,20 @@ impl UiRuntime {
         *GEOM.lock().unwrap() = Some(UiGeometryBuilder::new(screen.0, screen.1));
 
         let (w, h) = screen;
-        let callbacks = ffi::rmlui_callbacks_t {
+        let callbacks = Box::new(ffi::rmlui_callbacks_t {
             get_time: Some(cb_get_time),
             log: Some(cb_log),
             get_base_path: Some(cb_base_path),
             scissor: None,
-            execute_command: None,
+            execute_command: Some(cb_execute_command),
             client_in_game: None,
             get_cvar_float: None,
             get_cvar_string: None,
-            get_files_list: None,
+            get_files_list: Some(cb_get_files_list),
             load_file: None,
-        };
+        });
+        let cb_ptr = &*callbacks as *const ffi::rmlui_callbacks_t;
+        *CALLBACKS.lock().unwrap() = Some(callbacks);
 
         let render_api = make_dummy_render_api();
         *DUMMY_RENDER_API.lock().unwrap() = Some(render_api);
@@ -84,7 +108,7 @@ impl UiRuntime {
             .map(|b| &**b as *const _)
             .unwrap_or(ptr::null());
 
-        let ok = unsafe { ffi::rmlui_init(w as i32, h as i32, &callbacks, api_ptr) };
+        let ok = unsafe { ffi::rmlui_init(w as i32, h as i32, cb_ptr, api_ptr) };
         if ok == 0 {
             log::error!("[deerpunk-ui] rmlui_init failed");
             return Self {
@@ -206,6 +230,7 @@ impl Drop for UiRuntime {
         }
         *GEOM.lock().unwrap() = None;
         *DUMMY_RENDER_API.lock().unwrap() = None;
+        *CALLBACKS.lock().unwrap() = None;
     }
 }
 
@@ -325,6 +350,87 @@ unsafe extern "C" fn cb_base_path() -> *const c_char {
     let mut slot = BASE_PATH_CACHED.lock().unwrap();
     *slot = Some(c);
     slot.as_ref().unwrap().as_ptr()
+}
+
+unsafe extern "C" fn cb_execute_command(cmd: *const c_char) {
+    if cmd.is_null() {
+        return;
+    }
+    let s = CStr::from_ptr(cmd).to_string_lossy().trim().to_string();
+    if s.is_empty() {
+        return;
+    }
+    if let Ok(mut q) = UI_CMD_QUEUE.lock() {
+        q.push_back(s);
+    }
+}
+
+unsafe extern "C" fn cb_get_files_list(pattern: *const c_char) -> *const c_char {
+    let empty = {
+        let mut slot = FILES_LIST_JSON.lock().unwrap();
+        *slot = Some(CString::new("[]").unwrap_or_default());
+        slot.as_ref().unwrap().as_ptr()
+    };
+    if pattern.is_null() {
+        return empty;
+    }
+    let pat = CStr::from_ptr(pattern).to_string_lossy();
+    let Some(root) = CONTENT_ROOT.lock().ok().and_then(|g| g.clone()) else {
+        return empty;
+    };
+    let json = list_files_json(&root, pat.as_ref());
+    let mut slot = FILES_LIST_JSON.lock().unwrap();
+    *slot = Some(CString::new(json).unwrap_or_else(|_| CString::new("[]").unwrap()));
+    slot.as_ref().unwrap().as_ptr()
+}
+
+/// Support patterns like `maps/*.bsp` relative to content root.
+fn list_files_json(root: &Path, pattern: &str) -> String {
+    let pattern = pattern.trim().replace('\\', "/");
+    let (dir_rel, suffix) = match pattern.rsplit_once('/') {
+        Some((d, mask)) => (d, mask),
+        None => ("", pattern.as_str()),
+    };
+    let ext = suffix.strip_prefix('*').unwrap_or(suffix);
+    let dir = if dir_rel.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(dir_rel)
+    };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return "[]".into();
+    };
+    let mut names: Vec<String> = Vec::new();
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !ext.is_empty() && !fname.to_ascii_lowercase().ends_with(&ext.to_ascii_lowercase()) {
+            continue;
+        }
+        let rel = if dir_rel.is_empty() {
+            fname.to_string()
+        } else {
+            format!("{dir_rel}/{fname}")
+        };
+        names.push(rel.replace('\\', "/"));
+    }
+    names.sort();
+    let mut out = String::from("[");
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(&n.replace('"', ""));
+        out.push('"');
+    }
+    out.push(']');
+    out
 }
 
 // ── C exports expected by rmlui-sys rust_bridge ─────────────────

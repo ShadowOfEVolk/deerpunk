@@ -9,6 +9,7 @@ pub mod renderer;
 pub mod resources;
 pub mod scene;
 pub mod ui;
+pub mod net;
 
 pub use world::*;
 pub use physics::*;
@@ -18,3 +19,4 @@ pub use schedule::*;
 pub use renderer::*;
 pub use scene::*;
 pub use ui::*;
+pub use net::*;

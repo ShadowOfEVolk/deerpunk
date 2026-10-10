@@ -4,7 +4,8 @@ use std::path::Path;
 
 use deerpunk_engine_common::bsp30::BspWorldMesh;
 use deerpunk_engine_common::components::{
-    Material, Mesh3D, PendingBspArrays, TransformComponent, Worldspawn,
+    BspWorldDebug, LightstyleTable, Material, Mesh3D, PendingBspAtlas, PendingLightmap,
+    TransformComponent, Worldspawn,
 };
 use deerpunk_engine_common::resource::ResourceManager;
 use deerpunk_engine_common::world::{EntityId, World};
@@ -25,11 +26,18 @@ pub fn place_bsp_map(
         return Err("empty map name".into());
     }
 
-    let n_buckets = loaded.pending.buckets.len();
-    let n_parts = loaded.pending.parts.len();
+    let atlas_sz = loaded
+        .pending
+        .image
+        .as_ref()
+        .map(|i| (i.width, i.height))
+        .unwrap_or((0, 0));
 
     let mesh_id = world.component_init::<Mesh3D>();
     world.set(entity, mesh_id, Mesh3D::with_mesh(loaded.mesh));
+
+    let dbg_id = world.component_init::<BspWorldDebug>();
+    world.set(entity, dbg_id, loaded.debug);
 
     let ws_id = world.component_init::<Worldspawn>();
     world.set(entity, ws_id, Worldspawn::new(map));
@@ -49,14 +57,26 @@ pub fn place_bsp_map(
         world.set(entity, m_id, mat);
     }
 
-    let pending_id = world.component_init::<PendingBspArrays>();
+    let pending_id = world.component_init::<PendingBspAtlas>();
     world.set(entity, pending_id, loaded.pending);
 
+    if let Some(lm) = loaded.lightmap {
+        let lm_id = world.component_init::<PendingLightmap>();
+        world.set(entity, lm_id, PendingLightmap::new(lm));
+    }
+
+    let ls_id = world.component_init::<LightstyleTable>();
+    world.set(entity, ls_id, LightstyleTable::hl_defaults());
+
     log::info!(
-        "[bsp] place map={map} entity={entity:#x} buckets={n_buckets} parts={n_parts}"
+        "[bsp] place map={map} entity={entity:#x} albedo_atlas={}x{} has_lm={}",
+        atlas_sz.0,
+        atlas_sz.1,
+        world.has(entity, world.component_init::<PendingLightmap>())
     );
 
-    let (spawned, skipped) = spawn_map_entities(world, gamedir, resources, &loaded.entities);
+    let (spawned, skipped) =
+        spawn_map_entities(world, gamedir, resources, &loaded.entities, &loaded.submodels);
     log::info!("[bsp] map entities spawned={spawned} skipped={skipped}");
     Ok(())
 }

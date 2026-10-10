@@ -1,11 +1,13 @@
-//! GoldSrc BSP30 → world mesh + texture-array buckets (submeshes).
+//! GoldSrc BSP30 → world mesh + single albedo atlas.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use crate::bsp_buckets::{self, BUCKET_SIZES};
-use crate::components::pending_bsp_arrays::{PendingBspArrays, PendingMeshPart, PendingTexBucket};
+use crate::atlas::{self, AtlasRect};
+use crate::bsp_debug::{self, BspFaceDebug, BspWorldDebug};
+use crate::bsp_lightmap::{self, FaceLightmap};
+use crate::components::pending_bsp_atlas::PendingBspAtlas;
 use crate::resource::mesh::Mesh;
 use crate::wad::{self, RgbaImage, WadSet};
 
@@ -15,6 +17,7 @@ const LUMP_TEXTURES: usize = 2;
 const LUMP_VERTEXES: usize = 3;
 const LUMP_TEXINFO: usize = 6;
 const LUMP_FACES: usize = 7;
+const LUMP_LIGHTING: usize = 8;
 const LUMP_EDGES: usize = 12;
 const LUMP_SURFEDGES: usize = 13;
 const LUMP_MODELS: usize = 14;
@@ -73,18 +76,43 @@ struct Model {
 
 const MAX_FACE_EDGES: i16 = 64;
 
+/// BSP `lump models` entry (world = 0, brush ents = `*1`…).
+#[derive(Clone, Copy, Debug)]
+pub struct BspSubmodel {
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
+    pub origin: [f32; 3],
+}
+
+impl BspSubmodel {
+    /// World-space AABB center (brush ents usually have zero `origin`).
+    pub fn center(self) -> [f32; 3] {
+        [
+            (self.mins[0] + self.maxs[0]) * 0.5,
+            (self.mins[1] + self.maxs[1]) * 0.5,
+            (self.mins[2] + self.maxs[2]) * 0.5,
+        ]
+    }
+}
+
 #[derive(Clone)]
 pub struct BspWorldMesh {
     pub mesh: Mesh,
-    pub pending: PendingBspArrays,
+    pub pending: PendingBspAtlas,
+    /// Per-style lightmap atlas (4 layers). None if BSP has no lighting.
+    pub lightmap: Option<crate::bsp_lightmap::LightmapAtlasLayers>,
+    /// Face pick meta for `r_bsp_debug` (worldspawn faces only).
+    pub debug: BspWorldDebug,
     /// Raw entities lump (`{ "key" "value" ... }`).
     pub entities: String,
+    /// All BSP models (index 0 = worldspawn hull).
+    pub submodels: Vec<BspSubmodel>,
 }
 
 /// Alias: loaded BSP package (mesh + materials staging + entities lump).
 pub type BspMap = BspWorldMesh;
 
-/// Load world geometry + texture buckets for array upload.
+/// Load world geometry + albedo atlas for GPU upload.
 pub fn load_world_mesh(bsp_path: &Path, gamedir: &Path) -> Result<BspWorldMesh, String> {
     let data = std::fs::read(bsp_path).map_err(|e| format!("{}: {e}", bsp_path.display()))?;
     mesh_from_bytes(&data, gamedir).map_err(|e| format!("{}: {e}", bsp_path.display()))
@@ -119,30 +147,45 @@ pub fn mesh_from_bytes(data: &[u8], gamedir: &Path) -> Result<BspWorldMesh, Stri
     let edges: &[Edge] = read_lump_slice(data, lumps[LUMP_EDGES])?;
     let surfedges: &[i32] = read_lump_slice(data, lumps[LUMP_SURFEDGES])?;
     let models: &[Model] = read_lump_slice(data, lumps[LUMP_MODELS])?;
+    let lighting = read_lump_bytes(data, lumps[LUMP_LIGHTING]);
 
     let miptex_infos = parse_miptex_dir(data, lumps[LUMP_TEXTURES])?;
-    // mip index → (bucket_slot in BUCKET_SIZES, layer, tex_w, tex_h for UV)
-    let (buckets, mip_map) = build_buckets(&miptex_infos, data, lumps[LUMP_TEXTURES], &wads);
+    let (albedo_atlas, mip_map) = build_albedo_atlas(&miptex_infos, data, lumps[LUMP_TEXTURES], &wads);
 
     let world_range = world_face_range(models, faces.len());
     let world_faces = &faces[world_range.clone()];
     log::info!(
-        "[bsp30] world faces {}..{} ({}), buckets={}",
+        "[bsp30] world faces {}..{} ({}), albedo_atlas={}x{}, lighting={} bytes",
         world_range.start,
         world_range.end,
         world_faces.len(),
-        buckets.len()
+        albedo_atlas.width,
+        albedo_atlas.height,
+        lighting.len()
     );
 
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut uvs = Vec::new();
-    let mut tex_layers = Vec::new();
-    // One draw per (bucket, layer): texture_2d_array index must be uniform per draw.
-    let mut bins: HashMap<(u32, u32), Vec<[u32; 3]>> = HashMap::new();
+    struct BuiltFace {
+        bsp_face: u32,
+        tex_name: String,
+        miptex: i32,
+        styles: [u8; 4],
+        lightofs: i32,
+        verts: Vec<[f32; 3]>,
+        normal: [f32; 3],
+        s_coords: Vec<f32>,
+        t_coords: Vec<f32>,
+        atlas_rect: [f32; 4],
+        tw: f32,
+        th: f32,
+        lm: Option<FaceLightmap>,
+    }
+
+    let mut built: Vec<BuiltFace> = Vec::new();
+    let mut lm_slots: Vec<Option<FaceLightmap>> = Vec::new();
     let mut skipped = 0u32;
 
-    for face in world_faces {
+    for (local_i, face) in world_faces.iter().enumerate() {
+        let bsp_face = (world_range.start + local_i) as u32;
         if !face_header_ok(face, planes.len(), texinfos.len(), surfedges.len()) {
             skipped += 1;
             continue;
@@ -162,11 +205,14 @@ pub fn mesh_from_bytes(data: &[u8], gamedir: &Path) -> Result<BspWorldMesh, Stri
             skipped += 1;
             continue;
         };
-        // Skip faces whose miptex was omitted (tool textures / empty).
-        let Some((bucket_idx, layer, tw, th)) = mip_map.get(&(ti.miptex as i32)).copied() else {
+        let Some((rect_norm, tw, th)) = mip_map.get(&(ti.miptex as i32)).copied() else {
             skipped += 1;
             continue;
         };
+        let tex_name = miptex_infos
+            .get(ti.miptex as usize)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
 
         let first = face.firstedge as usize;
         let count = face.numedges as usize;
@@ -182,11 +228,7 @@ pub fn mesh_from_bytes(data: &[u8], gamedir: &Path) -> Result<BspWorldMesh, Stri
                 face_ok = false;
                 break;
             };
-            let v0 = if se >= 0 {
-                e.v[0] as usize
-            } else {
-                e.v[1] as usize
-            };
+            let v0 = if se >= 0 { e.v[0] as usize } else { e.v[1] as usize };
             let Some(&p) = vertices.get(v0) else {
                 face_ok = false;
                 break;
@@ -198,84 +240,220 @@ pub fn mesh_from_bytes(data: &[u8], gamedir: &Path) -> Result<BspWorldMesh, Stri
             continue;
         }
 
-        let base = positions.len() as u32;
         let s = ti.vecs[0];
         let t = ti.vecs[1];
+        let mut s_coords = Vec::with_capacity(face_verts.len());
+        let mut t_coords = Vec::with_capacity(face_verts.len());
         for p in &face_verts {
+            s_coords.push(p[0] * s[0] + p[1] * s[1] + p[2] * s[2] + s[3]);
+            t_coords.push(p[0] * t[0] + p[1] * t[1] + p[2] * t[2] + t[3]);
+        }
+
+        let lm = bsp_lightmap::calc_extents(&s_coords, &t_coords).and_then(|(texturemins, _ext, lw, lh)| {
+            let mut face_lm =
+                bsp_lightmap::extract_style_layers(lighting, face.lightofs, face.styles, lw, lh)?;
+            face_lm.texturemins = texturemins;
+            Some(face_lm)
+        });
+        lm_slots.push(lm.clone());
+        built.push(BuiltFace {
+            bsp_face,
+            tex_name,
+            miptex: ti.miptex,
+            styles: face.styles,
+            lightofs: face.lightofs,
+            verts: face_verts,
+            normal: n,
+            s_coords,
+            t_coords,
+            atlas_rect: rect_norm,
+            tw,
+            th,
+            lm,
+        });
+    }
+
+    let lightmap_atlas = bsp_lightmap::pack_atlas_layers(&mut lm_slots);
+    let (atlas_w, atlas_h) = lightmap_atlas
+        .as_ref()
+        .map(|i| (i.width, i.height))
+        .unwrap_or((1, 1));
+    for (i, slot) in lm_slots.iter().enumerate() {
+        if let Some(b) = built.get_mut(i) {
+            b.lm = slot.clone();
+        }
+    }
+    let lm_faces = lm_slots.iter().filter(|s| s.is_some()).count();
+    log::info!(
+        "[bsp30] lightmaps faces_with_lm={lm_faces}/{} atlas={}x{} (4 style layers)",
+        built.len(),
+        atlas_w,
+        atlas_h
+    );
+
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut lightmap_uvs = Vec::new();
+    let mut lightmap_styles = Vec::new();
+    let mut atlas_rects = Vec::new();
+    let mut indices = Vec::new();
+    let mut debug_faces: Vec<BspFaceDebug> = Vec::with_capacity(built.len());
+    let mut tri_face: Vec<u32> = Vec::new();
+
+    for face in &built {
+        let base = positions.len() as u32;
+        let face_dbg_i = debug_faces.len() as u32;
+        let first_tri = (indices.len() / 3) as u32;
+        let styles = face
+            .lm
+            .as_ref()
+            .map(|lm| bsp_lightmap::styles_as_f32(lm.styles))
+            .unwrap_or([255.0, 255.0, 255.0, 255.0]);
+        for (i, p) in face.verts.iter().enumerate() {
             positions.push(*p);
-            normals.push(n);
-            let u = p[0] * s[0] + p[1] * s[1] + p[2] * s[2] + s[3];
-            let v = p[0] * t[0] + p[1] * t[1] + p[2] * t[2] + t[3];
-            // True tiling UVs — Repeat sampler on the array layer.
-            uvs.push([u / tw, v / th]);
-            tex_layers.push(layer as f32);
+            normals.push(face.normal);
+            let s = face.s_coords[i];
+            let t = face.t_coords[i];
+            // Tiled UV in texture space — shader does fract → atlas rect.
+            uvs.push([s / face.tw, t / face.th]);
+            atlas_rects.push(face.atlas_rect);
+            let lm_uv = if let Some(ref lm) = face.lm {
+                bsp_lightmap::lm_uv(lm, atlas_w, atlas_h, s, t)
+            } else {
+                [0.0, 0.0]
+            };
+            lightmap_uvs.push(lm_uv);
+            lightmap_styles.push(styles);
         }
-        let bin = bins.entry((bucket_idx, layer)).or_default();
-        for i in 1..(face_verts.len() as u32 - 1) {
-            // CW→CCW for wgpu backface cull
-            bin.push([base, base + i + 1, base + i]);
+        for i in 1..(face.verts.len() as u32 - 1) {
+            indices.extend_from_slice(&[base, base + i + 1, base + i]);
+            tri_face.push(face_dbg_i);
         }
+        let num_tris = (face.verts.len() as u32).saturating_sub(2);
+        let mut style_avg_rgb = [[255u8; 3]; 4];
+        let mut layers_rgb: [Option<std::sync::Arc<[u8]>>; 4] = [None, None, None, None];
+        let (lm_w, lm_h, lm_atlas_x, lm_atlas_y, texturemins) = if let Some(ref lm) = face.lm {
+            for slot in 0..4 {
+                if lm.styles[slot] == 255 {
+                    style_avg_rgb[slot] = [255, 255, 255];
+                } else if let Some(ref rgb) = lm.layers_rgb[slot] {
+                    style_avg_rgb[slot] = bsp_debug::avg_rgb(rgb);
+                    layers_rgb[slot] = Some(std::sync::Arc::from(rgb.as_slice()));
+                } else {
+                    style_avg_rgb[slot] = [0, 0, 0];
+                }
+            }
+            (
+                lm.width,
+                lm.height,
+                lm.atlas_x,
+                lm.atlas_y,
+                lm.texturemins,
+            )
+        } else {
+            (0, 0, 0, 0, [0, 0])
+        };
+        debug_faces.push(BspFaceDebug {
+            bsp_face: face.bsp_face,
+            tex_name: face.tex_name.clone(),
+            miptex: face.miptex,
+            styles: face.styles,
+            lightofs: face.lightofs,
+            lm_w,
+            lm_h,
+            lm_atlas_x,
+            lm_atlas_y,
+            texturemins,
+            style_avg_rgb,
+            layers_rgb,
+            normal: face.normal,
+            num_verts: face.verts.len() as u32,
+            first_tri,
+            num_tris,
+        });
     }
 
     if positions.is_empty() {
         return Err("no geometry in world model".into());
     }
 
-    let mut indices = Vec::new();
-    let mut parts = Vec::new();
-    let mut keys: Vec<(u32, u32)> = bins.keys().copied().collect();
-    keys.sort_unstable();
-    for (bucket_idx, layer) in keys {
-        let tris = bins.remove(&(bucket_idx, layer)).unwrap();
-        let first_index = indices.len() as u32;
-        for t in &tris {
-            indices.extend_from_slice(t);
-        }
-        let index_count = indices.len() as u32 - first_index;
-        if index_count > 0 {
-            parts.push(PendingMeshPart {
-                first_index,
-                index_count,
-                bucket: bucket_idx,
-                layer,
-            });
-        }
-    }
-
     log::info!(
-        "[bsp30] mesh verts={} idx={} submesh_draws={} skipped={}",
+        "[bsp30] mesh verts={} idx={} skipped={}",
         positions.len(),
         indices.len(),
-        parts.len(),
         skipped
     );
+
+    let submodels: Vec<BspSubmodel> = models
+        .iter()
+        .map(|m| BspSubmodel {
+            mins: m.mins,
+            maxs: m.maxs,
+            origin: m.origin,
+        })
+        .collect();
+
+    let (atlas_w, atlas_h, atlas_layers) = match &lightmap_atlas {
+        Some(a) => (
+            a.width,
+            a.height,
+            Some([
+                std::sync::Arc::<[u8]>::from(a.layers[0].pixels.as_slice()),
+                std::sync::Arc::<[u8]>::from(a.layers[1].pixels.as_slice()),
+                std::sync::Arc::<[u8]>::from(a.layers[2].pixels.as_slice()),
+                std::sync::Arc::<[u8]>::from(a.layers[3].pixels.as_slice()),
+            ]),
+        ),
+        None => (0, 0, None),
+    };
+
+    let debug = BspWorldDebug {
+        faces: std::sync::Arc::new(debug_faces),
+        tri_face: std::sync::Arc::new(tri_face),
+        atlas_w,
+        atlas_h,
+        atlas_layers,
+    };
 
     Ok(BspWorldMesh {
         mesh: Mesh {
             positions,
             normals,
             uvs,
-            tex_layers,
+            lightmap_uvs,
+            lightmap_styles,
+            atlas_rects,
             indices,
         },
-        pending: PendingBspArrays { buckets, parts },
+        pending: PendingBspAtlas::new(albedo_atlas),
+        lightmap: lightmap_atlas,
+        debug,
         entities,
+        submodels,
     })
 }
 
-/// mip → (bucket_index, layer, uv_width, uv_height)
-fn build_buckets(
+fn read_lump_bytes(data: &[u8], lump: Lump) -> &[u8] {
+    let start = lump.offset as usize;
+    let end = (start + lump.length as usize).min(data.len());
+    if start >= end || start >= data.len() {
+        return &[];
+    }
+    &data[start..end]
+}
+
+/// miptex index → (normalized atlas rect, tex_w, tex_h)
+fn build_albedo_atlas(
     infos: &[MiptexInfo],
     data: &[u8],
     tex_lump: Lump,
     wads: &WadSet,
-) -> (Vec<PendingTexBucket>, HashMap<i32, (u32, u32, f32, f32)>) {
+) -> (RgbaImage, HashMap<i32, ([f32; 4], f32, f32)>) {
     let lump_base = tex_lump.offset as usize;
-    let mut bucket_layers: Vec<Vec<RgbaImage>> = BUCKET_SIZES.iter().map(|_| Vec::new()).collect();
-    let mut map: HashMap<i32, (u32, u32, f32, f32)> = HashMap::new();
-
-    // Placeholder layer 0 in every used bucket
-    let missing = RgbaImage::checker(64, 64);
+    let mut images: Vec<RgbaImage> = Vec::new();
+    let mut mip_indices: Vec<i32> = Vec::new();
+    let mut sizes: Vec<(f32, f32)> = Vec::new();
 
     for (i, info) in infos.iter().enumerate() {
         if info.name.is_empty() || info.lump_ofs.is_none() {
@@ -306,50 +484,41 @@ fn build_buckets(
 
         let tw = img.width.max(1) as f32;
         let th = img.height.max(1) as f32;
-        let bucket_size = bsp_buckets::pick_bucket(img.width, img.height);
-        let bucket_idx = BUCKET_SIZES
-            .iter()
-            .position(|&b| b == bucket_size)
-            .unwrap_or(0) as u32;
-
-        // Ensure placeholder at layer 0
-        if bucket_layers[bucket_idx as usize].is_empty() {
-            bucket_layers[bucket_idx as usize]
-                .push(bsp_buckets::resize_to_bucket(&missing, bucket_size));
-        }
-
-        let layer = bucket_layers[bucket_idx as usize].len() as u32;
-        bucket_layers[bucket_idx as usize].push(bsp_buckets::resize_to_bucket(&img, bucket_size));
-        map.insert(i as i32, (bucket_idx, layer, tw, th));
+        images.push(img);
+        mip_indices.push(i as i32);
+        sizes.push((tw, th));
     }
 
-    // If nothing loaded, still provide one bucket so draws work.
-    if map.is_empty() {
-        bucket_layers[0].push(bsp_buckets::resize_to_bucket(&missing, 64));
+    if images.is_empty() {
+        let missing = RgbaImage::checker(64, 64);
+        images.push(missing);
+        mip_indices.push(-1);
+        sizes.push((64.0, 64.0));
     }
 
-    let mut buckets = Vec::new();
-    let mut remap_bucket: HashMap<u32, u32> = HashMap::new(); // old idx → packed idx
-    for (i, layers) in bucket_layers.into_iter().enumerate() {
-        if layers.is_empty() {
+    let refs: Vec<&RgbaImage> = images.iter().collect();
+    let packed = atlas::pack(&refs, 2);
+    let aw = packed.image.width;
+    let ah = packed.image.height;
+
+    let mut map: HashMap<i32, ([f32; 4], f32, f32)> = HashMap::new();
+    for (idx, &mip) in mip_indices.iter().enumerate() {
+        if mip < 0 {
             continue;
         }
-        let packed = buckets.len() as u32;
-        remap_bucket.insert(i as u32, packed);
-        buckets.push(PendingTexBucket {
-            size: BUCKET_SIZES[i],
-            layers,
-        });
+        let rect: AtlasRect = packed.rects[idx];
+        let (tw, th) = sizes[idx];
+        map.insert(mip, (atlas::rect_norm(&rect, aw, ah), tw, th));
     }
 
-    // Remap bucket indices in map after packing empty ones out.
-    for v in map.values_mut() {
-        if let Some(&nb) = remap_bucket.get(&v.0) {
-            v.0 = nb;
-        }
+    // If only placeholder was packed, still map nothing — faces without mip skip.
+    // Provide a full-atlas fallback for any face that somehow references missing.
+    if map.is_empty() && !packed.rects.is_empty() {
+        let r = atlas::rect_norm(&packed.rects[0], aw, ah);
+        map.insert(0, (r, 64.0, 64.0));
     }
 
-    (buckets, map)
+    (packed.image, map)
 }
 
 struct MiptexInfo {
@@ -519,7 +688,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_oldlifehome_buckets() {
+    fn load_oldlifehome_atlas() {
         let bsp = Path::new(r"D:/projects/darkdemo/content/darkdemo/maps/oldlifehome.bsp");
         let gamedir = Path::new(r"D:/projects/darkdemo/content/darkdemo");
         if !bsp.is_file() {
@@ -527,16 +696,16 @@ mod tests {
         }
         let m = load_world_mesh(bsp, gamedir).expect("bsp");
         assert!(m.mesh.positions.len() > 100);
-        assert!(!m.pending.buckets.is_empty());
-        assert!(!m.pending.parts.is_empty());
+        assert!(m.pending.image.is_some());
+        let img = m.pending.image.as_ref().unwrap();
+        assert!(img.width > 0 && img.height > 0);
+        assert_eq!(m.mesh.atlas_rects.len(), m.mesh.positions.len());
         eprintln!(
-            "buckets={} parts={} verts={}",
-            m.pending.buckets.len(),
-            m.pending.parts.len(),
-            m.mesh.positions.len()
+            "atlas={}x{} verts={} idx={}",
+            img.width,
+            img.height,
+            m.mesh.positions.len(),
+            m.mesh.indices.len()
         );
-        for (i, b) in m.pending.buckets.iter().enumerate() {
-            eprintln!("  bucket{i} size={} layers={}", b.size, b.layers.len());
-        }
     }
 }

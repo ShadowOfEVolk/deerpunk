@@ -46,13 +46,15 @@ pub extern "C" fn tramp_destroy(engine: *mut u8, entity: u64) {
 }
 
 pub extern "C" fn tramp_clear_world(engine: *mut u8) {
-    let host = unsafe { &*(engine as *const crate::Host) };
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
     let world = &host.server_engine.world;
     let ids: Vec<u64> = world.inspect_entities().into_iter().map(|e| e.id).collect();
     log::info!("[world] clear — destroying {} entities", ids.len());
     for id in ids {
         world.destroy(id);
     }
+    // Flush deferred deletes so the next place_bsp cannot leave a second world mesh.
+    world.simulate(0.0);
 }
 
 pub extern "C" fn tramp_spawn_bundle(
@@ -66,36 +68,83 @@ pub extern "C" fn tramp_spawn_bundle(
 }
 
 pub extern "C" fn tramp_query(
-    _engine: *mut u8,
-    _require: *const u64,
-    _require_n: usize,
-    _exclude: *const u64,
-    _exclude_n: usize,
-    _out: *mut u64,
-    _max: usize,
+    engine: *mut u8,
+    require: *const u64,
+    require_n: usize,
+    exclude: *const u64,
+    exclude_n: usize,
+    out: *mut u64,
+    max: usize,
 ) -> usize {
-    0
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    let require = unsafe { std::slice::from_raw_parts(require, require_n) };
+    let _exclude = unsafe { std::slice::from_raw_parts(exclude, exclude_n) };
+    // Exclude terms not wired yet — match require-only (current gamelib usage).
+    let qid = host.server_engine.world.query_prepare_ids(require);
+    let mut ids = Vec::new();
+    if let Some(batches) = host.server_engine.world.query_batches(qid) {
+        for batch in batches {
+            let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+            ids.extend_from_slice(entities);
+        }
+    }
+    host.server_engine.world.query_release(qid);
+    let mut written = 0usize;
+    for &e in &ids {
+        if written >= max || out.is_null() {
+            break;
+        }
+        unsafe {
+            *out.add(written) = e;
+        }
+        written += 1;
+    }
+    written
 }
 
 pub extern "C" fn tramp_query_count(
-    _engine: *mut u8,
-    _require: *const u64,
-    _require_n: usize,
-    _exclude: *const u64,
-    _exclude_n: usize,
+    engine: *mut u8,
+    require: *const u64,
+    require_n: usize,
+    exclude: *const u64,
+    exclude_n: usize,
 ) -> usize {
-    0
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    let require = unsafe { std::slice::from_raw_parts(require, require_n) };
+    let _exclude = unsafe { std::slice::from_raw_parts(exclude, exclude_n) };
+    let qid = host.server_engine.world.query_prepare_ids(require);
+    let mut count = 0usize;
+    if let Some(batches) = host.server_engine.world.query_batches(qid) {
+        for batch in batches {
+            count += batch.count;
+        }
+    }
+    host.server_engine.world.query_release(qid);
+    count
 }
 
 pub extern "C" fn tramp_query_matches(
-    _engine: *mut u8,
-    _entity: u64,
-    _require: *const u64,
-    _require_n: usize,
-    _exclude: *const u64,
-    _exclude_n: usize,
+    engine: *mut u8,
+    entity: u64,
+    require: *const u64,
+    require_n: usize,
+    exclude: *const u64,
+    exclude_n: usize,
 ) -> bool {
-    false
+    let host = unsafe { &*(engine as *const crate::Host) };
+    let require = unsafe { std::slice::from_raw_parts(require, require_n) };
+    let exclude = unsafe { std::slice::from_raw_parts(exclude, exclude_n) };
+    for &c in require {
+        if !host.server_engine.world.has(entity, c) {
+            return false;
+        }
+    }
+    for &c in exclude {
+        if host.server_engine.world.has(entity, c) {
+            return false;
+        }
+    }
+    true
 }
 
 pub extern "C" fn tramp_query_prepare(

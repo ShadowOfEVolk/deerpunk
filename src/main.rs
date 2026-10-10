@@ -33,9 +33,13 @@ fn main() {
     let mut host = deerpunk_engine_host::Host::new();
     host.initialize(&gamedir);
 
-    let dll_path = resolve_server_dll(&cwd, &gamedir, &engine_root);
-    log::info!("SERVER_DLL={}", dll_path.display());
-    host.load_server_dll(&dll_path.to_string_lossy());
+    let client_dll = resolve_client_dll(&cwd, &gamedir, &engine_root);
+    log::info!("CLIENT_DLL={}", client_dll.display());
+    host.load_client_dll(&client_dll.to_string_lossy());
+
+    let server_dll = resolve_server_dll(&cwd, &gamedir, &engine_root);
+    log::info!("SERVER_DLL={}", server_dll.display());
+    host.load_server_dll(&server_dll.to_string_lossy());
 
     host.run();
 }
@@ -60,13 +64,31 @@ fn resolve_server_dll(cwd: &Path, gamedir: &Path, engine_root: &Path) -> PathBuf
     if let Ok(p) = std::env::var("SERVER_DLL") {
         return PathBuf::from(p);
     }
-    // Prefer deerpunk gamelib path (avoids clobbering Xash `dlls/*.dll`).
     let candidates = [
         gamedir.join("dlls/server/darkdemo_amd64.dll"),
         cwd.join("dlls/server/darkdemo_amd64.dll"),
         cwd.join("dlls/server.dll"),
         gamedir.join("dlls/server.dll"),
         engine_root.join("dlls/server.dll"),
+    ];
+    for c in &candidates {
+        if c.is_file() {
+            return c.clone();
+        }
+    }
+    candidates[0].clone()
+}
+
+fn resolve_client_dll(cwd: &Path, gamedir: &Path, engine_root: &Path) -> PathBuf {
+    if let Ok(p) = std::env::var("CLIENT_DLL") {
+        return PathBuf::from(p);
+    }
+    let candidates = [
+        gamedir.join("dlls/client/client_amd64.dll"),
+        cwd.join("dlls/client/client_amd64.dll"),
+        gamedir.join("dlls/client.dll"),
+        cwd.join("dlls/client.dll"),
+        engine_root.join("dlls/client.dll"),
     ];
     for c in &candidates {
         if c.is_file() {
