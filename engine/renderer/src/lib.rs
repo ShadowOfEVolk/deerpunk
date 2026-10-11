@@ -4,6 +4,7 @@ pub mod font;
 pub mod gpu;
 pub mod material_allocator;
 pub mod mesh_allocator;
+pub mod postfx;
 pub mod render_graph;
 pub mod snapshot;
 pub mod text_util;

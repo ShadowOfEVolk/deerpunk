@@ -79,6 +79,14 @@ impl App {
         }
     }
 
+    /// Capture mouse for mlook (relative deltas, cursor hidden).
+    pub fn set_relative_mouse(&mut self, on: bool) {
+        let mouse = self._sdl.mouse();
+        mouse.set_relative_mouse_mode(on);
+        let _ = self.window.set_mouse_grab(on);
+        mouse.show_cursor(!on);
+    }
+
     pub fn poll_events(&mut self, input: &mut Input) -> bool {
         for event in self.event_pump.poll_iter() {
             match event {

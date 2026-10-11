@@ -2,7 +2,7 @@ use std::path::Path;
 
 use deerpunk_engine_common::bsp30::BspWorldMesh;
 use deerpunk_engine_common::components::{
-    Material, Mesh3D, PointLight, TransformComponent, UiDocumentComponent,
+    CameraComponent, Material, Mesh3D, PointLight, TransformComponent, UiDocumentComponent,
 };
 use deerpunk_engine_common::resource::mesh::Mesh;
 use deerpunk_engine_common::resource::{path_to_file_uri, LoadOpts, ResourceManager};
@@ -46,6 +46,22 @@ pub fn apply_component(
             };
             let id = world.component_init::<TransformComponent>();
             world.set(entity, id, t);
+            Ok(())
+        }
+        "CameraComponent" => {
+            let mut cam = CameraComponent::default();
+            if let Some(fov) = value.get("fov_y").and_then(|v| v.as_f64()) {
+                // degrees in prefab → radians
+                cam.fov_y = (fov as f32).to_radians();
+            }
+            if let Some(n) = value.get("near").and_then(|v| v.as_f64()) {
+                cam.near = n as f32;
+            }
+            if let Some(f) = value.get("far").and_then(|v| v.as_f64()) {
+                cam.far = f as f32;
+            }
+            let id = world.component_init::<CameraComponent>();
+            world.set(entity, id, cam);
             Ok(())
         }
         "Material" => {

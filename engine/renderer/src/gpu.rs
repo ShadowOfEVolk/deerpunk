@@ -83,6 +83,10 @@ pub struct ShaderSources {
     pub tonemap: String,
     pub luminance: String,
     pub storm: String,
+    pub bloom_threshold: String,
+    pub bloom_blur: String,
+    pub bloom_composite: String,
+    pub grain: String,
     pub ui: String,
 }
 
@@ -423,6 +427,8 @@ pub struct Renderer {
     tonemap_mode: f32,
     exposure: f32,
     target_exposure: f32,
+
+    postfx: crate::postfx::PostFx,
 
     shaders: ShaderSources,
 
@@ -1377,6 +1383,19 @@ impl Renderer {
 
         let mesh_allocator = crate::mesh_allocator::MeshAllocator::new(&device, 256 * 1024, 512 * 1024);
         let ui_pass = crate::ui_pass::UiPass::new(&device, shaders.ui.clone());
+        let postfx = crate::postfx::PostFx::new(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba16Float,
+            tonemap_bg_layout.clone(),
+            crate::postfx::PostFxShaders {
+                bloom_threshold: shaders.bloom_threshold.clone(),
+                bloom_blur: shaders.bloom_blur.clone(),
+                bloom_composite: shaders.bloom_composite.clone(),
+                grain: shaders.grain.clone(),
+                tonemap: shaders.tonemap.clone(),
+            },
+        );
 
         Self {
             adapter,
@@ -1487,6 +1506,8 @@ impl Renderer {
             exposure_override: None,
             exposure: 1.0,
             target_exposure: 1.0,
+
+            postfx,
 
             shaders,
 
@@ -1915,6 +1936,18 @@ impl Renderer {
 
     pub fn set_tonemap_mode(&mut self, mode: f32) {
         self.tonemap_mode = mode;
+    }
+
+    pub fn set_bloom(&mut self, enabled: bool, threshold: f32, intensity: f32) {
+        self.postfx.bloom_enabled = enabled;
+        self.postfx.bloom_threshold = threshold;
+        self.postfx.bloom_intensity = intensity;
+    }
+
+    pub fn set_grain(&mut self, enabled: bool, strength: f32, downscale: f32) {
+        self.postfx.grain_enabled = enabled;
+        self.postfx.grain_strength = strength;
+        self.postfx.grain_downscale = downscale;
     }
 
     // ── ImGui ────────────────────────────────────────────────────
@@ -3737,31 +3770,8 @@ impl Renderer {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.sky_globals_bg, &[]);
             pass.draw(0..3, 0..1);
-        } else {
-            // No sky — just clear to background color
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: snapshot.clear[0] as f64,
-                            g: snapshot.clear[1] as f64,
-                            b: snapshot.clear[2] as f64,
-                            a: snapshot.clear[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            drop(pass);
         }
+        // No sky: skip color clear — closed maps fill the framebuffer; depth clears in 3D pass.
 
         // --- Pass 0.5: volumetric clouds (after sky, before 3D) ---
         if let Some(sky) = &snapshot.sky {
@@ -4310,82 +4320,31 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
 
-        // --- Tonemap pass: HDR → surface (only when rendering to window) ---
+        // --- Bloom → tonemap → grain → surface ---
         if let Some(surface_view) = surface_view {
             self.ensure_tonemap_pipeline(format);
             let hdr_view_ref = self.hdr_view.as_ref().expect("HDR texture not initialized");
-            let pipeline = self.tonemap_pipeline.as_ref().unwrap();
-
             let w = frame_width();
             let h = frame_height();
-            let globals = Globals {
-                screen: [w as f32, h as f32],
-                exposure: self.exposure,
-                tonemap_mode: self.tonemap_mode,
-                view_proj: [
-                    [1.0, 0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                ],
-            };
-            self.queue
-                .write_buffer(&self.tonemap_uniform_buf, 0, bytemuck::bytes_of(&globals));
-
-            let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("tonemap linear sampler"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            });
-
-            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("tonemap bg"),
-                layout: &self.tonemap_bg_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(hdr_view_ref),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.tonemap_uniform_buf,
-                            offset: 0,
-                            size: None,
-                        }),
-                    },
-                ],
-            });
-            self.tonemap_bg = Some(bg);
-
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("tonemap pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: surface_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, self.tonemap_bg.as_ref().unwrap(), &[]);
-                pass.draw(0..3, 0..1);
-            }
+            let exposure = self.exposure;
+            let tonemap_mode = self.tonemap_mode;
+            let game_time = snapshot.game_time;
+            let pipeline = self.tonemap_pipeline.as_ref().unwrap().clone();
+            self.postfx.encode_tonemap_chain(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                hdr_view_ref,
+                w,
+                h,
+                format,
+                surface_view,
+                &pipeline,
+                &self.tonemap_uniform_buf,
+                exposure,
+                tonemap_mode,
+                game_time,
+            );
 
             // UI overlay (RmlUi geometry) on LDR surface
             if let Some(ui) = self.pending_ui.take() {

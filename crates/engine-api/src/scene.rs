@@ -1,4 +1,4 @@
-use crate::Resolver;
+use crate::{EntityId, Resolver};
 
 fn resolve(r: Resolver, name: &str) -> *const () {
     let bytes = name.as_bytes();
@@ -12,6 +12,7 @@ fn resolve(r: Resolver, name: &str) -> *const () {
 pub struct SceneApi {
     ctx: *mut u8,
     load_fn: extern "C" fn(*mut u8, *const u8, usize) -> i32,
+    spawn_prefab_fn: extern "C" fn(*mut u8, *const u8, usize) -> u64,
 }
 
 unsafe impl Send for SceneApi {}
@@ -22,6 +23,7 @@ impl SceneApi {
         Self {
             ctx,
             load_fn: unsafe { std::mem::transmute(resolve(r, "v1:scene:load")) },
+            spawn_prefab_fn: unsafe { std::mem::transmute(resolve(r, "v1:scene:spawn_prefab")) },
         }
     }
 
@@ -33,6 +35,17 @@ impl SceneApi {
             Ok(())
         } else {
             Err(format!("scene load failed: {name}"))
+        }
+    }
+
+    /// Spawn `{gamedir}/prefabs/{name}.prefab` into the server world.
+    pub fn spawn_prefab(&self, name: &str) -> Result<EntityId, String> {
+        let bytes = name.as_bytes();
+        let id = (self.spawn_prefab_fn)(self.ctx, bytes.as_ptr(), bytes.len());
+        if id == 0 {
+            Err(format!("spawn_prefab failed: {name}"))
+        } else {
+            Ok(id)
         }
     }
 }

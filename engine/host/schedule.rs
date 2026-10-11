@@ -1,3 +1,5 @@
+use crate::system_profiler;
+
 pub trait System: Send {
     fn run(&mut self, delta_time: f32);
 }
@@ -8,8 +10,13 @@ impl<F: FnMut(f32) + Send> System for F {
     }
 }
 
+struct NamedSystem {
+    name: &'static str,
+    system: Box<dyn System>,
+}
+
 pub struct Schedule {
-    systems: Vec<Box<dyn System>>,
+    systems: Vec<NamedSystem>,
 }
 
 impl Schedule {
@@ -20,7 +27,18 @@ impl Schedule {
     }
 
     pub fn add_system<S: System + 'static>(&mut self, system: S) -> &mut Self {
-        self.systems.push(Box::new(system));
+        self.add_named("system", system)
+    }
+
+    pub fn add_named<S: System + 'static>(
+        &mut self,
+        name: &'static str,
+        system: S,
+    ) -> &mut Self {
+        self.systems.push(NamedSystem {
+            name,
+            system: Box::new(system),
+        });
         self
     }
 
@@ -28,9 +46,14 @@ impl Schedule {
         self.systems.clear();
     }
 
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.systems.iter().map(|s| s.name)
+    }
+
     pub fn run(&mut self, delta_time: f32) {
-        for system in &mut self.systems {
-            system.run(delta_time);
+        for entry in &mut self.systems {
+            let _g = system_profiler::scope(entry.name);
+            entry.system.run(delta_time);
         }
     }
 }

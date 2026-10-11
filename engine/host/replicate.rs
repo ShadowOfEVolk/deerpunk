@@ -131,6 +131,11 @@ impl ReplicationState {
             }
         }
     }
+
+    /// Client entity mirroring a server entity, if any.
+    pub fn client_of(&self, server_entity: u64) -> Option<u64> {
+        self.map.get(&server_entity).copied()
+    }
 }
 
 fn init_client_components(client: &World) {

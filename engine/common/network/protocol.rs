@@ -59,4 +59,10 @@ pub enum CLC {
     /// Format:
     /// - u8: frame
     CurrentFrame = 1,
+
+    /// UserCmd blob (see [`super::usercmd::UserCmd`]).
+    /// Format:
+    /// - [u8; 64] payload
+    /// Future: connect handshake may negotiate axis/button schema; v1 is fixed layout.
+    UserCmd = 2,
 }

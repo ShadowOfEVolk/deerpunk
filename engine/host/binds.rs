@@ -76,13 +76,15 @@ impl Binds {
         });
     }
 
-    /// Press-edge: enqueue bound commands. Skip while console is open.
+    /// Key edges: `+cmd` on press, `-cmd` on release (if bind starts with `+`).
+    /// Skip while console is open.
     pub fn tick(&self, input: &Input, cmd: &CmdSystem, console_open: bool) {
         if console_open {
             // Don't leave stale edges after console ate keys.
             if let Ok(mut prev) = self.prev_down.lock() {
                 prev.clear();
             }
+            crate::move_state::clear();
             return;
         }
 
@@ -92,8 +94,16 @@ impl Binds {
         for (key, command) in &map {
             let down = input.is_down(*key);
             let was = prev.get(key).copied().unwrap_or(false);
-            if down && !was && !command.is_empty() {
+            if command.is_empty() {
+                prev.insert(*key, down);
+                continue;
+            }
+            if down && !was {
                 fired.push(command.clone());
+            } else if !down && was {
+                if let Some(rest) = command.strip_prefix('+') {
+                    fired.push(format!("-{rest}"));
+                }
             }
             prev.insert(*key, down);
         }

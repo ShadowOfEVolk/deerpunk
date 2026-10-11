@@ -28,6 +28,8 @@ struct Snapshot {
     time: f32,
     entities: Vec<EntitySnap>,
     assets: Vec<AssetInfo>,
+    /// Published `systems.list` payload (darkdemo-style timings).
+    systems: Value,
 }
 
 struct ClientState {
@@ -114,6 +116,11 @@ pub fn start(host: &str, port: u16) {
             time: 0.0,
             entities: Vec::new(),
             assets: Vec::new(),
+            systems: json!({
+                "frame_count": 0,
+                "period_secs": 0.0,
+                "systems": [],
+            }),
         })),
         collections: collections.clone(),
         running: Arc::new(Mutex::new(true)),
@@ -251,6 +258,14 @@ pub fn sync_assets(assets: Vec<AssetInfo>) {
     inner.snapshot.lock().unwrap().assets = assets;
 }
 
+/// Refresh systems profiler snapshot (`systems.list`).
+pub fn sync_systems(systems: Value) {
+    let Some(inner) = inner() else {
+        return;
+    };
+    inner.snapshot.lock().unwrap().systems = systems;
+}
+
 fn handle_message(
     line: &str,
     snapshot: &Arc<Mutex<Snapshot>>,
@@ -350,6 +365,7 @@ fn collection_list(col_id: &str, snapshot: &Arc<Mutex<Snapshot>>) -> Value {
                 "assets": assets,
             })
         }
+        "systems" => snap.systems.clone(),
         _ => json!({
             "time": snap.time,
             "count": 0,

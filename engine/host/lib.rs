@@ -19,10 +19,14 @@ pub mod cvar;
 pub mod fs;
 pub mod gameinfo;
 pub mod inspector;
+pub mod move_state;
 pub mod schedule;
 pub mod scene_cmd;
 pub mod stdin_cmd;
+pub mod system_profiler;
+pub mod players;
 pub use schedule::Schedule;
+pub use players::{PlayerConnection, PlayerConnections};
 
 pub mod api;
 pub use api::{ComponentId, EntityId};
@@ -33,10 +37,11 @@ pub use server_engine::ServerEngine;
 pub mod engine_api;
 pub use deerpunk_engine_common::world;
 
-use deerpunk_engine_common::network::protocol::SVC;
+use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::sound_event::{
     SoundEventRpc, KIND_PLAY_2D, KIND_PLAY_3D, KIND_START_ATTACHED, KIND_STOP_ATTACHED,
 };
+use deerpunk_engine_common::network::UserCmd;
 pub use engine_api::cmd::*;
 pub use engine_api::imgui::*;
 pub use engine_api::input::*;
@@ -190,11 +195,59 @@ inventory::submit! {
         flags: cvar::RENDERINFO,
     }
 }
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_bloom",
+        default: "1",
+        desc: "Enable HDR bloom postfx (0/1).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_bloom_threshold",
+        default: "0.7",
+        desc: "Bloom luminance threshold.",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_bloom_intensity",
+        default: "1",
+        desc: "Bloom add intensity.",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_grain",
+        default: "1",
+        desc: "Enable film grain postfx (0/1).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_grain_strength",
+        default: "0.025",
+        desc: "Film grain strength.",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_grain_downscale",
+        default: "3",
+        desc: "Film grain noise tile scale.",
+        flags: cvar::RENDERINFO,
+    }
+}
 
 #[cfg(any(feature = "client", feature = "full"))]
-extern "C" fn host_frame_trampoline(ctx: *mut std::ffi::c_void) {
+extern "C" fn host_frame_ui_trampoline(ctx: *mut std::ffi::c_void) {
     let host = unsafe { &mut *(ctx as *mut Host) };
-    host.frame(0.016);
+    host.frame_ui();
 }
 
 // ── Host ─────────────────────────────────────────────────────
@@ -209,6 +262,7 @@ pub struct Host {
     pub gameinfo: gameinfo::GameInfo,
     pub resources: deerpunk_engine_common::resource::ResourceManager,
     pub channel: Channel,
+    pub players: players::PlayerConnections,
     server_dll: Option<ServerDll>,
     #[cfg(any(feature = "client", feature = "full"))]
     client_dll: Option<ClientDll>,
@@ -243,6 +297,7 @@ impl Host {
             gameinfo: gameinfo::GameInfo::from_gamedir(std::path::Path::new(".")),
             resources,
             channel: Channel::new(),
+            players: players::PlayerConnections::default(),
             server_dll: None,
             #[cfg(any(feature = "client", feature = "full"))]
             client_dll: None,
@@ -276,6 +331,7 @@ impl Host {
         self.cvar.initialize();
         self.cmd.initialize();
         binds::Binds::register_commands(&mut self.cmd);
+        move_state::register_commands(&mut self.cmd);
         scene_cmd::register(&mut self.cmd);
         self.cmd.register_command("quit", |_| {
             REQUEST_QUIT.store(true, Ordering::SeqCst);
@@ -318,16 +374,7 @@ impl Host {
             });
         }
 
-        let port = self
-            .cvar
-            .get_string("sv_inspector_port")
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(9000);
-        let host = self
-            .cvar
-            .get_string("sv_inspector_host")
-            .unwrap_or_else(|| "127.0.0.1".into());
-        log::info!("[inspector] cfg host={host} port={port}");
+        // Descriptors early; WS starts after gamelibs + `.rc` / stuffcmds (see `start_inspector`).
         inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
             id: "assets".into(),
             label: "Assets".into(),
@@ -339,10 +386,32 @@ impl Host {
             id_field: "index".into(),
             nested_in: None,
         });
-        inspector::start(&host, port);
+        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+            id: "systems".into(),
+            label: "Systems".into(),
+            group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
+            modes: vec![deerpunk_inspector_protocol::CollectionMode::List],
+            id_field: "name".into(),
+            nested_in: None,
+        });
         stdin_cmd::start();
 
         log::info!("Engine initialized");
+    }
+
+    /// Start inspector WS using current cvars (after configs / stuffcmds).
+    pub fn start_inspector(&self) {
+        let port = self
+            .cvar
+            .get_string("sv_inspector_port")
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(9000);
+        let host = self
+            .cvar
+            .get_string("sv_inspector_host")
+            .unwrap_or_else(|| "127.0.0.1".into());
+        log::info!("[inspector] start host={host} port={port}");
+        inspector::start(&host, port);
     }
 
     fn register_internal_components(&mut self) {
@@ -398,6 +467,9 @@ impl Host {
 
         // Xash: `{gamefolder}.rc` (exec configs…; stuffcmds). After gamelibs so cmds exist.
         self.exec_game_rc();
+
+        // After gamelibs + startup cmds (autoexec may set sv_inspector_*).
+        self.start_inspector();
     }
 
     /// Exec `{gamedir}/{gamename}.rc`. Fallback: configs + stuffcmds if missing.
@@ -448,10 +520,73 @@ impl Host {
     pub fn load_client_dll(&mut self, _path: &str) {}
 
     pub fn set_server_enabled(&mut self, on: bool) {
+        let was = self.server_engine.enabled;
         self.server_engine.set_enabled(on);
-        if !on {
+        if on {
+            // Listen server: host wires local client ↔ server after map is up.
+            if was {
+                self.disconnect_local_client();
+            }
+            self.connect_local_client();
+            self.replicate_full = true;
+        } else if was {
+            self.disconnect_local_client();
             self.replicate_full = true;
         }
+    }
+
+    /// Local listen client joins the running server (PlayerConnection, then gamelib hook).
+    pub fn connect_local_client(&mut self) {
+        #[cfg(not(any(feature = "client", feature = "full")))]
+        {
+            log::info!("[players] connect_local skipped (no client feature)");
+            return;
+        }
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            if self.client_engine.is_none() {
+                return;
+            }
+            let name = self.gameinfo.window_title().to_string();
+            let slot = match self.players.connect_local(name) {
+                Some(c) => c.slot,
+                None => return,
+            };
+            if let Some(ref dll) = self.server_dll {
+                unsafe {
+                    dll.player_connected(slot);
+                }
+            }
+        }
+    }
+
+    pub fn disconnect_local_client(&mut self) {
+        if let Some(conn) = self.players.disconnect_local() {
+            if let Some(ref dll) = self.server_dll {
+                unsafe {
+                    dll.player_disconnected(conn.slot);
+                }
+            }
+        }
+        self.players.clear();
+    }
+
+    /// Spawn `{gamedir}/prefabs/{name}.prefab` into the server world.
+    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
+    pub fn spawn_prefab(&mut self, name: &str) -> Result<u64, String> {
+        let gamedir = self.fs.gamedir().to_path_buf();
+        deerpunk_engine_server::spawn_prefab(
+            &self.server_engine.world,
+            &gamedir,
+            &mut self.resources,
+            name,
+        )
+        .map_err(|e| e.message)
+    }
+
+    #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
+    pub fn spawn_prefab(&mut self, _name: &str) -> Result<u64, String> {
+        Err("spawn_prefab unavailable".into())
     }
 
     /// Load a scene file `{gamedir}/scenes/{name}.scene` (server-owned).
@@ -670,56 +805,107 @@ impl Host {
     }
 
     pub fn frame(&mut self, delta_time: f32) {
-        self.rebind_cmd_refs();
-        stdin_cmd::drain(&self.cmd);
-        self.drain_ui_commands();
-        self.drain_channel();
-        self.drain_scene_cmd();
-        self.time_secs += delta_time.max(0.0);
+        system_profiler::begin_frame();
 
-        // Console before gamelib so open console eats keys for freecam/etc.
+        {
+            let _g = system_profiler::scope("host.cmd");
+            self.rebind_cmd_refs();
+            stdin_cmd::drain(&self.cmd);
+            self.drain_ui_commands();
+            self.drain_channel_cmds();
+            self.drain_scene_cmd();
+            self.time_secs += delta_time.max(0.0);
+        }
+
+        // Console input before gamelib so open console eats keys for freecam/etc.
+        // ImGui draw runs later in [`Self::frame_ui`] (inside NewFrame).
         #[cfg(any(feature = "client", feature = "full"))]
         {
+            let _g = system_profiler::scope("host.console");
             let Host {
                 console,
                 cvar,
                 cmd,
                 client_engine,
-                server_engine,
                 ..
             } = self;
             if let Some(client) = client_engine.as_mut() {
-                console.tick(cvar, cmd, &mut client.input);
+                console.tick_input(cvar, cmd, &mut client.input);
                 let cons_open = console::Console::visible(cvar);
                 binds::global().tick(&client.input, cmd, cons_open);
-                bsp_debug_ui::tick(cvar, &client.world, &server_engine.world);
-                fps_ui::tick(cvar);
             }
         }
 
         #[cfg(any(feature = "client", feature = "full"))]
-        if let Some(ref dll) = self.client_dll {
-            unsafe {
-                dll.frame(delta_time);
-            }
-        }
-
-        if self.server_engine.enabled {
-            if let Some(ref dll) = self.server_dll {
+        {
+            let _g = system_profiler::scope("client.dll");
+            if let Some(ref dll) = self.client_dll {
                 unsafe {
                     dll.frame(delta_time);
                 }
             }
-            let _ = self.server_engine.frame(delta_time);
-            self.tick_lightstyles();
         }
 
-        self.sync_client_world();
-        inspector::sync_world(&self.server_engine.world, delta_time);
-        inspector::sync_assets(self.resources.list_assets());
+        // UserCmd from this client frame → available to server.dll same tick.
+        self.drain_channel_usercmds();
+
+        if self.server_engine.enabled {
+            {
+                let _g = system_profiler::scope("server.dll");
+                if let Some(ref dll) = self.server_dll {
+                    unsafe {
+                        dll.frame(delta_time);
+                    }
+                }
+            }
+            {
+                let _g = system_profiler::scope("server.engine");
+                let _ = self.server_engine.frame(delta_time);
+            }
+            {
+                let _g = system_profiler::scope("host.lightstyles");
+                self.tick_lightstyles();
+            }
+        }
+
+        {
+            let _g = system_profiler::scope("host.replicate");
+            self.sync_client_world();
+        }
+        {
+            let _g = system_profiler::scope("host.inspector");
+            inspector::sync_world(&self.server_engine.world, delta_time);
+            inspector::sync_assets(self.resources.list_assets());
+            inspector::sync_systems(system_profiler::snapshot_for_inspector());
+        }
+
+        system_profiler::end_frame();
+    }
+
+    /// ImGui overlays — call only between renderer `imgui_begin_frame` / end.
+    #[cfg(any(feature = "client", feature = "full"))]
+    pub fn frame_ui(&mut self) {
+        let Host {
+            console,
+            cvar,
+            client_engine,
+            server_engine,
+            ..
+        } = self;
+        let Some(client) = client_engine.as_ref() else {
+            return;
+        };
+        console.tick_draw(cvar);
+        bsp_debug_ui::tick(cvar, &client.world, &server_engine.world);
+        fps_ui::tick(cvar);
     }
 
     fn drain_channel(&mut self) {
+        self.drain_channel_cmds();
+        self.drain_channel_usercmds();
+    }
+
+    fn drain_channel_cmds(&mut self) {
         for cmd in self.channel.drain_client() {
             match cmd {
                 ClientCmd::Map(name) => {
@@ -733,8 +919,27 @@ impl Host {
                     self.cmd.add_command("disconnect".into());
                     self.cmd.frame();
                     self.set_server_enabled(false);
+                    move_state::clear();
                 }
             }
+        }
+    }
+
+    fn drain_channel_usercmds(&mut self) {
+        for packet in self.channel.drain_client_bytes() {
+            let Some((&clc, payload)) = packet.split_first() else {
+                continue;
+            };
+            if clc != CLC::UserCmd as u8 {
+                log::warn!("[channel] unknown CLC={clc}");
+                continue;
+            }
+            let Some(cmd) = UserCmd::decode(payload) else {
+                log::warn!("[channel] bad UserCmd payload len={}", payload.len());
+                continue;
+            };
+            let slot = self.players.local_slot().unwrap_or(0);
+            self.players.set_usercmd(slot, cmd);
         }
     }
 
@@ -746,6 +951,7 @@ impl Host {
             client_engine,
             replication,
             replicate_full,
+            players,
             ..
         } = self;
         let Some(client) = client_engine.as_mut() else {
@@ -765,10 +971,33 @@ impl Host {
         } else {
             replication.sync_transforms(&server_engine.world, &client.world);
         }
+        // mlook is client-owned: stamp local viewangles onto the mirrored pawn cam.
+        apply_local_view_to_client(players, replication, &client.world);
+    }
+
+    /// Apply absolute viewangles to the local player's client-mirrored transform.
+    #[cfg(any(feature = "client", feature = "full"))]
+    pub fn apply_local_view(&mut self, yaw: f32, pitch: f32) {
+        let Some(slot) = self.players.local_slot() else {
+            return;
+        };
+        let Some(sid) = self.players.get(slot).and_then(|p| p.entity) else {
+            return;
+        };
+        let Some(client) = self.client_engine.as_ref() else {
+            return;
+        };
+        let Some(cid) = self.replication.client_of(sid) else {
+            return;
+        };
+        stamp_view_on_entity(&client.world, cid, yaw, pitch);
     }
 
     #[cfg(not(any(feature = "client", feature = "full")))]
     fn sync_client_world(&mut self) {}
+
+    #[cfg(not(any(feature = "client", feature = "full")))]
+    pub fn apply_local_view(&mut self, _yaw: f32, _pitch: f32) {}
 
     /// Evaluate [`LightstyleTable`] patterns and upload scales to the GPU.
     #[cfg(any(feature = "client", feature = "full"))]
@@ -816,7 +1045,6 @@ impl Host {
         self.client_engine.as_mut().unwrap().init_extractor();
 
         let mut last_time = std::time::Instant::now();
-        let host_ptr = self as *mut Self as *mut std::ffi::c_void;
         loop {
             let now = std::time::Instant::now();
             let dt = now.duration_since(last_time).as_secs_f32();
@@ -900,11 +1128,19 @@ impl Host {
                 }
             }
 
-            // Server simulate only while enabled (also runs inside host.frame via trampoline).
+            // Poll first so client.dll mlook sees this frame's mouse before extract.
+            if !self.client_engine.as_mut().unwrap().poll_events() {
+                break;
+            }
+
+            // Server simulate only while enabled.
             if self.server_engine.enabled {
                 self.server_engine.world.simulate(dt);
             }
-            self.sync_client_world();
+
+            // client.dll (mlook + UserCmd) → server.dll → replicate + stamp local view.
+            // Must run before extract so the camera uses this frame's viewangles.
+            self.frame(dt);
 
             {
                 let client = self.client_engine.as_mut().unwrap();
@@ -914,14 +1150,31 @@ impl Host {
                 let e = self.cvar.get_f32_or("r_exposure", 1.0);
                 r.set_exposure_override(if e < 0.0 { None } else { Some(e) });
                 r.set_tonemap_mode(self.cvar.get_f32_or("r_tonemap", -1.0));
+                r.set_bloom(
+                    self.cvar.get_f32_or("r_bloom", 1.0) >= 0.5,
+                    self.cvar.get_f32_or("r_bloom_threshold", 0.7),
+                    self.cvar.get_f32_or("r_bloom_intensity", 1.0),
+                );
+                r.set_grain(
+                    self.cvar.get_f32_or("r_grain", 1.0) >= 0.5,
+                    self.cvar.get_f32_or("r_grain_strength", 0.025),
+                    self.cvar.get_f32_or("r_grain_downscale", 3.0).clamp(1.0, 8.0),
+                );
             }
 
+            {
+                let client = self.client_engine.as_mut().unwrap();
+                client.advance_time(dt);
+            }
             let scene = self.client_engine.as_ref().unwrap().extract_scene();
 
-            if !self.client_engine.as_mut().unwrap().tick(
+            // Render: ImGui NewFrame wraps frame_ui (console/debug overlays).
+            let host_ptr = self as *mut Self as *mut std::ffi::c_void;
+            if !self.client_engine.as_mut().unwrap().tick_inner(
                 Some(&scene),
-                Some(host_frame_trampoline),
+                Some(host_frame_ui_trampoline),
                 host_ptr,
+                false,
             ) {
                 break;
             }
@@ -963,6 +1216,48 @@ impl Host {
 impl Default for Host {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(any(feature = "client", feature = "full"))]
+fn apply_local_view_to_client(
+    players: &players::PlayerConnections,
+    replication: &replicate::ReplicationState,
+    client_world: &deerpunk_engine_common::world::World,
+) {
+    let Some(slot) = players.local_slot() else {
+        return;
+    };
+    let Some(p) = players.get(slot) else {
+        return;
+    };
+    let Some(sid) = p.entity else {
+        return;
+    };
+    let Some(cid) = replication.client_of(sid) else {
+        return;
+    };
+    stamp_view_on_entity(client_world, cid, p.usercmd.yaw, p.usercmd.pitch);
+}
+
+#[cfg(any(feature = "client", feature = "full"))]
+fn stamp_view_on_entity(
+    client_world: &deerpunk_engine_common::world::World,
+    entity: u64,
+    yaw: f32,
+    pitch: f32,
+) {
+    use deerpunk_engine_common::components::TransformComponent;
+    use glam::Quat;
+
+    let tid = client_world.component_init::<TransformComponent>();
+    let ptr = client_world.get_raw(entity, tid) as *mut TransformComponent;
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let t = &mut *ptr;
+        t.rotation = Quat::from_rotation_z(-yaw) * Quat::from_rotation_x(pitch.clamp(-1.5, 1.5));
     }
 }
 

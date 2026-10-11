@@ -34,6 +34,7 @@ pub struct InputApi {
     is_key_down_fn: extern "C" fn(*mut u8, u32) -> bool,
     mouse_dx_fn: extern "C" fn(*mut u8) -> f32,
     mouse_dy_fn: extern "C" fn(*mut u8) -> f32,
+    set_relative_mouse_fn: extern "C" fn(*mut u8, i32) -> i32,
 }
 
 unsafe impl Send for InputApi {}
@@ -46,6 +47,9 @@ impl InputApi {
             is_key_down_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:is_key_down")) },
             mouse_dx_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:mouse_dx")) },
             mouse_dy_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:mouse_dy")) },
+            set_relative_mouse_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:input:set_relative_mouse"))
+            },
         }
     }
 
@@ -59,5 +63,9 @@ impl InputApi {
 
     pub fn mouse_dy(&self) -> f32 {
         (self.mouse_dy_fn)(self.ctx)
+    }
+
+    pub fn set_relative_mouse(&self, on: bool) {
+        (self.set_relative_mouse_fn)(self.ctx, if on { 1 } else { 0 });
     }
 }

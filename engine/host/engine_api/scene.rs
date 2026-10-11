@@ -40,3 +40,35 @@ inventory::submit! {
         flags: 0,
     }
 }
+
+/// `v1:scene:spawn_prefab` — spawn `{gamedir}/prefabs/{name}.prefab`. Returns entity id, or 0.
+pub extern "C" fn tramp_scene_spawn_prefab(
+    engine: *mut u8,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> u64 {
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    let name = unsafe {
+        let bytes = std::slice::from_raw_parts(name_ptr, name_len);
+        std::str::from_utf8(bytes).unwrap_or("")
+    };
+    if name.is_empty() {
+        return 0;
+    }
+    match host.spawn_prefab(name) {
+        Ok(id) => id,
+        Err(e) => {
+            log::error!("[scene] spawn_prefab {name}: {e}");
+            0
+        }
+    }
+}
+
+inventory::submit! {
+    EngineApiMethod {
+        name: "v1:scene:spawn_prefab",
+        callback: tramp_scene_spawn_prefab as *const (),
+        flags: 0,
+    }
+}
+

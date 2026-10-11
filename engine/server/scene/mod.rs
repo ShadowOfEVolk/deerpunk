@@ -11,5 +11,5 @@ mod prefab_manager;
 mod spawner;
 
 pub use bsp_place::place_bsp_map;
-pub use load::{SceneLoadError, load_prefab_file, load_scene};
+pub use load::{SceneLoadError, load_prefab_file, load_scene, spawn_prefab};
 pub use spawner::{spawn_map_entities, EntitySpawnDescriptor, EntitySpawner};

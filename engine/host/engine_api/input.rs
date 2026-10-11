@@ -26,8 +26,17 @@ pub extern "C" fn tramp_mouse_dy(engine: *mut u8) -> f32 {
     }
 }
 
+pub extern "C" fn tramp_set_relative_mouse(engine: *mut u8, on: i32) -> i32 {
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    if let Some(ce) = host.client_engine.as_mut() {
+        ce.set_relative_mouse(on != 0);
+    }
+    0
+}
+
 // ── Inventory registrations ──────────────────────────────────
 
 inventory::submit! { EngineApiMethod { name: "v1:input:is_key_down", callback: tramp_is_key_down as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:input:mouse_dx", callback: tramp_mouse_dx as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:input:mouse_dy", callback: tramp_mouse_dy as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:input:set_relative_mouse", callback: tramp_set_relative_mouse as *const (), flags: 0 } }

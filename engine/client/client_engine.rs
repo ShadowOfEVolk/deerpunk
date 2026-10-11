@@ -32,6 +32,8 @@ pub struct ClientEngine {
     audio_scene_entity: Option<u64>,
     /// Master volume (from `s_volume`), applied in the per-frame update.
     audio_volume: f32,
+    /// Accumulated client time (seconds) for postfx / animated shaders.
+    time: f32,
 }
 
 impl ClientEngine {
@@ -59,7 +61,25 @@ impl ClientEngine {
             audio_query: None,
             audio_scene_entity: None,
             audio_volume: 1.0,
+            time: 0.0,
         }
+    }
+
+    pub fn advance_time(&mut self, dt: f32) {
+        self.time += dt.max(0.0);
+    }
+
+    pub fn time(&self) -> f32 {
+        self.time
+    }
+
+    pub fn set_relative_mouse(&mut self, on: bool) {
+        self.app.set_relative_mouse(on);
+    }
+
+    /// Poll OS events into [`Self::input`]. Returns `false` on quit.
+    pub fn poll_events(&mut self) -> bool {
+        self.app.poll_events(&mut self.input)
     }
 
     /// Apply gameinfo window title + icon (call after gamedir / gameinfo are known).
@@ -241,10 +261,13 @@ impl ClientEngine {
     }
 
     pub fn extract_scene(&self) -> RenderScene {
-        self.extractor
+        let mut scene = self
+            .extractor
             .as_ref()
             .map(|e| e.extract(&self.world))
-            .unwrap_or_else(RenderScene::new)
+            .unwrap_or_else(RenderScene::new);
+        scene.game_time = self.time;
+        scene
     }
 
     pub fn ui_runtime(&self) -> Option<&UiRuntime> {
@@ -278,7 +301,18 @@ impl ClientEngine {
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
     ) -> bool {
-        if !self.app.poll_events(&mut self.input) {
+        self.tick_inner(scene, game_frame_fn, game_frame_ctx, true)
+    }
+
+    /// Render a frame. If `poll` is false, caller must have already called [`Self::poll_events`].
+    pub fn tick_inner(
+        &mut self,
+        scene: Option<&RenderScene>,
+        game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
+        game_frame_ctx: *mut std::ffi::c_void,
+        poll: bool,
+    ) -> bool {
+        if poll && !self.app.poll_events(&mut self.input) {
             return false;
         }
 
@@ -449,6 +483,10 @@ fn load_shader_sources(rm: &mut ResourceManager) -> ShaderSources {
         tonemap: load_wgsl_required(rm, shader_dir, "tonemap"),
         luminance: load_wgsl_required(rm, shader_dir, "luminance"),
         storm: load_wgsl_required(rm, shader_dir, "storm"),
+        bloom_threshold: load_wgsl_required(rm, shader_dir, "bloom_threshold"),
+        bloom_blur: load_wgsl_required(rm, shader_dir, "bloom_blur"),
+        bloom_composite: load_wgsl_required(rm, shader_dir, "bloom_composite"),
+        grain: load_wgsl_required(rm, shader_dir, "grain"),
         ui,
     }
 }

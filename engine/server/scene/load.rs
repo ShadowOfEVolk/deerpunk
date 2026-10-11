@@ -103,3 +103,23 @@ pub fn load_scene(
 
     Ok(spawned)
 }
+
+/// Spawn a single entity from `{gamedir}/prefabs/{name}.prefab`.
+pub fn spawn_prefab(
+    world: &World,
+    gamedir: &Path,
+    resources: &mut ResourceManager,
+    name: &str,
+) -> Result<EntityId, SceneLoadError> {
+    let prefab = load_prefab_file(gamedir, name)?;
+    if prefab.components.is_empty() {
+        return Err(format!("prefab '{name}': no components").into());
+    }
+    let entity = world.spawn();
+    for (comp_name, value) in &prefab.components {
+        apply_component(world, gamedir, resources, entity, comp_name, value)
+            .map_err(|e| format!("prefab '{name}' {comp_name}: {e}"))?;
+    }
+    log::info!("[scene] spawned prefab '{name}' entity={entity:#x}");
+    Ok(entity)
+}

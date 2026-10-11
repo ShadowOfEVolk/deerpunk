@@ -41,7 +41,8 @@ impl Console {
     }
 
     /// Call during ImGui frame, **before** gamelib `server_frame`.
-    pub fn tick(&mut self, cvar: &CvarSystem, cmd: &CmdSystem, input: &mut Input) {
+    /// Toggle / text / key-eat. Call before gamelib. Draw separately inside ImGui frame.
+    pub fn tick_input(&mut self, cvar: &CvarSystem, cmd: &CmdSystem, input: &mut Input) {
         let grave = input.is_down(KEY_GRAVE);
         if grave && !self.grave_down {
             let on = !Self::visible(cvar);
@@ -88,8 +89,18 @@ impl Console {
         if grave {
             input.set_key(KEY_GRAVE, true);
         }
+    }
 
-        self.draw();
+    /// ImGui widgets — must run between `imgui_begin_frame` / end.
+    pub fn tick_draw(&mut self, cvar: &CvarSystem) {
+        if Self::visible(cvar) {
+            self.draw();
+        }
+    }
+
+    pub fn tick(&mut self, cvar: &CvarSystem, cmd: &CmdSystem, input: &mut Input) {
+        self.tick_input(cvar, cmd, input);
+        self.tick_draw(cvar);
     }
 
     fn backspace_char(&mut self) {
