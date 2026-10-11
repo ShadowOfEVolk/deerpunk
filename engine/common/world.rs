@@ -355,6 +355,7 @@ fn is_game_component_token(token: &str) -> bool {
             | "CameraComponent"
             | "Worldspawn"
             | "PointLight"
+            | "SoundEmitter"
             | "MapKv"
             | "UiDocumentComponent"
             | "SimpleEntity"

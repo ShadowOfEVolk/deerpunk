@@ -319,6 +319,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audionimbus"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcc44eca573e79772966e324839246dc0639a893217e435f6e63f69902284e71"
+dependencies = [
+ "audionimbus-sys",
+ "bitflags 2.13.1",
+]
+
+[[package]]
+name = "audionimbus-sys"
+version = "4.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "111aaefa0bd5af1de99eae6baff76fd3a98bee1d458fc23cc6c3da4a284e8722"
+dependencies = [
+ "bindgen 0.71.1",
+ "zip",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1055,11 +1075,26 @@ dependencies = [
  "deerpunk-engine-renderer",
  "deerpunk-ui",
  "glam 0.33.3",
+ "image",
  "log",
  "rand 0.8.5",
  "raw-window-handle",
  "sdl2",
  "wgpu 30.0.0",
+]
+
+[[package]]
+name = "deerpunk-engine-client-fmod"
+version = "0.1.0"
+dependencies = [
+ "audionimbus",
+ "audionimbus-sys",
+ "deerpunk-engine-client",
+ "deerpunk-engine-common",
+ "glam 0.33.3",
+ "libfmod",
+ "libloading",
+ "log",
 ]
 
 [[package]]
@@ -1089,6 +1124,7 @@ dependencies = [
  "base64",
  "bincode",
  "deerpunk-engine-client",
+ "deerpunk-engine-client-fmod",
  "deerpunk-engine-common",
  "deerpunk-engine-server",
  "deerpunk-inspector-protocol",
@@ -2495,6 +2531,14 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libfmod"
+version = "1.0.0"
+source = "git+https://github.com/GageHowe/libfmod#1b8cb5677db3e6b2124a0e923cad0286225990a9"
+dependencies = [
+ "bitflags 1.3.2",
+]
 
 [[package]]
 name = "libfuzzer-sys"
@@ -6099,6 +6143,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.110",
+]
+
+[[package]]
+name = "zip"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "760394e246e4c28189f19d488c058bf16f564016aefac5d32bb1f3b51d5e9261"
+dependencies = [
+ "byteorder",
+ "crc32fast",
+ "crossbeam-utils",
+ "flate2",
 ]
 
 [[package]]

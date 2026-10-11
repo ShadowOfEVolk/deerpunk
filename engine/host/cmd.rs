@@ -1,4 +1,5 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::cvar::CvarSystem;
@@ -37,6 +38,9 @@ pub struct CmdSystem {
     commands: HashMap<String, CommandCallback>,
     cvar: *const CvarSystem,
     fs: *const FileSystem,
+    /// Process argv (`+map foo` …), consumed once by `stuffcmds`.
+    cmdline: Vec<String>,
+    stuffcmds_done: Cell<bool>,
 }
 
 unsafe impl Send for CmdSystem {}
@@ -50,12 +54,20 @@ impl CmdSystem {
             commands: HashMap::new(),
             cvar: std::ptr::null(),
             fs: std::ptr::null(),
+            cmdline: Vec::new(),
+            stuffcmds_done: Cell::new(false),
         }
     }
 
     pub fn set_refs(&mut self, cvar: &CvarSystem, fs: &FileSystem) {
         self.cvar = cvar as *const CvarSystem;
         self.fs = fs as *const FileSystem;
+    }
+
+    /// Capture process argv for later `stuffcmds` (call before startup scripts).
+    pub fn set_cmdline(&mut self, args: Vec<String>) {
+        self.cmdline = args;
+        self.stuffcmds_done.set(false);
     }
 
     fn cvar(&self) -> &CvarSystem {
@@ -70,6 +82,32 @@ impl CmdSystem {
         self.initialized = true;
         self.register_exec_command();
         self.register_echo_command();
+        self.register_toggle_command();
+        self.register_stuffcmds_command();
+    }
+
+    /// Quake/Xash: apply `+command args` from the process command line.
+    /// Intended at the end of `.rc` / after configs; runs at most once.
+    fn register_stuffcmds_command(&mut self) {
+        self.register_command("stuffcmds", |ctx| {
+            ctx.cmd.exec_stuffcmds();
+        });
+    }
+
+    pub fn exec_stuffcmds(&self) {
+        if self.stuffcmds_done.get() {
+            return;
+        }
+        self.stuffcmds_done.set(true);
+        let cmds = collect_plus_commands(self.cmdline.iter().cloned());
+        if cmds.is_empty() {
+            return;
+        }
+        for c in &cmds {
+            log::info!("[stuffcmds] {c}");
+            self.add_command(c.clone());
+        }
+        self.process_buffer();
     }
 
     fn register_echo_command(&mut self) {
@@ -81,6 +119,27 @@ impl CmdSystem {
                 } else {
                     println!("{}", ctx.args.join(" "));
                 }
+            }),
+        );
+    }
+
+    /// Flip a cvar between 0 and 1: `toggle <name>`.
+    fn register_toggle_command(&mut self) {
+        self.register_command(
+            "toggle",
+            Box::new(move |ctx: CommandExecutionContext<'_>| {
+                let Some(name) = ctx.args.first().copied() else {
+                    println!("Usage: toggle <cvar>");
+                    return;
+                };
+                if name.is_empty() {
+                    println!("Usage: toggle <cvar>");
+                    return;
+                }
+                let on = ctx.cmd.cvar().get_bool_or(name, false);
+                let next = if on { "0" } else { "1" };
+                ctx.cmd.cvar().set_or_create(name, next);
+                println!("toggle {name} = {next}");
             }),
         );
     }
@@ -99,13 +158,29 @@ impl CmdSystem {
 
     fn exec_file(&self, filename: &str) {
         println!("Executing file: {}", filename);
-        let Ok(mut iterator) = self.fs().stream_file(filename) else {
-            println!("Failed to open file: {}", filename);
-            return;
+        self.exec_script_file(filename);
+    }
+
+    /// Run each non-comment line as a console command (binds, cvars, etc.).
+    pub fn exec_script_file(&self, path: &str) {
+        let resolved = if !self.fs.is_null() {
+            self.fs().resolve_path(path)
+        } else {
+            Path::new(path).to_path_buf()
         };
-        for line in iterator.lines() {
-            let line = line.unwrap();
-            self.add_command(line);
+        let content = match std::fs::read_to_string(&resolved) {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("[cfg] can't read {}: {err}", resolved.display());
+                return;
+            }
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+                continue;
+            }
+            self.add_command(line.to_string());
         }
         self.process_buffer();
     }
@@ -278,15 +353,21 @@ fn strip_cfg_quotes(value: &str) -> &str {
     v
 }
 
+/// Collect Quake-style `+cmd args` from argv.
+/// A `+`/`-` token (not `+1` / `-1` numeric) starts/ends a statement.
 pub fn collect_plus_commands<I: Iterator<Item = String>>(args: I) -> Vec<String> {
     let mut out = Vec::new();
     let mut pending: Option<Vec<String>> = None;
     for arg in args {
-        if let Some(cmd) = arg.strip_prefix('+') {
+        if is_cmdline_switch(&arg, '+') {
             if let Some(parts) = pending.take() {
                 out.push(parts.join(" "));
             }
-            pending = Some(vec![cmd.to_string()]);
+            pending = Some(vec![arg[1..].to_string()]);
+        } else if is_cmdline_switch(&arg, '-') {
+            if let Some(parts) = pending.take() {
+                out.push(parts.join(" "));
+            }
         } else if let Some(parts) = pending.as_mut() {
             parts.push(arg);
         }
@@ -295,6 +376,15 @@ pub fn collect_plus_commands<I: Iterator<Item = String>>(args: I) -> Vec<String>
         out.push(parts.join(" "));
     }
     out
+}
+
+fn is_cmdline_switch(arg: &str, prefix: char) -> bool {
+    let mut chars = arg.chars();
+    if chars.next() != Some(prefix) {
+        return false;
+    }
+    // Quake: `+1` / `-3` are not command switches.
+    !matches!(chars.next(), Some('0'..='9'))
 }
 
 #[cfg(test)]
@@ -328,6 +418,24 @@ mod tests {
                 args(&["--features", "window", "+toggle", "show_hud"]).into_iter()
             ),
             vec!["toggle show_hud".to_string()]
+        );
+    }
+
+    #[test]
+    fn dash_terminates_plus_args() {
+        assert_eq!(
+            collect_plus_commands(
+                args(&["+map", "school", "-dev", "3", "+disconnect"]).into_iter()
+            ),
+            vec!["map school".to_string(), "disconnect".to_string()]
+        );
+    }
+
+    #[test]
+    fn numeric_plus_is_not_a_command() {
+        assert_eq!(
+            collect_plus_commands(args(&["+map", "c1a0", "+1", "ignored"]).into_iter()),
+            vec!["map c1a0 +1 ignored".to_string()]
         );
     }
 }

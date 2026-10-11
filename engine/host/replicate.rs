@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use deerpunk_engine_common::components::{
-    BspWorldDebug, CameraComponent, LightmapId, Material, Mesh3D, TransformComponent, Worldspawn,
+    BspWorldDebug, CameraComponent, LightmapId, Material, Mesh3D, SoundEmitter, TransformComponent,
+    Worldspawn,
 };
 use deerpunk_engine_common::world::World;
 
@@ -46,6 +47,7 @@ impl ReplicationState {
         let lm_id = server.component_init::<LightmapId>();
         let dbg_id = server.component_init::<BspWorldDebug>();
         let ws_id = server.component_init::<Worldspawn>();
+        let se_id = server.component_init::<SoundEmitter>();
 
         let ct = client.component_init::<TransformComponent>();
         let ccam = client.component_init::<CameraComponent>();
@@ -54,12 +56,14 @@ impl ReplicationState {
         let clm = client.component_init::<LightmapId>();
         let cdbg = client.component_init::<BspWorldDebug>();
         let cws = client.component_init::<Worldspawn>();
+        let cse = client.component_init::<SoundEmitter>();
 
         for e in server.inspect_entities() {
             let sid = e.id;
             let has_cam = server.has(sid, cam_id);
             let has_mesh = server.has(sid, mesh_id) && server.has(sid, mat_id);
-            if !has_cam && !has_mesh {
+            let has_se = server.has(sid, se_id);
+            if !has_cam && !has_mesh && !has_se {
                 continue;
             }
             if !server.has(sid, t_id) {
@@ -71,6 +75,11 @@ impl ReplicationState {
 
             if let Some(t) = copy_component::<TransformComponent>(server, sid, t_id) {
                 client.set(cid, ct, t);
+            }
+            if has_se {
+                if let Some(s) = copy_component::<SoundEmitter>(server, sid, se_id) {
+                    client.set(cid, cse, s);
+                }
             }
             if has_cam {
                 if let Some(c) = copy_component::<CameraComponent>(server, sid, cam_id) {

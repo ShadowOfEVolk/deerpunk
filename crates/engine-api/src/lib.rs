@@ -45,6 +45,7 @@ pub struct EngineApi {
     pub cmd: cmd::CmdApi,
     pub net: net::NetApi,
     pub resources: resources::ResourcesApi,
+    pub audio: audio::AudioApi,
 
     pub initialize: extern "C" fn(*mut u8, *const u8, usize),
     pub frame: extern "C" fn(*mut u8, f32) -> i32,
@@ -84,6 +85,7 @@ impl EngineApi {
             cmd: cmd::CmdApi::new(ctx, resolver),
             net: net::NetApi::new(ctx, resolver),
             resources: resources::ResourcesApi::new(ctx, resolver),
+            audio: audio::AudioApi::new(ctx, resolver),
 
             initialize: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:initialize")) },
             frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },

@@ -31,6 +31,26 @@ pub struct WorldApiResolved {
     component_init_raw_fn: extern "C" fn(*mut u8, *const u8, usize, usize, usize) -> u64,
     query_prepare_fn: extern "C" fn(*mut u8, *const u8, usize) -> u32,
     query_execute_fn: extern "C" fn(*mut u8, u32, extern "C" fn(u64, *const *const c_void, usize, *mut c_void), *mut c_void),
+    trace_line_fn: extern "C" fn(*mut u8, f32, f32, f32, f32, f32, f32, *mut TraceLineResult) -> i32,
+}
+
+/// Mirrors host `engine_host::engine_api::world::TraceLineResult`.
+#[repr(C)]
+pub struct TraceLineResult {
+    /// 1 = hit, 0 = miss.
+    pub hit: u32,
+    /// Distance fraction along the ray (0..1), 1.0 on miss.
+    pub fraction: f32,
+    /// World-space hit point (origin on miss).
+    pub point: [f32; 3],
+    /// NUL-padded texture name of the hit face.
+    pub tex: [u8; 64],
+}
+
+impl Default for TraceLineResult {
+    fn default() -> Self {
+        Self { hit: 0, fraction: 1.0, point: [0.0; 3], tex: [0; 64] }
+    }
 }
 
 unsafe impl Send for WorldApiResolved {}
@@ -54,6 +74,7 @@ impl WorldApiResolved {
             component_init_raw_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:component_init_raw")) },
             query_prepare_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_prepare")) },
             query_execute_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_execute")) },
+            trace_line_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:trace_line")) },
         }
     }
 
@@ -189,5 +210,27 @@ impl WorldApiResolved {
         ctx: *mut c_void,
     ) {
         (self.query_execute_fn)(self.ctx, query_id, callback, ctx);
+    }
+
+    /// Trace a line against the server BSP world mesh.
+    /// Returns `Some(result)` on hit (with hit point, fraction, texture name),
+    /// `None` on miss.
+    pub fn trace_line(&self, origin: [f32; 3], end: [f32; 3]) -> Option<TraceLineResult> {
+        let mut out = TraceLineResult::default();
+        let hit = (self.trace_line_fn)(
+            self.ctx,
+            origin[0],
+            origin[1],
+            origin[2],
+            end[0],
+            end[1],
+            end[2],
+            &mut out,
+        );
+        if hit != 0 {
+            Some(out)
+        } else {
+            None
+        }
     }
 }

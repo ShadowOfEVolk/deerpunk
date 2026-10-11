@@ -6,12 +6,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub type Entity = u64;
 
 static REQUEST_QUIT: AtomicBool = AtomicBool::new(false);
+/// `s_play <event>` console commands queued for the client frame.
+static S_PLAY_QUEUE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+pub mod binds;
 pub mod bsp_debug_ui;
+pub mod config_io;
+pub mod fps_ui;
 pub mod cmd;
 pub mod console;
 pub mod cvar;
 pub mod fs;
+pub mod gameinfo;
 pub mod inspector;
 pub mod schedule;
 pub mod scene_cmd;
@@ -26,6 +32,11 @@ pub use server_engine::ServerEngine;
 
 pub mod engine_api;
 pub use deerpunk_engine_common::world;
+
+use deerpunk_engine_common::network::protocol::SVC;
+use deerpunk_engine_common::network::sound_event::{
+    SoundEventRpc, KIND_PLAY_2D, KIND_PLAY_3D, KIND_START_ATTACHED, KIND_STOP_ATTACHED,
+};
 pub use engine_api::cmd::*;
 pub use engine_api::imgui::*;
 pub use engine_api::input::*;
@@ -64,21 +75,31 @@ pub mod client {
 }
 
 // ── Built-in CvarDefs ─────────────────────────
+// flags: ARCHIVE → configs/config.cfg, RENDERINFO → configs/video.cfg
 
 inventory::submit! {
-    cvar::CvarDef { name: "r_texturehandle", default: "", desc: "Shared memory texture handle for editor frame output" }
+    cvar::CvarDef { name: "r_texturehandle", default: "", desc: "Shared memory texture handle for editor frame output", flags: 0 }
 }
 inventory::submit! {
-    cvar::CvarDef { name: "gamedir", default: "examples/deathmatch/gamedir", desc: "Game directory path" }
+    cvar::CvarDef { name: "gamedir", default: "examples/deathmatch/gamedir", desc: "Game directory path", flags: 0 }
 }
 inventory::submit! {
-    cvar::CvarDef { name: "ipc_debug", default: "0", desc: "Enable IPC debug logging (1=log all messages)" }
+    cvar::CvarDef {
+        name: "gamename",
+        default: "",
+        desc: "Game folder name (from gamedir path / gameinfo). Used for {gamename}.rc",
+        flags: 0,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef { name: "ipc_debug", default: "0", desc: "Enable IPC debug logging (1=log all messages)", flags: 0 }
 }
 inventory::submit! {
     cvar::CvarDef {
         name: "sv_initial_scene",
         default: "",
-        desc: "Scene name to load after gamelib init (e.g. menu). Empty = gamelib loads itself."
+        desc: "Scene name to load after gamelib init (e.g. menu). Empty = gamelib loads itself.",
+        flags: 0,
     }
 }
 inventory::submit! {
@@ -86,6 +107,7 @@ inventory::submit! {
         name: "sv_inspector_port",
         default: "9000",
         desc: "WebSocket port for deerpunk-inspector (0 = disabled).",
+        flags: cvar::ARCHIVE,
     }
 }
 inventory::submit! {
@@ -93,6 +115,7 @@ inventory::submit! {
         name: "sv_inspector_host",
         default: "127.0.0.1",
         desc: "Bind address for inspector WS (e.g. 127.0.0.1 or 0.0.0.0).",
+        flags: cvar::ARCHIVE,
     }
 }
 inventory::submit! {
@@ -100,6 +123,7 @@ inventory::submit! {
         name: "cl_console_show",
         default: "0",
         desc: "Show in-game ImGui console (1=visible). Toggle with ~.",
+        flags: 0,
     }
 }
 inventory::submit! {
@@ -107,6 +131,7 @@ inventory::submit! {
         name: "r_fullbright",
         default: "0",
         desc: "Ignore lightmaps (1=albedo only, HL-style fullbright).",
+        flags: cvar::RENDERINFO,
     }
 }
 inventory::submit! {
@@ -114,6 +139,7 @@ inventory::submit! {
         name: "r_lightmap",
         default: "0",
         desc: "Debug: draw lightmap only (1=on).",
+        flags: cvar::RENDERINFO,
     }
 }
 inventory::submit! {
@@ -121,6 +147,31 @@ inventory::submit! {
         name: "r_bsp_debug",
         default: "0",
         desc: "Client BSP face pick: 0=off, 1=face dump, 2=+LM atlas layers + face rect.",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_showfps",
+        default: "0",
+        desc: "Show FPS counter in the top-left corner (1=on).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "s_volume",
+        default: "1",
+        desc: "Master audio volume (FMOD bus:/ volume, 0..1).",
+        flags: cvar::ARCHIVE,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "s_debug",
+        default: "0",
+        desc: "Audio debug output (1=on).",
+        flags: 0,
     }
 }
 inventory::submit! {
@@ -128,6 +179,7 @@ inventory::submit! {
         name: "r_exposure",
         default: "1",
         desc: "Exposure for tonemap. -1 = auto-exposure, otherwise fixed multiplier. 1 = GoldSrc-style.",
+        flags: cvar::RENDERINFO,
     }
 }
 inventory::submit! {
@@ -135,6 +187,7 @@ inventory::submit! {
         name: "r_tonemap",
         default: "-1",
         desc: "Tonemap mode: -1=passthrough (GoldSrc-style raw), 0=ACES, 1=Reinhard, 2=Hable.",
+        flags: cvar::RENDERINFO,
     }
 }
 
@@ -153,6 +206,7 @@ pub struct Host {
     pub cvar: cvar::CvarSystem,
     pub cmd: cmd::CmdSystem,
     pub fs: fs::FileSystem,
+    pub gameinfo: gameinfo::GameInfo,
     pub resources: deerpunk_engine_common::resource::ResourceManager,
     pub channel: Channel,
     server_dll: Option<ServerDll>,
@@ -186,6 +240,7 @@ impl Host {
             cvar: cvar::CvarSystem::new(),
             cmd: cmd::CmdSystem::new(),
             fs: fs::FileSystem::new(),
+            gameinfo: gameinfo::GameInfo::from_gamedir(std::path::Path::new(".")),
             resources,
             channel: Channel::new(),
             server_dll: None,
@@ -220,13 +275,22 @@ impl Host {
         );
         self.cvar.initialize();
         self.cmd.initialize();
+        binds::Binds::register_commands(&mut self.cmd);
         scene_cmd::register(&mut self.cmd);
         self.cmd.register_command("quit", |_| {
             REQUEST_QUIT.store(true, Ordering::SeqCst);
         });
-        let autoexec = self.fs.resolve_path("configs/autoexec.cfg");
-        self.cmd
-            .exec_config_file(&autoexec.to_string_lossy());
+        self.cmd.set_cmdline(std::env::args().collect());
+        self.gameinfo = gameinfo::GameInfo::from_gamedir(gamedir.as_ref());
+        self.cvar.set_or_create("gamename", &self.gameinfo.gamefolder);
+        self.cvar.set_or_create("gamedir", &gamedir.as_ref().to_string_lossy());
+        #[cfg(any(feature = "client", feature = "full"))]
+        if let Some(client) = self.client_engine.as_mut() {
+            let title = self.gameinfo.window_title().to_string();
+            let icon = self.gameinfo.icon_path(gamedir.as_ref());
+            client.apply_window_identity(&title, icon.as_deref());
+        }
+        // Configs + stuffcmds live in `{gamename}.rc`, exec'd after gamelibs.
         self.register_internal_components();
 
         // UI runtime before gamelib so `v1:ui:*` works from server_init.
@@ -236,6 +300,22 @@ impl Host {
             if let Some(client) = self.client_engine.as_mut() {
                 client.init_ui(gamedir_ui);
             }
+            // Audio: FMOD backend, banks from `{gamedir}/sound`.
+            let gamedir = gamedir.as_ref().to_path_buf();
+            if let Some(client) = self.client_engine.as_mut() {
+                client.set_audio_backend(
+                    Box::new(deerpunk_engine_client_fmod::FmodBackend::default()),
+                    &gamedir,
+                );
+            }
+            self.cmd.register_command("s_play", |ctx| {
+                let event = ctx.args.join(" ");
+                if event.is_empty() {
+                    log::info!("[s_play] usage: s_play <event_path> (e.g. event:/ambient/fan)");
+                    return;
+                }
+                S_PLAY_QUEUE.lock().unwrap().push(event);
+            });
         }
 
         let port = self
@@ -315,6 +395,33 @@ impl Host {
         }
 
         self.load_initial_scene_from_cvar();
+
+        // Xash: `{gamefolder}.rc` (exec configs…; stuffcmds). After gamelibs so cmds exist.
+        self.exec_game_rc();
+    }
+
+    /// Exec `{gamedir}/{gamename}.rc`. Fallback: configs + stuffcmds if missing.
+    pub fn exec_game_rc(&self) {
+        let name = self.gameinfo.gamefolder.as_str();
+        if name.is_empty() {
+            log::warn!("[host] gamename empty — fallback configs + stuffcmds");
+            config_io::exec_startup(&self.cmd, &self.fs);
+            self.cmd.execute_command("stuffcmds");
+            return;
+        }
+        let rel = format!("{name}.rc");
+        let path = self.fs.resolve_path(&rel);
+        if path.is_file() {
+            log::info!("[host] exec {}", path.display());
+            self.cmd.exec_script_file(&rel);
+        } else {
+            log::warn!(
+                "[host] {} missing — fallback configs + stuffcmds",
+                path.display()
+            );
+            config_io::exec_startup(&self.cmd, &self.fs);
+            self.cmd.execute_command("stuffcmds");
+        }
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
@@ -583,7 +690,10 @@ impl Host {
             } = self;
             if let Some(client) = client_engine.as_mut() {
                 console.tick(cvar, cmd, &mut client.input);
+                let cons_open = console::Console::visible(cvar);
+                binds::global().tick(&client.input, cmd, cons_open);
                 bsp_debug_ui::tick(cvar, &client.world, &server_engine.world);
+                fps_ui::tick(cvar);
             }
         }
 
@@ -727,6 +837,69 @@ impl Host {
                 .unwrap()
                 .set_text_input_active(cons_open);
 
+            // Audio cvars + queued `s_play` commands.
+            {
+                let client = self.client_engine.as_mut().unwrap();
+                client.set_audio_volume(self.cvar.get_f32_or("s_volume", 1.0));
+                for event in std::mem::take(&mut *S_PLAY_QUEUE.lock().unwrap()) {
+                    client.audio_play_2d(&event, 1.0, &[]);
+                    log::info!("[s_play] '{event}'");
+                }
+            }
+
+            // Apply queued server→client sound RPCs (binary packets; the
+            // in-process stand-in for a real network channel).
+            {
+                let client = self.client_engine.as_mut().unwrap();
+                for packet in self.channel.drain_server() {
+                    let Some((&cmd, payload)) = packet.split_first() else {
+                        continue;
+                    };
+                    if cmd != SVC::SoundEvent as u8 {
+                        log::warn!("[net] unexpected s2c packet cmd={cmd}");
+                        continue;
+                    }
+                    match SoundEventRpc::decode(payload) {
+                        Some(rpc) => {
+                            let params: Vec<(&str, f32)> = rpc
+                                .params
+                                .iter()
+                                .map(|(n, v)| (n.as_str(), *v))
+                                .collect();
+                            match rpc.kind {
+                                KIND_PLAY_2D => {
+                                    client.audio_play_2d(&rpc.event, rpc.volume, &params)
+                                }
+                                KIND_PLAY_3D => {
+                                    log::info!(
+                                        "[net] sound rpc play_3d '{}'{:?} vol={:.2} params={:?}",
+                                        rpc.event,
+                                        rpc.position,
+                                        rpc.volume,
+                                        params
+                                    );
+                                    client.audio_play_3d(
+                                        &rpc.event,
+                                        rpc.position,
+                                        rpc.volume,
+                                        &params,
+                                    )
+                                }
+                                KIND_START_ATTACHED => client.audio_start_attached(
+                                    rpc.key,
+                                    &rpc.event,
+                                    rpc.position,
+                                    rpc.volume,
+                                ),
+                                KIND_STOP_ATTACHED => client.audio_stop_attached(rpc.key),
+                                other => log::warn!("[net] sound rpc kind={other}?"),
+                            }
+                        }
+                        None => log::warn!("[net] sound rpc decode failed"),
+                    }
+                }
+            }
+
             // Server simulate only while enabled (also runs inside host.frame via trampoline).
             if self.server_engine.enabled {
                 self.server_engine.world.simulate(dt);
@@ -757,6 +930,33 @@ impl Host {
             }
             self.client_engine.as_mut().unwrap().input.reset_mouse_delta();
         }
+
+        self.shutdown();
+    }
+
+    /// Persist configs and tear down DLLs. Safe to call once at exit.
+    pub fn shutdown(&mut self) {
+        config_io::write_all(&self.cvar, &self.fs);
+
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            if let Some(ref dll) = self.client_dll {
+                unsafe {
+                    dll.shutdown();
+                }
+            }
+            self.client_dll = None;
+        }
+        if let Some(ref dll) = self.server_dll {
+            unsafe {
+                dll.shutdown();
+            }
+        }
+        self.server_dll = None;
+        self.cmd.shutdown();
+        self.cvar.shutdown();
+        self.fs.shutdown();
+        log::info!("[host] shutdown OK");
     }
 }
 

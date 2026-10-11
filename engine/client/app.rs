@@ -1,6 +1,10 @@
+use std::path::Path;
+
 use deerpunk_engine_common::input::Input;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use sdl2::event::Event;
+use sdl2::pixels::PixelFormatEnum;
+use sdl2::surface::Surface;
 use sdl2::video::Window;
 
 pub struct SendableWindowHandle {
@@ -145,4 +149,37 @@ impl App {
     pub fn window_size(&self) -> (u32, u32) {
         self.window.size()
     }
+
+    pub fn set_title(&mut self, title: &str) {
+        if let Err(e) = self.window.set_title(title) {
+            log::warn!("[app] set_title: {e}");
+        }
+    }
+
+    /// Load ICO/PNG/BMP via `image` and set as the window icon.
+    pub fn set_icon_from_path(&mut self, path: &Path) {
+        match load_icon_surface(path) {
+            Ok(surface) => self.window.set_icon(surface),
+            Err(e) => log::warn!("[app] icon {}: {e}", path.display()),
+        }
+    }
+}
+
+fn load_icon_surface(path: &Path) -> Result<Surface<'static>, String> {
+    let rgba = image::open(path)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut owned = Surface::new(w, h, PixelFormatEnum::RGBA32).map_err(|e| e.to_string())?;
+    let pitch = owned.pitch() as usize;
+    let src = rgba.as_raw();
+    let row_bytes = (w as usize) * 4;
+    owned.with_lock_mut(|dst| {
+        for y in 0..h as usize {
+            let s = y * row_bytes;
+            let d = y * pitch;
+            dst[d..d + row_bytes].copy_from_slice(&src[s..s + row_bytes]);
+        }
+    });
+    Ok(owned)
 }

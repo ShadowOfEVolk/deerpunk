@@ -10,10 +10,13 @@ pub mod resources;
 pub mod scene;
 pub mod ui;
 pub mod net;
+pub mod audio;
 
 pub use world::*;
 pub use physics::*;
 pub use input::*;
+pub use net::*;
+pub use audio::*;
 pub use imgui::*;
 pub use schedule::*;
 pub use renderer::*;

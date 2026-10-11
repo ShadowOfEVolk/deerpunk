@@ -124,6 +124,19 @@ fn spawn_prefab(
     entity
 }
 
+/// Minimal entity without a prefab: transform + MapKv only.
+fn spawn_minimal(
+    world: &World,
+    desc: &EntitySpawnDescriptor,
+    submodels: &[BspSubmodel],
+) -> EntityId {
+    let entity = world.spawn();
+    apply_transform_from_map(world, entity, desc, submodels);
+    let kv_id = world.component_init::<MapKv>();
+    world.set(entity, kv_id, MapKv::new(desc.kv.clone()));
+    entity
+}
+
 /// GoldSrc `angles` = pitch yaw roll (degrees) → Z-up Quat (yaw around Z).
 fn angles_to_quat(angles: Vec3) -> Quat {
     let pitch = angles.x.to_radians();
@@ -197,11 +210,14 @@ pub fn spawn_map_entities(
             continue;
         }
         let desc = EntitySpawnDescriptor::from_kv(classname.clone(), &block);
-        match spawner.spawn(world, gamedir, resources, desc, submodels) {
+        match spawner.spawn(world, gamedir, resources, desc.clone(), submodels) {
             Ok(_) => spawned += 1,
             Err(e) => {
-                log::warn!("[spawn] skip {classname}: {e}");
-                skipped += 1;
+                // No prefab / empty def — still create a minimal entity with
+                // transform + MapKv so game logic can see it (info_node, etc.).
+                let id = spawn_minimal(world, &desc, submodels);
+                log::info!("[spawn] {classname} (minimal) → entity={id:#x} ({e})");
+                spawned += 1;
             }
         }
     }

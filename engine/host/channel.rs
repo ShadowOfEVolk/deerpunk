@@ -1,7 +1,9 @@
 //! In-process client ↔ server channel (listen-server).
 //!
 //! UI / console send [`ClientCmd`]; host drains and routes to the server side.
-//! Server→client game state is applied by host replication into the client world.
+//! Server→client RPC packets (SVC payloads, binary) queue in `s2c` and are
+//! applied by the host frame on the client — the same bytes will later travel
+//! over a real network channel.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -16,12 +18,15 @@ pub enum ClientCmd {
 
 pub struct Channel {
     c2s: Mutex<VecDeque<ClientCmd>>,
+    /// Server→client RPC packets (SVC payload bytes; SVC command byte included).
+    s2c: Mutex<VecDeque<Vec<u8>>>,
 }
 
 impl Channel {
     pub fn new() -> Self {
         Self {
             c2s: Mutex::new(VecDeque::new()),
+            s2c: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -33,6 +38,21 @@ impl Channel {
 
     pub fn drain_client(&self) -> Vec<ClientCmd> {
         let Ok(mut q) = self.c2s.lock() else {
+            return Vec::new();
+        };
+        q.drain(..).collect()
+    }
+
+    /// Queue a binary server→client packet (`SVC` cmd byte + payload).
+    pub fn push_server(&self, packet: Vec<u8>) {
+        if let Ok(mut q) = self.s2c.lock() {
+            q.push_back(packet);
+        }
+    }
+
+    /// Drain queued server→client packets (oldest first).
+    pub fn drain_server(&self) -> Vec<Vec<u8>> {
+        let Ok(mut q) = self.s2c.lock() else {
             return Vec::new();
         };
         q.drain(..).collect()

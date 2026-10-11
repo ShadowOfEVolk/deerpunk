@@ -2,7 +2,7 @@
 
 use crate::engine_api::engine_api::EngineApiMethod;
 
-fn read_str(ptr: *const u8, len: usize) -> String {
+pub(crate) fn read_str(ptr: *const u8, len: usize) -> String {
     if ptr.is_null() || len == 0 {
         return String::new();
     }

@@ -17,10 +17,12 @@ pub mod bsp_world_debug;
 pub mod ui_document;
 pub mod map_kv;
 pub mod point_light;
+pub mod sound_emitter;
 pub mod worldspawn;
 
 pub use map_kv::MapKv;
 pub use point_light::PointLight;
+pub use sound_emitter::SoundEmitter;
 pub use simple_entity::SimpleEntity;
 pub use terrain::Terrain;
 pub use terrain_renderer::TerrainRenderer;

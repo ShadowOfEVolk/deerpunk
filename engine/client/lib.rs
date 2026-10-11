@@ -3,6 +3,7 @@
 pub mod systems;
 
 pub mod camera;
+pub mod audio;
 pub mod sky;
 
 pub mod common {
@@ -18,6 +19,7 @@ pub mod render_extractor;
 pub mod ui_controller;
 
 pub use ui_controller::UiController;
+pub use audio::{AudioBackend, AudioListener, NullAudio};
 
 pub use deerpunk_engine_renderer as renderer;
 

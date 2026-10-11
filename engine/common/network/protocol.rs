@@ -45,6 +45,10 @@ pub enum SVC {
     /// Total packet size: ~20 bytes
     /// ```
     DeltaPacketEntities = 41,
+
+    /// Sound event RPC (see [`deerpunk_engine_common::network::sound_event::SoundEventRpc`]
+    /// for the payload wire format).
+    SoundEvent = 42,
 }
 
 /// Client to Server commands

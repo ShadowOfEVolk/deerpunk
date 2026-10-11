@@ -177,13 +177,12 @@ pub fn pack_atlas_layers(faces: &mut [Option<FaceLightmap>]) -> Option<LightmapA
             continue;
         }
 
-        // DEBUG: magenta clear — samples landing outside any face patch light up pink.
-        // Was: white (to avoid black speckles). Revert to 255,255,255 after diagnosis.
+        // White clear: samples landing outside any face patch must stay neutral.
         let mut layer_pixels: [Vec<u8>; LM_STYLE_SLOTS] =
             std::array::from_fn(|_| {
                 let mut v = Vec::with_capacity((size * size * 4) as usize);
                 for _ in 0..(size * size) {
-                    v.extend_from_slice(&[255, 0, 255, 255]);
+                    v.extend_from_slice(&[255, 255, 255, 255]);
                 }
                 v
             });

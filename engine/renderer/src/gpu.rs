@@ -2913,16 +2913,6 @@ impl Renderer {
                 label: Some("mesh array shader"),
                 source: wgpu::ShaderSource::Wgsl(self.shaders.mesh_array.clone().into()),
             });
-        // DEBUG: verify which shader source was actually compiled (remove after diagnosis).
-        {
-            let src = &self.shaders.mesh_array;
-            let head: String = src.chars().take(60).collect();
-            eprintln!(
-                "[gpu] mesh_array shader: {} bytes, head={:?}",
-                src.len(),
-                head
-            );
-        }
         let vertex_buf_layout = wgpu::VertexBufferLayout {
             array_stride: size_of::<MeshVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -3231,9 +3221,7 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: TEX_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC, // DEBUG readback; remove after diagnosis
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let expected = (w as usize) * (h as usize) * 4;
@@ -3280,61 +3268,11 @@ impl Renderer {
         });
         let slot = self.next_lightmap_slot;
         self.next_lightmap_slot += 1;
-        let tex_for_readback = tex.clone();
         self.lightmap_textures.insert(slot, tex);
         self.lightmap_views.insert(slot, view);
         // Invalidate any BG cached earlier with the white fallback for this id.
         self.mesh_array_bgs.retain(|(_, lm), _| *lm != slot);
         eprintln!("[gpu] lightmap #{slot} uploaded {}x{} (BGs invalidated)", w, h);
-        // DEBUG readback: copy texel (163,125) layer 0 from GPU to verify upload
-        // (expected (12,12,12); remove after diagnosis).
-        if w > 163 && h > 125 {
-            let rb = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("lm readback"),
-                size: 256,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            let mut enc = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            enc.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &tex_for_readback,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: 163, y: 125, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &rb,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(256),
-                        rows_per_image: None,
-                    },
-                },
-                wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit([enc.finish()]);
-            rb.slice(..).map_async(wgpu::MapMode::Read, |r| {
-                if let Err(e) = r {
-                    eprintln!("[gpu] LM readback map failed: {e:?}");
-                }
-            });
-            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-            {
-                let data = rb.slice(..4).get_mapped_range().expect("LM readback map");
-                eprintln!(
-                    "[gpu] LM readback @163,125 layer0 = ({},{},{},{})",
-                    data[0], data[1], data[2], data[3]
-                );
-            }
-            rb.unmap();
-        }
         slot
     }
 

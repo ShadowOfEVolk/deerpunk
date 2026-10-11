@@ -237,7 +237,12 @@ impl Drop for UiRuntime {
 fn load_default_fonts() -> bool {
     let base = assets::ui_base_path();
     let mut ok = false;
-    for name in ["LatoLatin-Regular.ttf", "LatoLatin-Bold.ttf", "font.ttf"] {
+    for name in [
+        "LatoLatin-Regular.ttf",
+        "LatoLatin-Bold.ttf",
+        "VT323-Regular.ttf",
+        "font.ttf",
+    ] {
         let rel = format!("{}{name}", paths::FONTS);
         let abs = base.join(&rel);
         if !abs.is_file() {

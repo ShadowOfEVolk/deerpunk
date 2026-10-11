@@ -4,6 +4,7 @@ members = [
     "engine/common",
     "engine/server",
     "engine/client",
+    "engine/client-fmod",
     "engine/renderer",
     "crates/sdk-common",
     "crates/sdk-client",
