@@ -100,6 +100,8 @@ void rmlui_context_set_dimensions(rmlui_handle_t ctx, int w, int h);
 void rmlui_process_mouse_move(rmlui_handle_t ctx, int x, int y);
 void rmlui_process_mouse_button_down(rmlui_handle_t ctx, int button);
 void rmlui_process_mouse_button_up(rmlui_handle_t ctx, int button);
+/** Positive delta = scroll up / away from user (RmlUi convention). */
+void rmlui_process_mouse_wheel(rmlui_handle_t ctx, float wheel_delta);
 void rmlui_process_key_down(rmlui_handle_t ctx, int key);
 void rmlui_process_key_up(rmlui_handle_t ctx, int key);
 void rmlui_process_text_input(rmlui_handle_t ctx, unsigned int codepoint);

@@ -19,7 +19,7 @@ pub mod render_extractor;
 pub mod ui_controller;
 
 pub use ui_controller::UiController;
-pub use audio::{AudioBackend, AudioListener, NullAudio};
+pub use audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
 
 pub use deerpunk_engine_renderer as renderer;
 

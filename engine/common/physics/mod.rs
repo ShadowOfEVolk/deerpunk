@@ -1,11 +1,29 @@
+pub mod abi;
+pub mod backend;
+pub mod character;
+pub mod collider;
+pub mod rapier_backend;
 pub mod run;
 pub mod world;
 
 use glam::Vec3;
+pub use abi::{
+    decode_shape, encode_shape_ball, encode_shape_box, encode_shape_convex, encode_shape_halfspace,
+    Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle, BODY_TYPE_DYNAMIC,
+    BODY_TYPE_KINEMATIC, BODY_TYPE_STATIC, COLLIDER_FLAG_SENSOR, PARTS_HANDLE_INVALID,
+    SHAPE_ABI_VERSION, SHAPE_HANDLE_INVALID, SHAPE_KIND_BALL, SHAPE_KIND_BOX, SHAPE_KIND_CONVEX,
+    SHAPE_KIND_HALFSPACE,
+};
+pub use backend::{CapsuleCastHit, NullPhysics, PhysicsBackend};
+pub use character::{
+    CharacterController, CHAR_EYE_HEIGHT, CHAR_FLAG_MANUAL_MOVE, CHAR_FLAG_NOCLIP, CHAR_HALF_HEIGHT,
+    CHAR_RADIUS, CHAR_STEP_HEIGHT,
+};
+pub use collider::Sensor;
+pub use rapier_backend::RapierPhysicsBackend;
 pub use run::physics_step;
 pub use world::{
     categories, BodyType, ColliderDescriptor, ColliderShape, PhysicsWorld, RapierProfile, RayHit,
-    Sensor,
 };
 
 /// Компонент: immutable хендл rapier3D rigid body.
@@ -134,7 +152,7 @@ impl PhysicsBodyDesc {
 }
 
 /// Mutable данные физ. тела.
-/// `active` — тело управляется извне (танки): sync_in telefonирует + wake_up.
+/// `active` — тело управляется извне (танки): sync_in телепортирует + wake_up.
 /// `velocity` / `angular_velocity` — целевые значения, применяются при sync_in.
 #[derive(Clone, Copy, Debug)]
 pub struct RigidBody {

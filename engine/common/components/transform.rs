@@ -1,6 +1,6 @@
 use glam::{Quat, Vec3};
 
-// Simple 2D transform with Y-up coordinates (Y grows upward)
+/// World transform. Engine convention is **Z-up** (yaw around Z).
 #[derive(Clone, Copy, PartialEq)]
 pub struct TransformComponent {
     pub position: Vec3,

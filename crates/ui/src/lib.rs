@@ -12,7 +12,9 @@ mod runtime;
 
 pub use assets::{UiAssetSource, UiDirAssets, register_ui_loaders};
 pub use deerpunk_engine_common::ui_draw::{UiFrame, UiVertex};
-pub use runtime::{drain_commands, set_content_root, UiDocument, UiRuntime};
+pub use runtime::{
+    drain_commands, set_client_in_game, set_content_root, UiDocument, UiRuntime,
+};
 
 pub mod paths {
     pub const WIDGETS: &str = "widgets/";

@@ -6,6 +6,7 @@ use deerpunk_engine_common::components::{
     BspWorldDebug, CameraComponent, LightmapId, Material, Mesh3D, SoundEmitter, TransformComponent,
     Worldspawn,
 };
+use deerpunk_engine_common::physics::CharacterController;
 use deerpunk_engine_common::world::World;
 
 /// Maps server entity id → client entity id for mirrored renderables / cameras.
@@ -48,6 +49,7 @@ impl ReplicationState {
         let dbg_id = server.component_init::<BspWorldDebug>();
         let ws_id = server.component_init::<Worldspawn>();
         let se_id = server.component_init::<SoundEmitter>();
+        let cc_id = server.component_init::<CharacterController>();
 
         let ct = client.component_init::<TransformComponent>();
         let ccam = client.component_init::<CameraComponent>();
@@ -57,6 +59,7 @@ impl ReplicationState {
         let cdbg = client.component_init::<BspWorldDebug>();
         let cws = client.component_init::<Worldspawn>();
         let cse = client.component_init::<SoundEmitter>();
+        let ccc = client.component_init::<CharacterController>();
 
         for e in server.inspect_entities() {
             let sid = e.id;
@@ -86,6 +89,12 @@ impl ReplicationState {
                     client.set(cid, ccam, c);
                 }
             }
+            // Feet-origin characters: client needs CC for eye-height camera offset.
+            if server.has(sid, cc_id) {
+                if let Some(cc) = copy_component::<CharacterController>(server, sid, cc_id) {
+                    client.set(cid, ccc, cc);
+                }
+            }
             if has_mesh {
                 if let Some(m) = copy_component::<Mesh3D>(server, sid, mesh_id) {
                     client.set(cid, cmesh, m);
@@ -113,12 +122,14 @@ impl ReplicationState {
         client.simulate(0.0);
     }
 
-    /// Update mirrored transforms + cameras (cheap per-frame).
+    /// Update mirrored transforms + cameras + CC (cheap per-frame).
     pub fn sync_transforms(&self, server: &World, client: &World) {
         let t_id = server.component_init::<TransformComponent>();
         let cam_id = server.component_init::<CameraComponent>();
+        let cc_id = server.component_init::<CharacterController>();
         let ct = client.component_init::<TransformComponent>();
         let ccam = client.component_init::<CameraComponent>();
+        let ccc = client.component_init::<CharacterController>();
 
         for (&sid, &cid) in &self.map {
             if let Some(t) = copy_component::<TransformComponent>(server, sid, t_id) {
@@ -127,6 +138,11 @@ impl ReplicationState {
             if server.has(sid, cam_id) {
                 if let Some(c) = copy_component::<CameraComponent>(server, sid, cam_id) {
                     client.set(cid, ccam, c);
+                }
+            }
+            if server.has(sid, cc_id) {
+                if let Some(cc) = copy_component::<CharacterController>(server, sid, cc_id) {
+                    client.set(cid, ccc, cc);
                 }
             }
         }
@@ -150,6 +166,7 @@ fn init_client_components(client: &World) {
     client.component_init::<Terrain>();
     client.component_init::<TerrainSplatMaterial>();
     client.component_init::<PointLight>();
+    client.component_init::<deerpunk_engine_common::physics::CharacterController>();
 }
 
 fn copy_component<T: Clone + 'static>(world: &World, ent: u64, comp: u64) -> Option<T> {

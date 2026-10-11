@@ -17,6 +17,7 @@ type SendUsercmdFn = extern "C" fn(*mut u8, *const u8, usize) -> i32;
 type GetUsercmdFn = extern "C" fn(*mut u8, u32, *mut u8, usize) -> i32;
 type MoveSnapshotFn = extern "C" fn(*mut u8, *mut f32, usize, *mut u64) -> i32;
 type ApplyLocalViewFn = extern "C" fn(*mut u8, f32, f32) -> i32;
+type LocalEntityFn = extern "C" fn(*mut u8) -> u64;
 
 pub struct NetApi {
     ctx: *mut u8,
@@ -28,6 +29,7 @@ pub struct NetApi {
     get_usercmd_fn: GetUsercmdFn,
     move_snapshot_fn: MoveSnapshotFn,
     apply_local_view_fn: ApplyLocalViewFn,
+    local_entity_fn: LocalEntityFn,
 }
 
 unsafe impl Send for NetApi {}
@@ -48,6 +50,9 @@ impl NetApi {
             move_snapshot_fn: unsafe { std::mem::transmute(resolve(r, "v1:move:snapshot")) },
             apply_local_view_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:players:apply_local_view"))
+            },
+            local_entity_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:local_entity"))
             },
         }
     }
@@ -109,5 +114,15 @@ impl NetApi {
     /// Client mlook: stamp absolute viewangles onto the local mirrored pawn camera.
     pub fn apply_local_view(&self, yaw: f32, pitch: f32) {
         (self.apply_local_view_fn)(self.ctx, yaw, pitch);
+    }
+
+    /// Local listen player's pawn entity, or `None` if unbound.
+    pub fn local_entity(&self) -> Option<u64> {
+        let id = (self.local_entity_fn)(self.ctx);
+        if id == 0 {
+            None
+        } else {
+            Some(id)
+        }
     }
 }

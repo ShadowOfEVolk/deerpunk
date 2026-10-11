@@ -1,6 +1,6 @@
 === World Dump (panic) ===
-Actually alive (scanned): 235
-Entity slots: count=235, alive=235
+Actually alive (scanned): 238
+Entity slots: count=238, alive=238
   0x00000001 'Component' : Component, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000002 'Identifier' : Component, Relationship, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000003 'Poly' : Component, (Identifier,Name), (Identifier,Symbol), (ChildOf,flecs.core)
@@ -236,3 +236,6 @@ Entity slots: count=235, alive=235
   0x0000001d 'BspWorldDebug' : Component, (Identifier,Name), (Identifier,Symbol)
   0x0000001e 'MapKv' : Component, (Identifier,Name), (Identifier,Symbol)
   0x0000001f 'PointLight' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000020 'Collider' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000021 'CharacterController' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000022 'SoundEmitter' : Component, (Identifier,Name), (Identifier,Symbol)

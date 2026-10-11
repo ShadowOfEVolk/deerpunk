@@ -155,6 +155,9 @@ int rmlui_init(int viewport_w, int viewport_h, const rmlui_callbacks_t* callback
 
 void rmlui_shutdown(void)
 {
+    if (!g_renderer) {
+        return;
+    }
     g_callbacks = nullptr;
     Rml::Shutdown();
     g_renderer.reset();
@@ -295,6 +298,13 @@ void rmlui_process_mouse_button_up(rmlui_handle_t ctx, int button)
 {
     if (ctx) {
         ((Rml::Context*)ctx)->ProcessMouseButtonUp(button, 0);
+    }
+}
+
+void rmlui_process_mouse_wheel(rmlui_handle_t ctx, float wheel_delta)
+{
+    if (ctx && wheel_delta != 0.0f) {
+        ((Rml::Context*)ctx)->ProcessMouseWheel(wheel_delta, 0);
     }
 }
 

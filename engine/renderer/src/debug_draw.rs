@@ -32,7 +32,102 @@ impl DebugDraw {
     pub fn line(&mut self, start: [f32; 3], end: [f32; 3], color: DebugColor) {
         self.primitives.push(DebugPrimitive::Line { start, end, color });
     }
-    pub fn sphere(&mut self, _center: [f32; 3], _radius: f32, _color: DebugColor) {}
+
+    /// Axis-aligned box from min/max corners.
+    pub fn aabb(&mut self, min: [f32; 3], max: [f32; 3], color: DebugColor) {
+        let c = [
+            [min[0], min[1], min[2]],
+            [max[0], min[1], min[2]],
+            [max[0], max[1], min[2]],
+            [min[0], max[1], min[2]],
+            [min[0], min[1], max[2]],
+            [max[0], min[1], max[2]],
+            [max[0], max[1], max[2]],
+            [min[0], max[1], max[2]],
+        ];
+        const EDGES: [[usize; 2]; 12] = [
+            [0, 1], [1, 2], [2, 3], [3, 0],
+            [4, 5], [5, 6], [6, 7], [7, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7],
+        ];
+        for [a, b] in EDGES {
+            self.line(c[a], c[b], color);
+        }
+    }
+
+    /// Oriented box: `center` + `half_extents`, rotation as unit quaternion xyzw.
+    pub fn obb(
+        &mut self,
+        center: [f32; 3],
+        half_extents: [f32; 3],
+        rotation_xyzw: [f32; 4],
+        color: DebugColor,
+    ) {
+        let (x, y, z, w) = (
+            rotation_xyzw[0],
+            rotation_xyzw[1],
+            rotation_xyzw[2],
+            rotation_xyzw[3],
+        );
+        let mut corners = [[0.0f32; 3]; 8];
+        let mut i = 0;
+        for sx in [-1.0f32, 1.0] {
+            for sy in [-1.0f32, 1.0] {
+                for sz in [-1.0f32, 1.0] {
+                    let lx = sx * half_extents[0];
+                    let ly = sy * half_extents[1];
+                    let lz = sz * half_extents[2];
+                    // q * v
+                    let ix = w * lx + y * lz - z * ly;
+                    let iy = w * ly + z * lx - x * lz;
+                    let iz = w * lz + x * ly - y * lx;
+                    let iw = -x * lx - y * ly - z * lz;
+                    let rx = ix * w + iw * -x + iy * -z - iz * -y;
+                    let ry = iy * w + iw * -y + iz * -x - ix * -z;
+                    let rz = iz * w + iw * -z + ix * -y - iy * -x;
+                    corners[i] = [center[0] + rx, center[1] + ry, center[2] + rz];
+                    i += 1;
+                }
+            }
+        }
+        const EDGES: [[usize; 2]; 12] = [
+            [0, 1], [1, 3], [3, 2], [2, 0],
+            [4, 5], [5, 7], [7, 6], [6, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7],
+        ];
+        for [a, b] in EDGES {
+            self.line(corners[a], corners[b], color);
+        }
+    }
+
+    /// Wireframe for a point cloud: AABB of verts + all unique hull-ish edges (complete graph if ≤12).
+    pub fn convex_wire(&mut self, vertices: &[[f32; 3]], color: DebugColor) {
+        if vertices.is_empty() {
+            return;
+        }
+        let mut min = vertices[0];
+        let mut max = vertices[0];
+        for v in vertices {
+            for i in 0..3 {
+                min[i] = min[i].min(v[i]);
+                max[i] = max[i].max(v[i]);
+            }
+        }
+        self.aabb(min, max, color);
+        if vertices.len() <= 12 {
+            for i in 0..vertices.len() {
+                for j in (i + 1)..vertices.len() {
+                    self.line(vertices[i], vertices[j], color);
+                }
+            }
+        }
+    }
+
+    pub fn sphere(&mut self, center: [f32; 3], radius: f32, color: DebugColor) {
+        self.circle(center, radius, [1.0, 0.0, 0.0], 24, color);
+        self.circle(center, radius, [0.0, 1.0, 0.0], 24, color);
+        self.circle(center, radius, [0.0, 0.0, 1.0], 24, color);
+    }
     pub fn label(&mut self, _pos: [f32; 3], _text: &str, _color: DebugColor) {}
     pub fn circle(&mut self, center: [f32; 3], radius: f32, normal: [f32; 3], segments: u32, color: DebugColor) {
         let (nx, ny, nz) = (normal[0], normal[1], normal[2]);

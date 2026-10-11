@@ -74,6 +74,15 @@ impl UiController {
         }
     }
 
+    /// Close every loaded document (before RmlUi shutdown).
+    pub fn clear(&mut self) {
+        if self.widgets.is_empty() {
+            return;
+        }
+        log::info!("[ui] clear {} widgets", self.widgets.len());
+        self.widgets.clear();
+    }
+
     pub fn show(&mut self, id: &str) -> Result<(), String> {
         let key = id.trim();
         let w = self

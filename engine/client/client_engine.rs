@@ -5,12 +5,15 @@ use deerpunk_engine_common::components::{SoundEmitter, TransformComponent};
 use deerpunk_engine_common::input::Input;
 use deerpunk_engine_common::resource::{path_to_file_uri, ResourceManager};
 use deerpunk_engine_common::world::{QueryId, World};
+use deerpunk_engine_renderer::debug_draw::DebugDraw;
 use deerpunk_engine_renderer::gpu::{Renderer, ShaderSources};
 use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget};
 use deerpunk_ui::{UiDirAssets, UiRuntime};
 
+pub use deerpunk_engine_renderer::{DebugColor, DebugDraw as DebugDrawBuf, DebugPrimitive};
+
 use crate::app::App;
-use crate::audio::{AudioBackend, AudioListener, NullAudio};
+use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
 use crate::render_extractor::RenderExtractor;
 use crate::ui_controller::UiController;
 
@@ -21,8 +24,10 @@ pub struct ClientEngine {
     pub world: World,
     extractor: Option<RenderExtractor>,
     pub input: Input,
-    ui: Option<UiRuntime>,
+    /// Must be declared before [`Self::ui`]: Drop closes documents first,
+    /// then RmlUi shuts down (declaration order).
     pub ui_controller: UiController,
+    ui: Option<UiRuntime>,
     /// Plugged audio backend (`None` → disabled).
     audio: Option<Box<dyn AudioBackend>>,
     /// Client entity ids with a started attached (looping) event.
@@ -34,6 +39,8 @@ pub struct ClientEngine {
     audio_volume: f32,
     /// Accumulated client time (seconds) for postfx / animated shaders.
     time: f32,
+    /// Host/game fills each frame; copied into [`RenderSnapshot::debug_draw`].
+    pending_debug_draw: DebugDraw,
 }
 
 impl ClientEngine {
@@ -54,15 +61,21 @@ impl ClientEngine {
             world: World::new(),
             extractor: None,
             input: Input::new(),
-            ui: None,
             ui_controller: UiController::new(),
+            ui: None,
             audio: None,
             audio_started: HashSet::new(),
             audio_query: None,
             audio_scene_entity: None,
             audio_volume: 1.0,
             time: 0.0,
+            pending_debug_draw: DebugDraw::new(),
         }
+    }
+
+    /// Mutable debug line buffer for the next surface render.
+    pub fn debug_draw(&mut self) -> &mut DebugDraw {
+        &mut self.pending_debug_draw
     }
 
     pub fn advance_time(&mut self, dt: f32) {
@@ -139,6 +152,14 @@ impl ClientEngine {
             a.stop_attached(entity);
         }
         self.audio_started.remove(&entity);
+    }
+
+    /// Enumerate Studio events from loaded FMOD banks.
+    pub fn audio_list_events(&self) -> Vec<FmodEventInfo> {
+        self.audio
+            .as_ref()
+            .map(|a| a.list_events())
+            .unwrap_or_default()
     }
 
     /// Listener + attached-sound positions for entities with `SoundEmitter`.
@@ -256,6 +277,15 @@ impl ClientEngine {
         self.ui = Some(ui);
     }
 
+    /// Close all documents, then `Rml::Shutdown`. Idempotent.
+    pub fn shutdown_ui(&mut self) {
+        self.ui_controller.clear();
+        if let Some(ui) = self.ui.take() {
+            drop(ui);
+            log::info!("[client] RmlUi shutdown OK");
+        }
+    }
+
     pub fn init_extractor(&mut self) {
         self.extractor = Some(RenderExtractor::new(&mut self.world));
     }
@@ -337,6 +367,10 @@ impl ClientEngine {
             if self.input.mouse_button_released(0) {
                 ui.mouse_button(0, false);
             }
+            let wheel = self.input.take_mouse_wheel();
+            if wheel != 0.0 {
+                ui.mouse_wheel(wheel);
+            }
             if let Some(frame) = ui.frame() {
                 static LOG_ONCE: std::sync::atomic::AtomicBool =
                     std::sync::atomic::AtomicBool::new(false);
@@ -392,6 +426,9 @@ impl ClientEngine {
             }
             snapshot.point_lights = snap.point_lights.clone();
             snapshot.sky = snap.sky;
+            if first {
+                snapshot.debug_draw = std::mem::take(&mut self.pending_debug_draw.primitives);
+            }
             if first && game_frame_fn.is_some() {
                 let _ = self.renderer.render_to_surface_with_game_frame(
                     &snapshot,

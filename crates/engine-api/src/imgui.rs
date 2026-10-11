@@ -12,6 +12,7 @@ fn resolve(r: Resolver, name: &str) -> *const () {
 pub struct ImGuiApi {
     ctx: *mut u8,
     begin_window_fn: extern "C" fn(*mut u8, *const u8, usize) -> bool,
+    begin_overlay_fn: extern "C" fn(*mut u8, *const u8, usize, f32, f32) -> bool,
     end_window_fn: extern "C" fn(*mut u8),
     text_fn: extern "C" fn(*mut u8, *const u8, usize),
     value_f32_fn: extern "C" fn(*mut u8, *const u8, usize, f32),
@@ -27,6 +28,7 @@ impl ImGuiApi {
         Self {
             ctx,
             begin_window_fn: unsafe { std::mem::transmute(resolve(r, "v1:imgui:begin_window")) },
+            begin_overlay_fn: unsafe { std::mem::transmute(resolve(r, "v1:imgui:begin_overlay")) },
             end_window_fn: unsafe { std::mem::transmute(resolve(r, "v1:imgui:end_window")) },
             text_fn: unsafe { std::mem::transmute(resolve(r, "v1:imgui:text")) },
             value_f32_fn: unsafe { std::mem::transmute(resolve(r, "v1:imgui:value_f32")) },
@@ -38,6 +40,12 @@ impl ImGuiApi {
     pub fn begin_window(&self, name: &str) -> bool {
         let bytes = name.as_bytes();
         (self.begin_window_fn)(self.ctx, bytes.as_ptr(), bytes.len())
+    }
+
+    /// Transparent no-input HUD box (same look as the old FPS counter).
+    pub fn begin_overlay(&self, name: &str, x: f32, y: f32) -> bool {
+        let bytes = name.as_bytes();
+        (self.begin_overlay_fn)(self.ctx, bytes.as_ptr(), bytes.len(), x, y)
     }
 
     pub fn end_window(&self) {

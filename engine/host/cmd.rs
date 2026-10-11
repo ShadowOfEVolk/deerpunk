@@ -83,6 +83,7 @@ impl CmdSystem {
         self.register_exec_command();
         self.register_echo_command();
         self.register_toggle_command();
+        self.register_toggle_smart_command();
         self.register_stuffcmds_command();
     }
 
@@ -123,7 +124,7 @@ impl CmdSystem {
         );
     }
 
-    /// Flip a cvar between 0 and 1: `toggle <name>`.
+    /// Flip a cvar between 0 and 1: `toggle <cvar>`.
     fn register_toggle_command(&mut self) {
         self.register_command(
             "toggle",
@@ -132,6 +133,7 @@ impl CmdSystem {
                     println!("Usage: toggle <cvar>");
                     return;
                 };
+                let name = strip_cfg_quotes(name);
                 if name.is_empty() {
                     println!("Usage: toggle <cvar>");
                     return;
@@ -140,6 +142,48 @@ impl CmdSystem {
                 let next = if on { "0" } else { "1" };
                 ctx.cmd.cvar().set_or_create(name, next);
                 println!("toggle {name} = {next}");
+            }),
+        );
+    }
+
+    /// Cycle integer cvar in `[min, max]`: `toggle_smart <min> <max> <cvar>`.
+    /// Out of range / missing → `min`. Otherwise `cur+1`, wrap to `min` after `max`.
+    fn register_toggle_smart_command(&mut self) {
+        self.register_command(
+            "toggle_smart",
+            Box::new(move |ctx: CommandExecutionContext<'_>| {
+                if ctx.args.len() < 3 {
+                    println!("Usage: toggle_smart <min> <max> <cvar>");
+                    return;
+                }
+                let Ok(min) = ctx.args[0].parse::<i32>() else {
+                    println!("Usage: toggle_smart <min> <max> <cvar>");
+                    return;
+                };
+                let Ok(max) = ctx.args[1].parse::<i32>() else {
+                    println!("Usage: toggle_smart <min> <max> <cvar>");
+                    return;
+                };
+                let name = strip_cfg_quotes(ctx.args[2]);
+                if name.is_empty() {
+                    println!("Usage: toggle_smart <min> <max> <cvar>");
+                    return;
+                }
+                let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+                let cur = ctx.cmd.cvar().get_f32(name).map(|v| v as i32);
+                let next = match cur {
+                    Some(v) if (lo..=hi).contains(&v) => {
+                        if v >= hi {
+                            lo
+                        } else {
+                            v + 1
+                        }
+                    }
+                    _ => lo,
+                };
+                let next_s = next.to_string();
+                ctx.cmd.cvar().set_or_create(name, &next_s);
+                println!("toggle_smart {name} = {next_s} (range {lo}..{hi})");
             }),
         );
     }
@@ -248,16 +292,15 @@ impl CmdSystem {
         let args: Vec<&str> = tokens[1..].iter().map(|s| s.as_str()).collect();
 
         if let Some(callback) = self.commands.get(command_name) {
-            println!("Executing command: {}", command_name);
             callback(CommandExecutionContext {
                 cmd: self,
                 args: args.to_vec(),
             });
         } else if !args.is_empty() {
             self.cvar().set_or_create(command_name, &args.join(" "));
-            println!("Setting cvar: {} = {}", command_name, args.join(" "));
+            log::info!("Setting cvar: {} = {}", command_name, args.join(" "));
         } else {
-            println!("Unknown command: {}", command_name);
+            log::info!("Unknown command: {}", command_name);
         }
     }
 

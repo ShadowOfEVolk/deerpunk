@@ -25,6 +25,9 @@ impl PhysicsWorld {
         let mut inner = rapier3d::pipeline::PhysicsWorld::new();
         inner.gravity = Vec3::new(0.0, 0.0, -9.81);
 
+        // HL-ish units (player ~72 tall). Default length_unit=1 makes parry EPA/GJK
+        // epsilons tiny → panics on capsule↔box contacts ("index out of bounds" in epa3).
+        inner.integration_parameters.length_unit = 64.0;
         // Оптимизация: меньше итераций solver'а.
         inner.integration_parameters.num_solver_iterations = 2;
         inner.integration_parameters.num_internal_pgs_iterations = 1;

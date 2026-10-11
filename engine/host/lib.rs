@@ -11,8 +11,9 @@ static S_PLAY_QUEUE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::
 
 pub mod binds;
 pub mod bsp_debug_ui;
+#[cfg(any(feature = "client", feature = "full"))]
+pub mod phys_debug;
 pub mod config_io;
-pub mod fps_ui;
 pub mod cmd;
 pub mod console;
 pub mod cvar;
@@ -157,9 +158,41 @@ inventory::submit! {
 }
 inventory::submit! {
     cvar::CvarDef {
+        name: "r_phys_debug",
+        default: "0",
+        desc: "Wireframe world collider part under crosshair (0=off, 1=on).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "sv_cheats",
+        default: "0",
+        desc: "Allow cheat commands (noclip). 0=off, 1=on.",
+        flags: 0,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "cl_showfps",
+        default: "0",
+        desc: "Show FPS in the client infobox (0=off, 1=on).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "cl_showpos",
+        default: "0",
+        desc: "Infobox pos/angles: 0=off, 1=pos+ang+view, 2=+speed, 3=+vel xyz+(speed).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
         name: "r_showfps",
         default: "0",
-        desc: "Show FPS counter in the top-left corner (1=on).",
+        desc: "Alias of cl_showfps (legacy).",
         flags: cvar::RENDERINFO,
     }
 }
@@ -349,6 +382,10 @@ impl Host {
         // Configs + stuffcmds live in `{gamename}.rc`, exec'd after gamelibs.
         self.register_internal_components();
 
+        if let Err(e) = self.server_engine.initialize(gamedir.as_ref()) {
+            log::error!("[host] server_engine.initialize: {e}");
+        }
+
         // UI runtime before gamelib so `v1:ui:*` works from server_init.
         #[cfg(any(feature = "client", feature = "full"))]
         {
@@ -394,6 +431,18 @@ impl Host {
             id_field: "name".into(),
             nested_in: None,
         });
+        #[cfg(any(feature = "client", feature = "full"))]
+        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+            id: "fmod_events".into(),
+            label: "FMOD Events".into(),
+            group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
+            modes: vec![
+                deerpunk_inspector_protocol::CollectionMode::List,
+                deerpunk_inspector_protocol::CollectionMode::Get,
+            ],
+            id_field: "index".into(),
+            nested_in: None,
+        });
         stdin_cmd::start();
 
         log::info!("Engine initialized");
@@ -416,6 +465,7 @@ impl Host {
 
     fn register_internal_components(&mut self) {
         use deerpunk_engine_common::components::*;
+        use deerpunk_engine_common::physics::{CharacterController, Collider};
         let register = |w: &deerpunk_engine_common::world::World| {
             w.component_init::<TransformComponent>();
             w.component_init::<Mesh3D>();
@@ -433,6 +483,8 @@ impl Host {
             w.component_init::<BspWorldDebug>();
             w.component_init::<MapKv>();
             w.component_init::<PointLight>();
+            w.component_init::<Collider>();
+            w.component_init::<CharacterController>();
         };
         register(&self.server_engine.world);
         #[cfg(any(feature = "client", feature = "full"))]
@@ -522,6 +574,8 @@ impl Host {
     pub fn set_server_enabled(&mut self, on: bool) {
         let was = self.server_engine.enabled;
         self.server_engine.set_enabled(on);
+        #[cfg(any(feature = "client", feature = "full"))]
+        deerpunk_ui::set_client_in_game(on);
         if on {
             // Listen server: host wires local client ↔ server after map is up.
             if was {
@@ -877,6 +931,21 @@ impl Host {
             inspector::sync_world(&self.server_engine.world, delta_time);
             inspector::sync_assets(self.resources.list_assets());
             inspector::sync_systems(system_profiler::snapshot_for_inspector());
+            #[cfg(any(feature = "client", feature = "full"))]
+            if let Some(client) = self.client_engine.as_ref() {
+                let events = client
+                    .audio_list_events()
+                    .into_iter()
+                    .map(|e| inspector::FmodEventSnap {
+                        path: e.path,
+                        bank: e.bank,
+                        is_3d: e.is_3d,
+                        oneshot: e.oneshot,
+                        params: e.params,
+                    })
+                    .collect();
+                inspector::sync_fmod_events(events);
+            }
         }
 
         system_profiler::end_frame();
@@ -890,6 +959,7 @@ impl Host {
             cvar,
             client_engine,
             server_engine,
+            client_dll,
             ..
         } = self;
         let Some(client) = client_engine.as_ref() else {
@@ -897,7 +967,12 @@ impl Host {
         };
         console.tick_draw(cvar);
         bsp_debug_ui::tick(cvar, &client.world, &server_engine.world);
-        fps_ui::tick(cvar);
+        // Client gamelib ImGui overlays (infobox, etc.).
+        if let Some(ref dll) = client_dll {
+            unsafe {
+                dll.ui();
+            }
+        }
     }
 
     fn drain_channel(&mut self) {
@@ -1168,6 +1243,24 @@ impl Host {
             }
             let scene = self.client_engine.as_ref().unwrap().extract_scene();
 
+            // Physics collider wireframe → RenderSnapshot.debug_draw (before GPU).
+            {
+                use deerpunk_engine_client::client_engine::DebugDrawBuf;
+                let mut draw = DebugDrawBuf::new();
+                if let Some(client) = self.client_engine.as_ref() {
+                    phys_debug::tick(
+                        &self.cvar,
+                        &client.world,
+                        &self.server_engine.world,
+                        self.server_engine.physics.as_ref(),
+                        &mut draw,
+                    );
+                }
+                if let Some(client) = self.client_engine.as_mut() {
+                    *client.debug_draw() = draw;
+                }
+            }
+
             // Render: ImGui NewFrame wraps frame_ui (console/debug overlays).
             let host_ptr = self as *mut Self as *mut std::ffi::c_void;
             if !self.client_engine.as_mut().unwrap().tick_inner(
@@ -1199,6 +1292,10 @@ impl Host {
                 }
             }
             self.client_dll = None;
+            // Documents → context → Rml::Shutdown before window/renderer die.
+            if let Some(client) = self.client_engine.as_mut() {
+                client.shutdown_ui();
+            }
         }
         if let Some(ref dll) = self.server_dll {
             unsafe {

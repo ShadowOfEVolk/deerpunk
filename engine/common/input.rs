@@ -24,6 +24,8 @@ pub struct Input {
     mouse_y: f32,
     mouse_buttons: u8,
     mouse_buttons_prev: u8,
+    /// Accumulated wheel this frame (positive = scroll up / away).
+    mouse_wheel: f32,
     /// UTF-8 bytes from SDL TextInput (fixed ring, no heap).
     text_bytes: [u8; TEXT_RING_CAP],
     text_len: u8,
@@ -39,6 +41,7 @@ impl Default for Input {
             mouse_y: 0.0,
             mouse_buttons: 0,
             mouse_buttons_prev: 0,
+            mouse_wheel: 0.0,
             text_bytes: [0u8; TEXT_RING_CAP],
             text_len: 0,
         }
@@ -120,6 +123,17 @@ impl Input {
         self.mouse_dy = 0.0;
     }
 
+    pub fn add_mouse_wheel(&mut self, delta: f32) {
+        self.mouse_wheel += delta;
+    }
+
+    /// Take and clear accumulated wheel for this frame.
+    pub fn take_mouse_wheel(&mut self) -> f32 {
+        let w = self.mouse_wheel;
+        self.mouse_wheel = 0.0;
+        w
+    }
+
     pub fn mouse_buttons(&self) -> u8 {
         self.mouse_buttons
     }
@@ -140,6 +154,7 @@ impl Input {
         self.mouse_y = 0.0;
         self.mouse_buttons = 0;
         self.mouse_buttons_prev = 0;
+        self.mouse_wheel = 0.0;
         self.text_len = 0;
     }
 

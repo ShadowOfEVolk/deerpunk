@@ -200,3 +200,23 @@ inventory::submit! {
         flags: 0,
     }
 }
+
+/// `v1:players:local_entity` → pawn entity id, or 0 if unbound.
+pub extern "C" fn tramp_players_local_entity(engine: *mut u8) -> u64 {
+    let host = unsafe { &*(engine as *const crate::Host) };
+    let Some(slot) = host.players.local_slot() else {
+        return 0;
+    };
+    host.players
+        .get(slot)
+        .and_then(|p| p.entity)
+        .unwrap_or(0)
+}
+
+inventory::submit! {
+    EngineApiMethod {
+        name: "v1:players:local_entity",
+        callback: tramp_players_local_entity as *const (),
+        flags: 0,
+    }
+}

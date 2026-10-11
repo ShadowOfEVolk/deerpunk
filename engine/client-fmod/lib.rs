@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use deerpunk_engine_client::audio::{AttachedSounds, AudioBackend, AudioListener};
+use deerpunk_engine_client::audio::{AttachedSounds, AudioBackend, AudioListener, FmodEventInfo};
 use libfmod::{Attributes3d, ChannelGroup, Dsp, EventInstance, Init, LoadBank, Studio, StudioInit, Vector};
 
 use steam_audio::SteamAudio;
@@ -720,6 +720,70 @@ impl AudioBackend for FmodBackend {
         if let Some(studio) = self.studio.take() {
             let _ = studio.release();
         }
+    }
+
+    fn list_events(&self) -> Vec<FmodEventInfo> {
+        let Some(studio) = self.studio.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(bank_count) = studio.get_bank_count() else {
+            return Vec::new();
+        };
+        if bank_count <= 0 {
+            return Vec::new();
+        }
+        let Ok(banks) = studio.get_bank_list(bank_count) else {
+            return Vec::new();
+        };
+
+        let mut out: Vec<FmodEventInfo> = Vec::new();
+        let mut seen = std::collections::HashSet::<String>::new();
+
+        for bank in banks {
+            let bank_path = bank.get_path().unwrap_or_else(|_| "bank:/?".into());
+            // Strings bank has no playable events.
+            if bank_path.contains(".strings") || bank_path.ends_with("Master.strings") {
+                continue;
+            }
+            let Ok(ev_count) = bank.get_event_count() else {
+                continue;
+            };
+            if ev_count <= 0 {
+                continue;
+            }
+            let Ok(events) = bank.get_event_list(ev_count) else {
+                continue;
+            };
+            for desc in events {
+                let Ok(path) = desc.get_path() else {
+                    continue;
+                };
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                let is_3d = desc.is_3d().unwrap_or(false);
+                let oneshot = desc.is_oneshot().unwrap_or(false);
+                let mut params = Vec::new();
+                if let Ok(n) = desc.get_parameter_description_count() {
+                    for i in 0..n {
+                        if let Ok(p) = desc.get_parameter_description_by_index(i) {
+                            if !p.name.is_empty() {
+                                params.push(p.name);
+                            }
+                        }
+                    }
+                }
+                out.push(FmodEventInfo {
+                    path,
+                    bank: bank_path.clone(),
+                    is_3d,
+                    oneshot,
+                    params,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
     }
 }
 

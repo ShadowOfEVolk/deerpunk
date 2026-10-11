@@ -1,4 +1,5 @@
 pub mod cmd;
+pub mod cvar;
 pub mod engine_api;
 pub mod world;
 pub mod physics;

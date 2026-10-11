@@ -134,6 +134,13 @@ impl App {
                     };
                     input.set_mouse_buttons(input.mouse_buttons() & !bit);
                 }
+                Event::MouseWheel { y, direction, .. } => {
+                    let mut delta = y as f32;
+                    if direction == sdl2::mouse::MouseWheelDirection::Flipped {
+                        delta = -delta;
+                    }
+                    input.add_mouse_wheel(delta);
+                }
                 _ => {}
             }
         }

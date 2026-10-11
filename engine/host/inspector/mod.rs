@@ -24,12 +24,24 @@ struct EntitySnap {
     components: Vec<String>,
 }
 
+/// FMOD Studio event snapshot for `fmod_events.*` RPCs.
+#[derive(Clone, Debug, Default)]
+pub struct FmodEventSnap {
+    pub path: String,
+    pub bank: String,
+    pub is_3d: bool,
+    pub oneshot: bool,
+    pub params: Vec<String>,
+}
+
 struct Snapshot {
     time: f32,
     entities: Vec<EntitySnap>,
     assets: Vec<AssetInfo>,
     /// Published `systems.list` payload (darkdemo-style timings).
     systems: Value,
+    /// Loaded FMOD Studio events (`fmod_events.list`).
+    fmod_events: Vec<FmodEventSnap>,
 }
 
 struct ClientState {
@@ -121,6 +133,7 @@ pub fn start(host: &str, port: u16) {
                 "period_secs": 0.0,
                 "systems": [],
             }),
+            fmod_events: Vec::new(),
         })),
         collections: collections.clone(),
         running: Arc::new(Mutex::new(true)),
@@ -266,6 +279,14 @@ pub fn sync_systems(systems: Value) {
     inner.snapshot.lock().unwrap().systems = systems;
 }
 
+/// Refresh FMOD Studio event list (`fmod_events.list`).
+pub fn sync_fmod_events(events: Vec<FmodEventSnap>) {
+    let Some(inner) = inner() else {
+        return;
+    };
+    inner.snapshot.lock().unwrap().fmod_events = events;
+}
+
 fn handle_message(
     line: &str,
     snapshot: &Arc<Mutex<Snapshot>>,
@@ -366,6 +387,28 @@ fn collection_list(col_id: &str, snapshot: &Arc<Mutex<Snapshot>>) -> Value {
             })
         }
         "systems" => snap.systems.clone(),
+        "fmod_events" => {
+            let events: Vec<Value> = snap
+                .fmod_events
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    json!({
+                        "index": i,
+                        "name": e.path,
+                        "bank": e.bank,
+                        "is_3d": e.is_3d,
+                        "oneshot": e.oneshot,
+                        "params": e.params,
+                    })
+                })
+                .collect();
+            json!({
+                "time": snap.time,
+                "count": events.len(),
+                "events": events,
+            })
+        }
         _ => json!({
             "time": snap.time,
             "count": 0,
@@ -403,6 +446,22 @@ fn collection_get(
                     "index": ent.id,
                     "name": ent.name,
                     "components": components,
+                }),
+            )
+        }
+        "fmod_events" => {
+            let Some(e) = snap.fmod_events.get(index as usize) else {
+                return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "fmod event not found");
+            };
+            proto::ok(
+                id,
+                json!({
+                    "index": index,
+                    "name": e.path,
+                    "bank": e.bank,
+                    "is_3d": e.is_3d,
+                    "oneshot": e.oneshot,
+                    "params": e.params,
                 }),
             )
         }

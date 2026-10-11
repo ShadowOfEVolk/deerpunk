@@ -27,6 +27,16 @@ impl Default for AudioListener {
 /// Entity-attached looping sound: `(backend_key, origin)` pairs refreshed per frame.
 pub type AttachedSounds<'a> = &'a [(u64, [f32; 3])];
 
+/// One Studio event enumerated from loaded banks (inspector / tools).
+#[derive(Clone, Debug, Default)]
+pub struct FmodEventInfo {
+    pub path: String,
+    pub bank: String,
+    pub is_3d: bool,
+    pub oneshot: bool,
+    pub params: Vec<String>,
+}
+
 /// Pluggable audio backend. Single-threaded (client tick thread).
 pub trait AudioBackend {
     /// Load banks / start runtime. `gamedir` = game content directory
@@ -66,6 +76,11 @@ pub trait AudioBackend {
 
     /// Stop everything and release the runtime.
     fn shutdown(&mut self);
+
+    /// All Studio events from loaded banks (empty if runtime not ready).
+    fn list_events(&self) -> Vec<FmodEventInfo> {
+        Vec::new()
+    }
 }
 
 /// No-op backend — used until a real one is installed.

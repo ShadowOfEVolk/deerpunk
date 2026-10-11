@@ -17,6 +17,40 @@ pub extern "C" fn tramp_imgui_begin_window(_engine: *mut u8, name: *const u8, na
     }
 }
 
+/// Transparent no-decoration HUD overlay (top-left style counters).
+pub extern "C" fn tramp_imgui_begin_overlay(
+    _engine: *mut u8,
+    name: *const u8,
+    name_len: usize,
+    x: f32,
+    y: f32,
+) -> bool {
+    let slice = unsafe { std::slice::from_raw_parts(name, name_len) };
+    let Ok(name_str) = std::str::from_utf8(slice) else {
+        return false;
+    };
+    let Ok(c_name) = std::ffi::CString::new(name_str) else {
+        return false;
+    };
+    unsafe {
+        imgui::sys::igSetNextWindowPos(
+            imgui::sys::ImVec2 { x, y },
+            imgui::sys::ImGuiCond_Always as i32,
+            imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
+        );
+        imgui::sys::igSetNextWindowBgAlpha(0.0);
+        let flags = imgui::sys::ImGuiWindowFlags_NoDecoration
+            | imgui::sys::ImGuiWindowFlags_NoInputs
+            | imgui::sys::ImGuiWindowFlags_NoNav
+            | imgui::sys::ImGuiWindowFlags_NoMove
+            | imgui::sys::ImGuiWindowFlags_NoSavedSettings
+            | imgui::sys::ImGuiWindowFlags_AlwaysAutoResize
+            | imgui::sys::ImGuiWindowFlags_NoFocusOnAppearing;
+        let mut open = true;
+        imgui::sys::igBegin(c_name.as_ptr(), &mut open, flags as i32)
+    }
+}
+
 pub extern "C" fn tramp_imgui_end_window(_engine: *mut u8) {
     unsafe { imgui::sys::igEnd(); }
 }
@@ -71,6 +105,7 @@ pub extern "C" fn tramp_imgui_separator(_engine: *mut u8) {
 // ── Inventory registrations ──────────────────────────────────
 
 inventory::submit! { EngineApiMethod { name: "v1:imgui:begin_window", callback: tramp_imgui_begin_window as *const (), flags: 0 } }
+inventory::submit! { EngineApiMethod { name: "v1:imgui:begin_overlay", callback: tramp_imgui_begin_overlay as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:imgui:end_window", callback: tramp_imgui_end_window as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:imgui:text", callback: tramp_imgui_text as *const (), flags: 0 } }
 inventory::submit! { EngineApiMethod { name: "v1:imgui:value_f32", callback: tramp_imgui_value_f32 as *const (), flags: 0 } }

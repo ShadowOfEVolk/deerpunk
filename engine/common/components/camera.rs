@@ -3,11 +3,18 @@ pub struct CameraComponent {
     pub fov_y: f32,
     pub near: f32,
     pub far: f32,
+    /// Local +Z eye offset from entity origin (feet → head for player pawns).
+    pub eye_height: f32,
 }
 
 impl Default for CameraComponent {
     fn default() -> Self {
-        Self { fov_y: 60.0_f32.to_radians(), near: 0.1, far: 1024.0 }
+        Self {
+            fov_y: 60.0_f32.to_radians(),
+            near: 0.1,
+            far: 1024.0,
+            eye_height: 0.0,
+        }
     }
 }
 

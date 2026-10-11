@@ -371,8 +371,9 @@ pub struct Renderer {
     storm_pipeline_layout: wgpu::PipelineLayout,
     storm_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
 
-    // Debug line pipeline (TriangleList, view_proj uniform)
+    // Debug lines: visible (depth ≤) + occluded (depth >, dim fragment).
     debug_pipeline: Option<wgpu::RenderPipeline>,
+    debug_pipeline_occluded: Option<wgpu::RenderPipeline>,
     debug_vertex_buf: wgpu::Buffer,
 
     sampler: wgpu::Sampler,
@@ -1460,6 +1461,7 @@ impl Renderer {
             storm_pipelines: HashMap::new(),
 
             debug_pipeline: None,
+            debug_pipeline_occluded: None,
             debug_vertex_buf: debug_vb,
 
             sampler,
@@ -2504,6 +2506,109 @@ impl Renderer {
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             self.depth_texture = Some(texture);
             self.depth_view = Some(view);
+        }
+    }
+
+    fn ensure_debug_pipelines(&mut self, format: wgpu::TextureFormat) {
+        if self.debug_pipeline.is_some() && self.debug_pipeline_occluded.is_some() {
+            return;
+        }
+        const ATTRS: [wgpu::VertexAttribute; 2] = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 12,
+                shader_location: 1,
+            },
+        ];
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("debug shader"),
+                source: wgpu::ShaderSource::Wgsl(self.shaders.debug.clone().into()),
+            });
+        let make = |device: &wgpu::Device,
+                    layout: &wgpu::PipelineLayout,
+                    shader: &wgpu::ShaderModule,
+                    label: &str,
+                    fs: &str,
+                    depth_compare: wgpu::CompareFunction,
+                    bias_const: i32|
+         -> wgpu::RenderPipeline {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::debug_draw::DebugVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &ATTRS,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(depth_compare),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: bias_const,
+                        slope_scale: if bias_const != 0 { -1.0 } else { 0.0 },
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        if self.debug_pipeline_occluded.is_none() {
+            self.debug_pipeline_occluded = Some(make(
+                &self.device,
+                &self.sky_pipeline_layout,
+                &shader,
+                "debug occluded",
+                "fs_occluded",
+                wgpu::CompareFunction::Greater,
+                0,
+            ));
+        }
+        if self.debug_pipeline.is_none() {
+            // Slight negative bias so coplanar floor edges win as "visible".
+            self.debug_pipeline = Some(make(
+                &self.device,
+                &self.sky_pipeline_layout,
+                &shader,
+                "debug visible",
+                "fs_main",
+                wgpu::CompareFunction::LessEqual,
+                -1,
+            ));
         }
     }
 
@@ -4078,81 +4183,44 @@ impl Renderer {
 
         // --- Debug lines pass ---
         {
-            let verts = crate::debug_draw::collect_vertices(snapshot, 0.04, 120000);
-            if !verts.is_empty() {
-                // Ленивая инициализация debug pipeline
-                if self.debug_pipeline.is_none() {
-                    let shader = self
-                        .device
-                        .create_shader_module(wgpu::ShaderModuleDescriptor {
-                            label: Some("debug shader"),
-                            source: wgpu::ShaderSource::Wgsl(self.shaders.debug.clone().into()),
-                        });
-                    self.debug_pipeline = Some(
-                        self.device
-                            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                                label: Some("debug pipeline"),
-                                layout: Some(&self.sky_pipeline_layout),
-                                vertex: wgpu::VertexState {
-                                    module: &shader,
-                                    entry_point: Some("vs_main"),
-                                    compilation_options: Default::default(),
-                                    buffers: &[Some(wgpu::VertexBufferLayout {
-                                        array_stride: std::mem::size_of::<
-                                            crate::debug_draw::DebugVertex,
-                                        >()
-                                            as u64,
-                                        step_mode: wgpu::VertexStepMode::Vertex,
-                                        attributes: &[
-                                            wgpu::VertexAttribute {
-                                                format: wgpu::VertexFormat::Float32x3,
-                                                offset: 0,
-                                                shader_location: 0,
-                                            },
-                                            wgpu::VertexAttribute {
-                                                format: wgpu::VertexFormat::Float32x4,
-                                                offset: 12,
-                                                shader_location: 1,
-                                            },
-                                        ],
-                                    })],
-                                },
-                                primitive: wgpu::PrimitiveState {
-                                    topology: wgpu::PrimitiveTopology::TriangleList,
-                                    strip_index_format: None,
-                                    front_face: wgpu::FrontFace::Ccw,
-                                    cull_mode: None,
-                                    unclipped_depth: false,
-                                    polygon_mode: wgpu::PolygonMode::Fill,
-                                    conservative: false,
-                                },
-                                depth_stencil: None,
-                                multisample: wgpu::MultisampleState::default(),
-                                fragment: Some(wgpu::FragmentState {
-                                    module: &shader,
-                                    entry_point: Some("fs_main"),
-                                    compilation_options: Default::default(),
-                                    targets: &[Some(wgpu::ColorTargetState {
-                                        format,
-                                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                                        write_mask: wgpu::ColorWrites::ALL,
-                                    })],
-                                }),
-                                multiview_mask: None,
-                                cache: None,
-                            }),
-                    );
-                }
+            // HL-scale: 0.04wu is invisible; sky pass may be skipped indoors so
+            // refresh view_proj here (debug shader binds sky_globals_buf).
+            let inv_vp = deerpunk_engine_common::coord::mat4_inverse(snapshot.view_proj);
+            let debug_sky_uniform = SkyUniform {
+                inv_view_proj: inv_vp,
+                view_proj: snapshot.view_proj,
+                sun_dir: [0.0; 4],
+                camera_pos: [
+                    snapshot.camera_pos[0],
+                    snapshot.camera_pos[1],
+                    snapshot.camera_pos[2],
+                    1.0,
+                ],
+                params: [[0.0; 4]; 8],
+            };
+            self.queue.write_buffer(
+                &self.sky_globals_buf,
+                0,
+                bytemuck::bytes_of(&debug_sky_uniform),
+            );
 
-                if let Some(ref pipeline) = self.debug_pipeline {
-                    self.queue.write_buffer(
-                        &self.debug_vertex_buf,
-                        0,
-                        bytemuck::cast_slice(&verts),
-                    );
-                    // view_proj уже записан в sky_globals_buf на earlier pass
+            let verts = crate::debug_draw::collect_vertices(snapshot, 1.5, 120000);
+            if !verts.is_empty() {
+                self.ensure_depth(frame_width(), frame_height());
+                self.ensure_debug_pipelines(format);
+
+                self.queue.write_buffer(
+                    &self.debug_vertex_buf,
+                    0,
+                    bytemuck::cast_slice(&verts),
+                );
+                let vcount = verts.len() as u32;
+                let depth_view = self.depth_view.as_ref().unwrap();
+
+                // 1) Behind geometry — dim (depth test: farther than scene).
+                if let Some(ref pipeline) = self.debug_pipeline_occluded {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("debug pass"),
+                        label: Some("debug occluded"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view,
                             depth_slice: None,
@@ -4162,15 +4230,53 @@ impl Renderer {
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
-                        depth_stencil_attachment: None,
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
                         timestamp_writes: None,
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    pass.set_pipeline(&pipeline);
+                    pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, &self.sky_globals_bg, &[]);
                     pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
-                    pass.draw(0..verts.len() as u32, 0..1);
+                    pass.draw(0..vcount, 0..1);
+                }
+
+                // 2) In front / on surface — full color.
+                if let Some(ref pipeline) = self.debug_pipeline {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("debug visible"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, &self.sky_globals_bg, &[]);
+                    pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
+                    pass.draw(0..vcount, 0..1);
                 }
             }
         }

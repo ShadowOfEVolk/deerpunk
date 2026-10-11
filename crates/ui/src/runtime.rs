@@ -3,6 +3,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -21,12 +22,19 @@ static CALLBACKS: Mutex<Option<Box<ffi::rmlui_callbacks_t>>> = Mutex::new(None);
 static UI_CMD_QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 static FILES_LIST_JSON: Mutex<Option<CString>> = Mutex::new(None);
+/// Listen-server / in-map: Lua `in_game()`.
+static CLIENT_IN_GAME: AtomicBool = AtomicBool::new(false);
 
 /// Gamedir root for `eng_get_files_list` (e.g. `…/content/darkdemo`).
 pub fn set_content_root(path: impl Into<PathBuf>) {
     if let Ok(mut g) = CONTENT_ROOT.lock() {
         *g = Some(path.into());
     }
+}
+
+/// Drive Lua `in_game()` (host sets when server enable flips).
+pub fn set_client_in_game(on: bool) {
+    CLIENT_IN_GAME.store(on, Ordering::SeqCst);
 }
 
 /// Drain console commands queued by RmlUi Lua `cmd(...)`.
@@ -90,7 +98,7 @@ impl UiRuntime {
             get_base_path: Some(cb_base_path),
             scissor: None,
             execute_command: Some(cb_execute_command),
-            client_in_game: None,
+            client_in_game: Some(cb_client_in_game),
             get_cvar_float: None,
             get_cvar_string: None,
             get_files_list: Some(cb_get_files_list),
@@ -201,6 +209,13 @@ impl UiRuntime {
         }
     }
 
+    pub fn mouse_wheel(&self, delta: f32) {
+        if self.ctx.is_null() || delta == 0.0 {
+            return;
+        }
+        unsafe { ffi::rmlui_process_mouse_wheel(self.ctx, delta) };
+    }
+
     /// Update RmlUi and collect GPU geometry for the wgpu UI pass.
     pub fn frame(&self) -> Option<UiFrame> {
         if !self.is_ready() {
@@ -227,6 +242,7 @@ impl Drop for UiRuntime {
         if self.initialized {
             unsafe { ffi::rmlui_shutdown() };
             self.initialized = false;
+            log::info!("[deerpunk-ui] Rml::Shutdown");
         }
         *GEOM.lock().unwrap() = None;
         *DUMMY_RENDER_API.lock().unwrap() = None;
@@ -367,6 +383,14 @@ unsafe extern "C" fn cb_execute_command(cmd: *const c_char) {
     }
     if let Ok(mut q) = UI_CMD_QUEUE.lock() {
         q.push_back(s);
+    }
+}
+
+unsafe extern "C" fn cb_client_in_game() -> c_int {
+    if CLIENT_IN_GAME.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
     }
 }
 

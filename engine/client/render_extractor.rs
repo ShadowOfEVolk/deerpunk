@@ -5,6 +5,7 @@ use deerpunk_engine_common::components::mesh3d::Mesh3D;
 use deerpunk_engine_common::components::pending_lightmap::LightmapId;
 use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::{CameraComponent, PointLight, TransformComponent};
+use deerpunk_engine_common::physics::CharacterController;
 use deerpunk_engine_common::resource::mesh::Mesh;
 use deerpunk_engine_common::world::{ComponentId, QueryId, World};
 use deerpunk_engine_renderer::snapshot::{
@@ -17,6 +18,7 @@ pub struct RenderExtractor {
     q_terrain_splat: QueryId,
     q_lights: QueryId,
     lightmap_id: ComponentId,
+    char_id: ComponentId,
 }
 
 impl RenderExtractor {
@@ -28,6 +30,7 @@ impl RenderExtractor {
         let _ = world.component_init::<TerrainSplatMaterial>();
         let _ = world.component_init::<PointLight>();
         let lightmap_id = world.component_init::<LightmapId>();
+        let char_id = world.component_init::<CharacterController>();
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
             q_meshes: world.query_prepare("TransformComponent, Mesh3D, Material"),
@@ -35,6 +38,7 @@ impl RenderExtractor {
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
             lightmap_id,
+            char_id,
         }
     }
 
@@ -43,6 +47,7 @@ impl RenderExtractor {
 
         if let Some(batches) = world.query_batches(self.q_cameras) {
             for batch in batches {
+                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 let transforms = unsafe {
                     std::slice::from_raw_parts(
                         batch.columns[0] as *const TransformComponent,
@@ -55,9 +60,18 @@ impl RenderExtractor {
                         batch.count,
                     )
                 };
-                for (t, c) in transforms.iter().zip(cameras.iter()) {
+                for (i, (t, c)) in transforms.iter().zip(cameras.iter()).enumerate() {
+                    // Origin = feet for pawns: eye_height on camera, else CC default.
+                    let mut eye = c.eye_height;
+                    if eye <= 0.0 {
+                        if let Some(cc) =
+                            world.get::<CharacterController>(entities[i], self.char_id)
+                        {
+                            eye = cc.eye_height();
+                        }
+                    }
                     scene.push_camera(CameraDefinition {
-                        position: [t.position.x, t.position.y, t.position.z],
+                        position: [t.position.x, t.position.y, t.position.z + eye],
                         rotation: t.rotation,
                         fov_y: c.fov_y,
                         near: c.near,
