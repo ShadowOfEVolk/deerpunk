@@ -13,6 +13,7 @@ pub mod scene;
 pub mod schedule;
 pub mod ui;
 pub mod version;
+pub mod methoddb;
 pub mod world;
 pub mod client_world;
 

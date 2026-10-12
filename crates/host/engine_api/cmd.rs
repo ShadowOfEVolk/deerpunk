@@ -58,32 +58,10 @@ pub extern "C" fn tramp_cmd_register(
     0
 }
 
-/// `v1:cmd:execute` — queue/execute a console command line.
-pub extern "C" fn tramp_cmd_execute(
-    engine: *mut u8,
-    line_ptr: *const u8,
-    line_len: usize,
-) -> i32 {
-    let line = read_str(line_ptr, line_len);
-    if line.trim().is_empty() {
-        return -1;
-    }
-    let host = unsafe { &*(engine as *const crate::Host) };
-    host.cmd.execute_command(&line);
-    0
-}
-
 inventory::submit! {
     EngineApiMethod {
         name: "v1:cmd:register",
         callback: tramp_cmd_register as *const (),
-        flags: 0,
-    }
-}
-inventory::submit! {
-    EngineApiMethod {
-        name: "v1:cmd:execute",
-        callback: tramp_cmd_execute as *const (),
         flags: 0,
     }
 }

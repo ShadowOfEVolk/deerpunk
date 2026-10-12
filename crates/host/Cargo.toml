@@ -30,6 +30,7 @@ renet = "2.0"
 renet_netcode = "2.0"
 renetcode = "2.0"
 socket2 = "0.5"
+deerpunk-macro = { path = "../deerpunk-macro" }
 
 [features]
 default = ["full"]

@@ -11,6 +11,7 @@ members = [
     "crates/engine-api",
     "crates/ui",
     "crates/inspector-protocol",
+    "crates/deerpunk-macro",
 ]
 resolver = "2"
 

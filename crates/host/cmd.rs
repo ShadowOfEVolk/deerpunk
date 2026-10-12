@@ -5,6 +5,8 @@ use std::path::Path;
 use crate::cvar::CvarSystem;
 use crate::fs::FileSystem;
 
+use deerpunk_macro as methoddb;
+
 const CMD_MAX_BUFFER: usize = 256;
 
 pub struct CommandExecutionContext<'a> {
@@ -46,6 +48,11 @@ pub struct CmdSystem {
 unsafe impl Send for CmdSystem {}
 unsafe impl Sync for CmdSystem {}
 
+#[methoddb::namespace(
+    name = "v1:cmd",
+    host_field = "cmd",
+    scope = ["server", "client"],
+)]
 impl CmdSystem {
     pub fn new() -> Self {
         Self {
@@ -117,8 +124,11 @@ impl CmdSystem {
             Box::new(move |ctx: CommandExecutionContext<'_>| {
                 if ctx.args.is_empty() {
                     println!();
+                    log::info!("[echo]");
                 } else {
-                    println!("{}", ctx.args.join(" "));
+                    let line = ctx.args.join(" ");
+                    println!("{line}");
+                    log::info!("[echo] {line}");
                 }
             }),
         );
@@ -283,6 +293,7 @@ impl CmdSystem {
         buffer.count += 1;
     }
 
+    #[methoddb::bind(name = "execute")]
     pub fn execute_command(&self, command_line: &str) {
         let tokens = self.tokenize(command_line);
         if tokens.is_empty() {

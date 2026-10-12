@@ -673,6 +673,7 @@ dependencies = [
  "deerpunk-engine-common",
  "deerpunk-engine-server",
  "deerpunk-inspector-protocol",
+ "deerpunk-macro",
  "deerpunk-ui",
  "glam 0.33.3",
  "image",
@@ -724,6 +725,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "deerpunk-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.110",
 ]
 
 [[package]]
