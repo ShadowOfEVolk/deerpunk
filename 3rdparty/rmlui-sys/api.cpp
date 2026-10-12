@@ -99,6 +99,16 @@ static int lua_eng_load_file(lua_State* L)
     return 1;
 }
 
+static int lua_eng_time(lua_State* L)
+{
+    if (!g_callbacks || !g_callbacks->get_time) {
+        lua_pushnumber(L, 0);
+        return 1;
+    }
+    lua_pushnumber(L, g_callbacks->get_time());
+    return 1;
+}
+
 static void register_lua_commands(void)
 {
     lua_State* L = Rml::Lua::Interpreter::GetLuaState();
@@ -117,6 +127,8 @@ static void register_lua_commands(void)
     lua_setglobal(L, "eng_get_files_list");
     lua_pushcfunction(L, lua_eng_load_file);
     lua_setglobal(L, "eng_load_file");
+    lua_pushcfunction(L, lua_eng_time);
+    lua_setglobal(L, "eng_time");
 }
 
 int rmlui_init(int viewport_w, int viewport_h, const rmlui_callbacks_t* callbacks, const rmlui_render_api_t* render_api)

@@ -24,6 +24,8 @@ static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 static FILES_LIST_JSON: Mutex<Option<CString>> = Mutex::new(None);
 /// Listen-server / in-map: Lua `in_game()`.
 static CLIENT_IN_GAME: AtomicBool = AtomicBool::new(false);
+/// LAN browser JSON for `eng_get_files_list("lan://servers")`.
+static LAN_SERVERS_JSON: Mutex<Option<CString>> = Mutex::new(None);
 
 /// Gamedir root for `eng_get_files_list` (e.g. `…/content/darkdemo`).
 pub fn set_content_root(path: impl Into<PathBuf>) {
@@ -35,6 +37,14 @@ pub fn set_content_root(path: impl Into<PathBuf>) {
 /// Drive Lua `in_game()` (host sets when server enable flips).
 pub fn set_client_in_game(on: bool) {
     CLIENT_IN_GAME.store(on, Ordering::SeqCst);
+}
+
+/// Host pushes LAN server list JSON for the menu browser.
+pub fn set_lan_servers_json(json: impl Into<String>) {
+    let s = json.into();
+    if let Ok(mut g) = LAN_SERVERS_JSON.lock() {
+        *g = Some(CString::new(s).unwrap_or_else(|_| CString::new("[]").unwrap()));
+    }
 }
 
 /// Drain console commands queued by RmlUi Lua `cmd(...)`.
@@ -209,11 +219,13 @@ impl UiRuntime {
         }
     }
 
+    /// `delta`: engine convention — positive = scroll up (away). RmlUi wants the opposite
+    /// (positive = down); same as official SDL/GLFW backends (`-y`).
     pub fn mouse_wheel(&self, delta: f32) {
         if self.ctx.is_null() || delta == 0.0 {
             return;
         }
-        unsafe { ffi::rmlui_process_mouse_wheel(self.ctx, delta) };
+        unsafe { ffi::rmlui_process_mouse_wheel(self.ctx, -delta) };
     }
 
     /// Update RmlUi and collect GPU geometry for the wgpu UI pass.
@@ -404,6 +416,15 @@ unsafe extern "C" fn cb_get_files_list(pattern: *const c_char) -> *const c_char 
         return empty;
     }
     let pat = CStr::from_ptr(pattern).to_string_lossy();
+    // Virtual: LAN browser list (JSON array of server objects).
+    if pat == "lan://servers" {
+        if let Ok(g) = LAN_SERVERS_JSON.lock() {
+            if let Some(ref c) = *g {
+                return c.as_ptr();
+            }
+        }
+        return empty;
+    }
     let Some(root) = CONTENT_ROOT.lock().ok().and_then(|g| g.clone()) else {
         return empty;
     };

@@ -13,17 +13,12 @@ pub struct AudioApi {
     ctx: *mut u8,
     play_2d_fn: extern "C" fn(*mut u8, *const u8, usize, u32) -> i32,
     play_3d_fn: extern "C" fn(*mut u8, *const u8, usize, f32, f32, f32, u32, *const u8, usize, f32) -> i32,
-    start_attached_fn: extern "C" fn(*mut u8, *const u8, *const u8, usize, f32, f32, f32, u32) -> i32,
-    stop_attached_fn: extern "C" fn(*mut u8, *const u8) -> i32,
+    start_attached_fn: extern "C" fn(*mut u8, u64, *const u8, usize, f32, f32, f32, u32) -> i32,
+    stop_attached_fn: extern "C" fn(*mut u8, u64) -> i32,
 }
 
 unsafe impl Send for AudioApi {}
 unsafe impl Sync for AudioApi {}
-
-#[inline]
-fn write_le_u64(out: &mut [u8; 8], v: u64) {
-    out.copy_from_slice(&v.to_le_bytes());
-}
 
 impl AudioApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
@@ -83,11 +78,9 @@ impl AudioApi {
         volume: f32,
     ) -> i32 {
         let ev = event.as_bytes();
-        let mut key_buf = [0u8; 8];
-        write_le_u64(&mut key_buf, key);
         (self.start_attached_fn)(
             self.ctx,
-            key_buf.as_ptr(),
+            key,
             ev.as_ptr(),
             ev.len(),
             origin[0],
@@ -99,8 +92,6 @@ impl AudioApi {
 
     /// Stop a previously started attached sound.
     pub fn stop_attached(&self, key: u64) -> i32 {
-        let mut key_buf = [0u8; 8];
-        write_le_u64(&mut key_buf, key);
-        (self.stop_attached_fn)(self.ctx, key_buf.as_ptr())
+        (self.stop_attached_fn)(self.ctx, key)
     }
 }

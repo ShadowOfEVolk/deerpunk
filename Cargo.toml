@@ -1,11 +1,11 @@
 [workspace]
 members = [
-    "engine/host",
-    "engine/common",
-    "engine/server",
-    "engine/client",
-    "engine/client-fmod",
-    "engine/renderer",
+    "crates/host",
+    "crates/common",
+    "crates/server",
+    "crates/client",
+    "crates/client-fmod",
+    "crates/renderer",
     "crates/sdk-common",
     "crates/sdk-client",
     "crates/engine-api",
@@ -36,10 +36,10 @@ name = "deerpunk"
 path = "src/main.rs"
 
 [dependencies]
-deerpunk-engine-host = { path = "engine/host", features = ["full"] }
-deerpunk-engine-common = { path = "engine/common" }
-deerpunk-engine-client = { path = "engine/client" }
-deerpunk-engine-renderer = { path = "engine/renderer" }
+deerpunk-engine-host = { path = "crates/host", features = ["full"] }
+deerpunk-engine-common = { path = "crates/common" }
+deerpunk-engine-client = { path = "crates/client" }
+deerpunk-engine-renderer = { path = "crates/renderer" }
 log = { workspace = true }
 wgpu = "30"
 glam = "0.33"

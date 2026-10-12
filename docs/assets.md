@@ -1,6 +1,6 @@
 # Asset Manager (`ResourceManager`)
 
-Runtime asset registry for deerpunk. Lives in `engine/common/resource`, owned by `Host`.
+Runtime asset registry for deerpunk. Lives in `crates/common/resource`, owned by `Host`.
 
 Inspectable via the inspector collection `assets` (`assets.list` / `assets.get`).
 
@@ -24,7 +24,7 @@ Inspectable via the inspector collection `assets` (`assets.list` / `assets.get`)
 | `LoadedAsset` | `data` + `size` + `type_name` from a loader |
 | `AssetInfo` | Snapshot row for inspector / debug |
 
-Code: `engine/common/resource/{mod,loader,bsp_loader,wad_loader}.rs`.
+Code: `crates/common/resource/{mod,loader,bsp_loader,wad_loader}.rs`.
 
 ## URIs
 

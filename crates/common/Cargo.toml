@@ -1,0 +1,28 @@
+[package]
+name = "deerpunk-engine-common"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+log = { workspace = true }
+fern = { workspace = true }
+glam = { version = "0.33", features = ["serde"] }
+
+serde_json = "1"
+json_comments = "0.2"
+inventory = "0.3"
+serde = { version = "1", features = ["derive"] }
+handlebars = "6"
+bincode = "1.3"
+rapier3d = { version = "0.35", features = ["dim3", "profiler"] }
+memmap2 = "0.9"
+interprocess = "2"
+image = "0.25"
+flecs_ecs_sys = { git = "https://github.com/Indra-db/Flecs-Rust.git", default-features = false, features = ["flecs_meta_c", "flecs_alerts", "flecs_json"] }
+
+[build-dependencies]
+cc = "1"
+bindgen = "0.71"

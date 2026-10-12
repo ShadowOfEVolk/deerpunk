@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 log = { workspace = true }
-deerpunk-engine-common = { path = "../../engine/common" }
+deerpunk-engine-common = { path = "../common" }
 image = "0.25"
 
 [build-dependencies]
