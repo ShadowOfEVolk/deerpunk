@@ -1,6 +1,10 @@
-//! Resource / BSP asset API for gamelib (`v1:resources:*`).
+//! `v1:resources:*` — gamelib registers opaque loaders on the host [`ResourceManager`].
+
+use deerpunk_engine_api::resources::ResourceLoaderDesc;
 
 use crate::engine_api::engine_api::EngineApiMethod;
+
+use super::callback_loader::{CallbackLoader, DropFn, LoadFn};
 
 pub(crate) fn read_str(ptr: *const u8, len: usize) -> String {
     if ptr.is_null() || len == 0 {
@@ -12,86 +16,52 @@ pub(crate) fn read_str(ptr: *const u8, len: usize) -> String {
     }
 }
 
-/// `v1:resources:load_bsp` — load BSP via ResourceManager.
-/// Writes `BspMap { id }` into `out`. Returns 0 on success, -1 on error.
-pub extern "C" fn tramp_resources_load_bsp(
-    engine: *mut u8,
-    path_ptr: *const u8,
-    path_len: usize,
-    out_id: *mut u64,
-) -> i32 {
-    if out_id.is_null() {
-        return -1;
-    }
-    let path = read_str(path_ptr, path_len);
-    if path.trim().is_empty() {
-        log::error!("[resources] load_bsp: empty path");
-        return -1;
-    }
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    {
-        let host = unsafe { &mut *(engine as *mut crate::Host) };
-        match host.load_bsp(&path) {
-            Ok(id) => {
-                unsafe { *out_id = id };
-                0
-            }
-            Err(e) => {
-                log::error!("[resources] load_bsp {path}: {e}");
-                -1
-            }
-        }
-    }
-    #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-    {
-        let _ = (engine, path, out_id);
-        -1
-    }
+fn parse_extensions(s: &str) -> Vec<String> {
+    s.split([',', ';', ' '])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| p.trim_start_matches('.').to_ascii_lowercase())
+        .collect()
 }
 
-/// `v1:resources:place_bsp` — place loaded BSP into world.
-/// Returns worldspawn entity id, or 0 on error.
-pub extern "C" fn tramp_resources_place_bsp(
-    engine: *mut u8,
-    asset_id: u64,
-    name_ptr: *const u8,
-    name_len: usize,
-) -> u64 {
-    let map_name = read_str(name_ptr, name_len);
-    let map_name = if map_name.trim().is_empty() {
-        format!("{asset_id}")
-    } else {
-        map_name
-    };
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    {
-        let host = unsafe { &mut *(engine as *mut crate::Host) };
-        match host.place_bsp(asset_id, &map_name) {
-            Ok(entity) => entity,
-            Err(e) => {
-                log::error!("[resources] place_bsp id={asset_id}: {e}");
-                0
-            }
-        }
+/// `v1:resources:register`
+pub extern "C" fn tramp_resources_register(engine: *mut u8, desc: *const ResourceLoaderDesc) -> i32 {
+    if desc.is_null() {
+        return -1;
     }
-    #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-    {
-        let _ = (engine, asset_id, map_name);
-        0
+    let desc = unsafe { &*desc };
+    if desc.load as usize == 0 || desc.drop_fn as usize == 0 {
+        return -1;
     }
+    let id = read_str(desc.id_ptr, desc.id_len);
+    if id.is_empty() {
+        return -1;
+    }
+    let ext_src = read_str(desc.extensions_ptr, desc.extensions_len);
+    let extensions = parse_extensions(&ext_src);
+    let type_tag = read_str(desc.type_tag_ptr, desc.type_tag_len);
+    if type_tag.is_empty() {
+        return -1;
+    }
+
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    let loader = CallbackLoader::new(
+        id.clone(),
+        extensions,
+        type_tag,
+        desc.user_data,
+        desc.load,
+        desc.drop_fn,
+    );
+    host.resources.register_loader(Box::new(loader));
+    log::info!("[resources] registered loader '{id}'");
+    0
 }
 
 inventory::submit! {
     EngineApiMethod {
-        name: "v1:resources:load_bsp",
-        callback: tramp_resources_load_bsp as *const (),
-        flags: 0,
-    }
-}
-inventory::submit! {
-    EngineApiMethod {
-        name: "v1:resources:place_bsp",
-        callback: tramp_resources_place_bsp as *const (),
+        name: "v1:resources:register",
+        callback: tramp_resources_register as *const (),
         flags: 0,
     }
 }

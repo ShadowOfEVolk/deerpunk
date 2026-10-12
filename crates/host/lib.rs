@@ -57,9 +57,7 @@ pub mod engine_api;
 pub use deerpunk_engine_common::world;
 
 use deerpunk_engine_common::network::protocol::{CLC, SVC};
-use deerpunk_engine_common::network::sound_event::{
-    SoundEventRpc, KIND_PLAY_2D, KIND_PLAY_3D, KIND_START_ATTACHED, KIND_STOP_ATTACHED,
-};
+use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
 use deerpunk_engine_common::components::{LightstyleTable, MAX_LIGHTSTYLES};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::UserCmd;
@@ -389,6 +387,8 @@ pub struct Host {
     lan_browser: lan::LanBrowser,
     /// Current map name for LAN info (set on place_bsp).
     lan_map: String,
+    /// Server-assigned sound instance ids (`SoundPlay` / `SoundStop`).
+    next_sound_id: u32,
     /// Named SVC UserMessage registry + client hooks.
     pub um: user_messages::UserMessageRegistry,
     /// Client lightstyle patterns — filled only via LightStyle SVC (incl. listen local).
@@ -440,10 +440,10 @@ impl Host {
             net: net::NetTransport::default(),
             client_session_phase: ClientSessionPhase::Idle,
             slots_play: SlotPlayGate::default(),
-            #[cfg(any(feature = "client", feature = "full"))]
             lan_advertiser: None,
             lan_browser: lan::LanBrowser::default(),
             lan_map: String::new(),
+            next_sound_id: 1,
             um: user_messages::UserMessageRegistry::default(),
             client_lightstyles: LightstyleTable::hl_defaults(),
             last_ls_patterns: vec![String::new(); MAX_LIGHTSTYLES],
@@ -571,6 +571,17 @@ impl Host {
             id_field: "index".into(),
             nested_in: None,
         });
+        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+            id: "methoddb".into(),
+            label: "MethodDB".into(),
+            group: deerpunk_inspector_protocol::CollectionGroup::Definitions,
+            modes: vec![
+                deerpunk_inspector_protocol::CollectionMode::List,
+                deerpunk_inspector_protocol::CollectionMode::Get,
+            ],
+            id_field: "index".into(),
+            nested_in: None,
+        });
         stdin_cmd::start();
 
         log::info!("Engine initialized");
@@ -589,6 +600,7 @@ impl Host {
             .unwrap_or_else(|| "127.0.0.1".into());
         log::info!("[inspector] start host={host} port={port}");
         inspector::start(&host, port);
+        inspector::sync_methoddb();
     }
 
     fn register_internal_components(&mut self) {
@@ -604,7 +616,7 @@ impl Host {
             w.component_init::<Terrain>();
             w.component_init::<TerrainSplatMaterial>();
             w.component_init::<Worldspawn>();
-            w.component_init::<PendingBspAtlas>();
+            w.component_init::<PendingAlbedoAtlas>();
             w.component_init::<PendingLightmap>();
             w.component_init::<LightmapId>();
             w.component_init::<LightstyleTable>();
@@ -1116,101 +1128,7 @@ impl Host {
         Ok(ids)
     }
 
-    /// Load a BSP via ResourceManager. Returns asset id (`BspMap.id`).
-    ///
-    /// `path` may be a bare map name (`oldlifehome`), `maps/foo.bsp`, or absolute path.
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    pub fn load_bsp(&mut self, path: &str) -> Result<u64, String> {
-        use deerpunk_engine_common::bsp30::BspWorldMesh;
-        use deerpunk_engine_common::resource::{path_to_file_uri, AssetId, LoadOpts};
-
-        let gamedir = self.fs.gamedir().to_path_buf();
-        let bsp_path = resolve_bsp_path(&gamedir, path);
-        let uri = path_to_file_uri(&bsp_path);
-        log::info!("[host] load_bsp path={} uri={uri}", bsp_path.display());
-        let handle = self
-            .resources
-            .load_with::<BspWorldMesh>(&uri, LoadOpts::default().loader("bsp"));
-        if !handle.is_loaded() {
-            return Err(format!(
-                "bsp load failed: {} (asset={:?})",
-                bsp_path.display(),
-                handle.id()
-            ));
-        }
-        let AssetId(id) = handle.id();
-        Ok(id)
-    }
-
-    /// Place a previously loaded BSP asset into the world (geometry + map entities).
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    pub fn place_bsp(&mut self, asset_id: u64, map_name: &str) -> Result<u64, String> {
-        use deerpunk_engine_common::bsp30::BspWorldMesh;
-        use deerpunk_engine_common::resource::AssetId;
-
-        let handle = self
-            .resources
-            .handle::<BspWorldMesh>(AssetId(asset_id))
-            .ok_or_else(|| format!("unknown bsp asset id={asset_id}"))?;
-        let loaded = handle
-            .try_get()
-            .ok_or_else(|| format!("bsp asset id={asset_id} not loaded"))?;
-
-        let gamedir = self.fs.gamedir().to_path_buf();
-        let entity = self.server_engine.world.spawn();
-        deerpunk_engine_server::place_bsp_map(
-            &self.server_engine.world,
-            &gamedir,
-            &mut self.resources,
-            entity,
-            loaded,
-            map_name,
-            true,
-        )?;
-        self.flush_pending_albedos();
-        self.lan_map = map_name.to_string();
-        Ok(entity)
-    }
-
-    /// Client join: load BSP world geometry only (no entities lump).
-    #[cfg(any(feature = "client", feature = "full"))]
-    pub fn client_place_map(&mut self, map_name: &str) -> Result<(), String> {
-        use deerpunk_engine_common::bsp30::BspWorldMesh;
-        use deerpunk_engine_common::resource::AssetId;
-        use deerpunk_engine_common::scene::place_bsp_map;
-
-        let asset_id = self.load_bsp(map_name)?;
-        let handle = self
-            .resources
-            .handle::<BspWorldMesh>(AssetId(asset_id))
-            .ok_or_else(|| format!("unknown bsp asset id={asset_id}"))?;
-        let loaded = handle
-            .try_get()
-            .ok_or_else(|| format!("bsp asset id={asset_id} not loaded"))?
-            .clone();
-
-        let gamedir = self.fs.gamedir().to_path_buf();
-        let client = self
-            .client_engine
-            .as_mut()
-            .ok_or_else(|| "no client world".to_string())?;
-        let entity = client.world.spawn();
-        place_bsp_map(
-            &client.world,
-            &gamedir,
-            &mut self.resources,
-            entity,
-            loaded,
-            map_name,
-            false,
-        )?;
-        self.client_rep.track_static_entity(entity);
-        self.flush_pending_albedos();
-        log::info!("[net] client Map '{map_name}' entity={entity:#x}");
-        Ok(())
-    }
-
-    /// Upload pending BSP atlases on the server world (legacy path / dedicated tools).
+    /// Upload pending albedo atlases on the server world (legacy path / dedicated tools).
     #[cfg(any(feature = "client", feature = "full"))]
     fn flush_pending_albedos(&mut self) {
         let world = &self.server_engine.world as *const deerpunk_engine_common::world::World;
@@ -1220,17 +1138,17 @@ impl Host {
         }
     }
 
-    /// Upload [`PendingBspAtlas`] / [`PendingLightmap`] from `world` into the client renderer.
+    /// Upload [`PendingAlbedoAtlas`] / [`PendingLightmap`] from `world` into the client renderer.
     #[cfg(any(feature = "client", feature = "full"))]
-    fn flush_pending_albedos_world(&mut self, world: &deerpunk_engine_common::world::World) {
+    pub fn flush_pending_albedos_world(&mut self, world: &deerpunk_engine_common::world::World) {
         use deerpunk_engine_common::components::{
-            LightmapId, Material, PendingBspAtlas, PendingLightmap,
+            LightmapId, Material, PendingAlbedoAtlas, PendingLightmap,
         };
 
         let Some(client) = self.client_engine.as_mut() else {
             return;
         };
-        let pending_id = world.component_init::<PendingBspAtlas>();
+        let pending_id = world.component_init::<PendingAlbedoAtlas>();
         let pending_lm_id = world.component_init::<PendingLightmap>();
         let lm_id_comp = world.component_init::<LightmapId>();
         let mat_id = world.component_init::<Material>();
@@ -1240,7 +1158,7 @@ impl Host {
             .into_iter()
             .filter(|e| {
                 e.components.iter().any(|c| {
-                    c.contains("PendingBspAtlas") || c.contains("PendingLightmap")
+                    c.contains("PendingAlbedoAtlas") || c.contains("PendingLightmap")
                 })
             })
             .map(|e| e.id)
@@ -1248,11 +1166,11 @@ impl Host {
 
         for ent in ents {
             let mut uploaded_atlas = false;
-            let ptr = world.get_raw(ent, pending_id) as *mut PendingBspAtlas;
+            let ptr = world.get_raw(ent, pending_id) as *mut PendingAlbedoAtlas;
             if !ptr.is_null() {
                 let pending = unsafe { std::ptr::read(ptr) };
                 unsafe {
-                    std::ptr::write(ptr, PendingBspAtlas::default());
+                    std::ptr::write(ptr, PendingAlbedoAtlas::default());
                 }
                 if let Some(img) = pending.image {
                     let tex = client
@@ -1878,38 +1796,72 @@ impl Host {
         }
     }
 
+    pub fn alloc_sound_id(&mut self) -> u32 {
+        let id = self.next_sound_id;
+        self.next_sound_id = self.next_sound_id.wrapping_add(1);
+        if self.next_sound_id == 0 {
+            self.next_sound_id = 1;
+        }
+        id
+    }
+
+    pub fn queue_sound_packet(&mut self, packet: Vec<u8>) {
+        self.channel.push_server(packet);
+    }
+
     #[cfg(any(feature = "client", feature = "full"))]
-    fn apply_sound_event_packet(&mut self, packet: &[u8]) {
+    fn sync_server_sound_origins(&mut self) {
+        let Some(client) = self.client_engine.as_mut() else {
+            return;
+        };
+        let pending = client.server_loops_with_net_id();
+        let t_id = client
+            .world
+            .component_init::<deerpunk_engine_common::components::TransformComponent>();
+        let mut updates = Vec::new();
+        for (sound_id, net_id) in pending {
+            let Some(ent) = self.client_rep.client_of_net(net_id) else {
+                continue;
+            };
+            let ptr = client.world.get_raw(ent, t_id) as *const deerpunk_engine_common::components::TransformComponent;
+            if ptr.is_null() {
+                continue;
+            }
+            updates.push((sound_id, unsafe { &*ptr }.position.to_array()));
+        }
+        for (sound_id, origin) in updates {
+            client.set_server_loop_origin(sound_id, origin);
+        }
+    }
+
+    #[cfg(any(feature = "client", feature = "full"))]
+    fn apply_sound_play_packet(&mut self, packet: &[u8]) {
         let Some((_cmd, payload)) = packet.split_first() else {
+            return;
+        };
+        let Some(rpc) = SoundPlayRpc::decode(payload) else {
+            log::warn!("[net] SoundPlay decode failed");
             return;
         };
         let Some(client) = self.client_engine.as_mut() else {
             return;
         };
-        let Some(rpc) = SoundEventRpc::decode(payload) else {
-            log::warn!("[net] sound rpc decode failed");
+        client.audio_apply_play(&rpc);
+    }
+
+    #[cfg(any(feature = "client", feature = "full"))]
+    fn apply_sound_stop_packet(&mut self, packet: &[u8]) {
+        let Some((_cmd, payload)) = packet.split_first() else {
             return;
         };
-        let params: Vec<(&str, f32)> = rpc
-            .params
-            .iter()
-            .map(|(n, v)| (n.as_str(), *v))
-            .collect();
-        match rpc.kind {
-            KIND_PLAY_2D => {
-                client.audio_play_2d(&rpc.event, rpc.volume, &params);
-            }
-            KIND_PLAY_3D => {
-                client.audio_play_3d(&rpc.event, rpc.position, rpc.volume, &params);
-            }
-            KIND_START_ATTACHED => {
-                client.audio_start_attached(rpc.key, &rpc.event, rpc.position, rpc.volume);
-            }
-            KIND_STOP_ATTACHED => {
-                client.audio_stop_attached(rpc.key);
-            }
-            other => log::warn!("[net] sound rpc kind={other}?"),
-        }
+        let Some(rpc) = SoundStopRpc::decode(payload) else {
+            log::warn!("[net] SoundStop decode failed");
+            return;
+        };
+        let Some(client) = self.client_engine.as_mut() else {
+            return;
+        };
+        client.audio_apply_stop(rpc.sound_id);
     }
 
     /// GS-style: one match for every SVC the local client can see.
@@ -1925,7 +1877,8 @@ impl Host {
         match svc {
             SVC::Nop => {}
             SVC::Bad => log::warn!("[cl] SVC::Bad"),
-            SVC::SoundEvent => self.apply_sound_event_packet(packet),
+            SVC::SoundPlay => self.apply_sound_play_packet(packet),
+            SVC::SoundStop => self.apply_sound_stop_packet(packet),
             SVC::SpawnPrefab | SVC::NetDelta | SVC::NetDestroy | SVC::PrefabDef => {
                 let Some(client) = self.client_engine.as_mut() else {
                     return;
@@ -2102,6 +2055,7 @@ impl Host {
                 }
             }
         }
+        #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
         if !udp_connects.is_empty() {
             self.finish_client_join(&udp_connects);
         }
@@ -2286,6 +2240,7 @@ impl Host {
                 let client = self.client_engine.as_mut().unwrap();
                 client.advance_time(dt);
             }
+            self.sync_server_sound_origins();
             let view_ent = self.client_rep.view_entity();
             let scene = self
                 .client_engine

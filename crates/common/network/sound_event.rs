@@ -1,90 +1,104 @@
-//! Sound event RPC — server → client ("play this sound").
-//!
-//! Wire format (little-endian, SVC::SoundEvent payload; future network boundary —
-//! keep binary-simple):
-//!
-//! ```text
-//! u8      kind           (0 = Play2D, 1 = Play3D, 2 = StartAttached, 3 = StopAttached)
-//! u64     key            attached entity key (0 for one-shot kinds)
-//! f32 x3  position       world units (Play3D / StartAttached)
-//! u8      volume         0..=255 → linear 0..1
-//! u8      name_len       event path length (bytes)
-//! [u8]    event          ascii/utf8 path ("event:/…")
-//! u8      param_count
-//! per param:
-//!   u8    param_len
-//!   [u8]  param_name
-//!   f32   param_value
-//! ```
-//!
-//! `StopAttached` reads only `kind` + `key`; everything else may be zero.
+//! Server → client sound instances (`sound_id` assigned on server).
 
-pub const KIND_PLAY_2D: u8 = 0;
-pub const KIND_PLAY_3D: u8 = 1;
-pub const KIND_START_ATTACHED: u8 = 2;
-pub const KIND_STOP_ATTACHED: u8 = 3;
+use super::protocol::SVC;
 
-#[derive(Clone, Debug, Default)]
-pub struct SoundEventRpc {
-    pub kind: u8,
-    /// Attached entity key (0 for one-shot kinds).
-    pub key: u64,
-    pub position: [f32; 3],
-    /// Linear 0..1 (clamped).
+/// Non-positional one-shot.
+pub const SND_FLAG_2D: u8 = 1 << 0;
+/// Loop until `SoundStop` (attached key = `sound_id` on client).
+pub const SND_FLAG_LOOP: u8 = 1 << 1;
+/// `net_id` field is set — client follows replicated entity when possible.
+pub const SND_FLAG_NET_ENTITY: u8 = 1 << 2;
+
+#[derive(Clone, Debug)]
+pub struct SoundPlayRpc {
+    pub sound_id: u32,
+    pub flags: u8,
+    pub net_id: u16,
+    pub origin: [f32; 3],
+    pub channel: u8,
     pub volume: f32,
     pub event: String,
     pub params: Vec<(String, f32)>,
 }
 
-impl SoundEventRpc {
-    pub fn play_2d(event: &str, volume: f32, params: Vec<(String, f32)>) -> Self {
+#[derive(Clone, Copy, Debug)]
+pub struct SoundStopRpc {
+    pub sound_id: u32,
+}
+
+impl SoundPlayRpc {
+    pub fn play_2d(sound_id: u32, event: &str, volume: f32, params: Vec<(String, f32)>) -> Self {
         Self {
-            kind: KIND_PLAY_2D,
-            event: event.to_string(),
+            sound_id,
+            flags: SND_FLAG_2D,
+            net_id: 0,
+            origin: [0.0, 0.0, 0.0],
+            channel: 0,
             volume,
+            event: event.to_string(),
             params,
-            ..Default::default()
         }
     }
 
-    pub fn play_3d(event: &str, position: [f32; 3], volume: f32, params: Vec<(String, f32)>) -> Self {
+    pub fn play_3d(
+        sound_id: u32,
+        event: &str,
+        origin: [f32; 3],
+        volume: f32,
+        params: Vec<(String, f32)>,
+    ) -> Self {
         Self {
-            kind: KIND_PLAY_3D,
-            event: event.to_string(),
-            position,
+            sound_id,
+            flags: 0,
+            net_id: 0,
+            origin,
+            channel: 0,
             volume,
+            event: event.to_string(),
             params,
-            ..Default::default()
         }
     }
 
-    pub fn start_attached(key: u64, event: &str, position: [f32; 3], volume: f32) -> Self {
+    pub fn play_loop(
+        sound_id: u32,
+        event: &str,
+        origin: [f32; 3],
+        volume: f32,
+        net_id: u16,
+    ) -> Self {
+        let mut flags = SND_FLAG_LOOP;
+        if net_id != 0 {
+            flags |= SND_FLAG_NET_ENTITY;
+        }
         Self {
-            kind: KIND_START_ATTACHED,
-            key,
-            event: event.to_string(),
-            position,
+            sound_id,
+            flags,
+            net_id,
+            origin,
+            channel: 0,
             volume,
-            ..Default::default()
+            event: event.to_string(),
+            params: Vec::new(),
         }
     }
 
-    pub fn stop_attached(key: u64) -> Self {
-        Self {
-            kind: KIND_STOP_ATTACHED,
-            key,
-            ..Default::default()
-        }
+    pub fn is_2d(&self) -> bool {
+        self.flags & SND_FLAG_2D != 0
     }
 
-    /// Encode payload (without the SVC command byte).
+    pub fn is_loop(&self) -> bool {
+        self.flags & SND_FLAG_LOOP != 0
+    }
+
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(48);
-        out.push(self.kind);
-        out.extend_from_slice(&self.key.to_le_bytes());
-        for v in self.position {
+        let mut out = Vec::with_capacity(48 + self.event.len());
+        out.extend_from_slice(&self.sound_id.to_le_bytes());
+        out.push(self.flags);
+        out.extend_from_slice(&self.net_id.to_le_bytes());
+        for v in self.origin {
             out.extend_from_slice(&v.to_le_bytes());
         }
+        out.push(self.channel);
         out.push((self.volume.clamp(0.0, 1.0) * 255.0).round() as u8);
         let event = self.event.as_bytes();
         out.push(event.len().min(255) as u8);
@@ -99,28 +113,58 @@ impl SoundEventRpc {
         out
     }
 
-    /// Decode payload (without the SVC command byte). `None` on malformed input.
     pub fn decode(payload: &[u8]) -> Option<Self> {
         let mut c = Cursor { data: payload, pos: 0 };
-        let kind = c.u8()?;
-        let rpc = Self {
-            kind,
-            key: c.u64()?,
-            position: [c.f32()?, c.f32()?, c.f32()?],
+        Some(Self {
+            sound_id: c.u32()?,
+            flags: c.u8()?,
+            net_id: c.u16()?,
+            origin: [c.f32()?, c.f32()?, c.f32()?],
+            channel: c.u8()?,
             volume: c.u8()? as f32 / 255.0,
             event: c.string()?,
             params: {
                 let count = c.u8()? as usize;
                 let mut params = Vec::with_capacity(count.min(8));
                 for _ in 0..count {
-                    let name = c.string()?;
-                    let value = c.f32()?;
-                    params.push((name, value));
+                    params.push((c.string()?, c.f32()?));
                 }
                 params
             },
-        };
-        Some(rpc)
+        })
+    }
+
+    pub fn to_packet(&self) -> Vec<u8> {
+        let mut p = Vec::with_capacity(1 + self.event.len() + 32);
+        p.push(SVC::SoundPlay as u8);
+        p.extend_from_slice(&self.encode());
+        p
+    }
+}
+
+impl SoundStopRpc {
+    pub fn new(sound_id: u32) -> Self {
+        Self { sound_id }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        self.sound_id.to_le_bytes().to_vec()
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<Self> {
+        if payload.len() < 4 {
+            return None;
+        }
+        Some(Self {
+            sound_id: u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
+        })
+    }
+
+    pub fn to_packet(&self) -> Vec<u8> {
+        let mut p = Vec::with_capacity(5);
+        p.push(SVC::SoundStop as u8);
+        p.extend_from_slice(&self.encode());
+        p
     }
 }
 
@@ -146,8 +190,12 @@ impl<'a> Cursor<'a> {
         Some(slice)
     }
 
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    fn u16(&mut self) -> Option<u16> {
+        Some(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
 
     fn f32(&mut self) -> Option<f32> {

@@ -44,6 +44,14 @@ struct Snapshot {
     fmod_events: Vec<FmodEventSnap>,
     /// Player connections (`players.list`).
     players: Value,
+    /// Engine API tramps (`methoddb.list`).
+    methoddb: Vec<MethodDbSnap>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MethodDbSnap {
+    pub name: String,
+    pub flags: u32,
 }
 
 struct ClientState {
@@ -141,6 +149,7 @@ pub fn start(host: &str, port: u16) {
                 "count": 0,
                 "players": [],
             }),
+            methoddb: Vec::new(),
         })),
         collections: collections.clone(),
         running: Arc::new(Mutex::new(true)),
@@ -302,6 +311,21 @@ pub fn sync_players(players: Value) {
     inner.snapshot.lock().unwrap().players = players;
 }
 
+/// Refresh engine [`MethodDB`](crate::engine_api::engine_api::MethodDB) tramp list (`methoddb.list`).
+pub fn sync_methoddb() {
+    let Some(inner) = inner() else {
+        return;
+    };
+    let methoddb = crate::engine_api::engine_api::MethodDB::inventory_entries()
+        .into_iter()
+        .map(|e| MethodDbSnap {
+            name: e.name.to_string(),
+            flags: e.flags,
+        })
+        .collect();
+    inner.snapshot.lock().unwrap().methoddb = methoddb;
+}
+
 fn handle_message(
     line: &str,
     snapshot: &Arc<Mutex<Snapshot>>,
@@ -425,6 +449,25 @@ fn collection_list(col_id: &str, snapshot: &Arc<Mutex<Snapshot>>) -> Value {
             })
         }
         "players" => snap.players.clone(),
+        "methoddb" => {
+            let methods: Vec<Value> = snap
+                .methoddb
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    json!({
+                        "index": i,
+                        "name": m.name,
+                        "flags": m.flags,
+                    })
+                })
+                .collect();
+            json!({
+                "time": snap.time,
+                "count": methods.len(),
+                "methods": methods,
+            })
+        }
         _ => json!({
             "time": snap.time,
             "count": 0,
@@ -509,6 +552,19 @@ fn collection_get(
                 return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "player not found");
             };
             proto::ok(id, p.clone())
+        }
+        "methoddb" => {
+            let Some(m) = snap.methoddb.get(index as usize) else {
+                return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "method not found");
+            };
+            proto::ok(
+                id,
+                json!({
+                    "index": index,
+                    "name": m.name,
+                    "flags": m.flags,
+                }),
+            )
         }
         _ => proto::err(id, proto::ERR_METHOD_NOT_FOUND, format!("unknown collection: {col_id}")),
     }

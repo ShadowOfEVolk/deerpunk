@@ -138,13 +138,14 @@ u8  cmd          // SVC или CLC discriminant
 |---:|---|---|
 | 0 | `Nop` | reserved |
 | 1 | `Bad` | reserved (не эмитим) |
-| 2 | `SoundEvent` | живой (сейчас в основном in-process `Channel`) |
+| 2 | `SoundPlay` | живой (сейчас в основном in-process `Channel`) |
 | 3 | `SpawnPrefab` | живой, UDP |
 | 4 | `NetDelta` | живой, UDP Unreliable |
 | 5 | `NetDestroy` | живой, UDP |
 | 6 | `UserMessage` | живой (`SetView`, `LightStyle`, …) |
 | 7 | `PrefabDef` | **init** (authoritative prefab JSON) |
 | 8 | `InitDone` | **init** → **play** (payload пустой) |
+| 9 | `SoundStop` | живой |
 
 ### `InitDone` (8)
 
@@ -227,25 +228,30 @@ DarkDemo (пример): `SetView` → `LightStyle` → `Map` = id 1, 2, 3. Payl
 
 Пример SetView: `06 01 | net_id_lo net_id_hi`.
 
-### `SoundEvent` (2)
+### `SoundPlay` (2)
+
+Сервер выдаёт **`u32 sound_id`**; стоп — [`SoundStop`](#soundstop-9).
 
 ```text
-u8      2
-u8      kind           // 0=Play2D, 1=Play3D, 2=StartAttached, 3=StopAttached
-u64     key
-f32×3   position
-u8      volume         // 0..=255 → linear 0..1
-u8      name_len
-[u8]    event
-u8      param_count    // encode caps at 8
-param_count ×:
-  u8    param_len
-  [u8]  param_name
-  f32   param_value
+u8    2
+u32   sound_id
+u8    flags          // SND_FLAG_2D | LOOP | NET_ENTITY
+u16   net_id         // follow replicated entity (loop)
+f32×3 origin
+u8    channel
+u8    volume         // 0..255 → linear
+u8    name_len + event
+u8    param_count + (name_len, name, f32 value)*
 ```
 
-`StopAttached` читает только `kind` + `key`.  
-Сейчас события кладутся в `channel.push_server` и дренятся локально; в `broadcast_s2c` не идут. Формат готов к `ReliableOrdered`.
+### `SoundStop` (9)
+
+```text
+u8    9
+u32   sound_id
+```
+
+Сейчас в основном `channel` (listen); формат готов к S2C broadcast.
 
 ---
 

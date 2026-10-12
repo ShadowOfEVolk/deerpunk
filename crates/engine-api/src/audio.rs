@@ -11,10 +11,10 @@ fn resolve(r: Resolver, name: &str) -> *const () {
 
 pub struct AudioApi {
     ctx: *mut u8,
-    play_2d_fn: extern "C" fn(*mut u8, *const u8, usize, u32) -> i32,
-    play_3d_fn: extern "C" fn(*mut u8, *const u8, usize, f32, f32, f32, u32, *const u8, usize, f32) -> i32,
-    start_attached_fn: extern "C" fn(*mut u8, u64, *const u8, usize, f32, f32, f32, u32) -> i32,
-    stop_attached_fn: extern "C" fn(*mut u8, u64) -> i32,
+    play_2d_fn: extern "C" fn(*mut u8, *const u8, usize, u32) -> u32,
+    play_3d_fn: extern "C" fn(*mut u8, *const u8, usize, f32, f32, f32, u32, *const u8, usize, f32) -> u32,
+    start_attached_fn: extern "C" fn(*mut u8, u64, *const u8, usize, f32, f32, f32, u32) -> u32,
+    stop_sound_fn: extern "C" fn(*mut u8, u32) -> i32,
 }
 
 unsafe impl Send for AudioApi {}
@@ -29,27 +29,29 @@ impl AudioApi {
             start_attached_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:audio:start_attached"))
             },
-            stop_attached_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:audio:stop_attached"))
-            },
+            stop_sound_fn: unsafe { std::mem::transmute(resolve(r, "v1:audio:stop_sound")) },
         }
     }
 
-    /// Fire-and-forget 2D (non-positional) sound event.
-    pub fn play_2d(&self, event: &str, volume: f32) -> i32 {
+    /// One-shot 2D; returns server **`sound_id`** (for [`Self::stop_sound`] if needed).
+    pub fn play_2d(&self, event: &str, volume: f32) -> u32 {
         let ev = event.as_bytes();
-        (self.play_2d_fn)(self.ctx, ev.as_ptr(), ev.len(), (volume * 255.0).clamp(0.0, 255.0) as u32)
+        (self.play_2d_fn)(
+            self.ctx,
+            ev.as_ptr(),
+            ev.len(),
+            (volume * 255.0).clamp(0.0, 255.0) as u32,
+        )
     }
 
-    /// Fire-and-forget 3D sound event at a world position, with one optional
-    /// named float parameter (`param_name` empty = no params).
+    /// One-shot 3D at `origin`.
     pub fn play_3d(
         &self,
         event: &str,
         origin: [f32; 3],
         volume: f32,
         params: &[(&str, f32)],
-    ) -> i32 {
+    ) -> u32 {
         let ev = event.as_bytes();
         let (pname, pvalue): (&[u8], f32) = match params.first() {
             Some((n, v)) => (n.as_bytes(), *v),
@@ -69,18 +71,18 @@ impl AudioApi {
         )
     }
 
-    /// Start a sound attached to a world position, tracked by `key`.
+    /// Looping sound; `entity` is server entity for `net_id` follow. Returns **`sound_id`**.
     pub fn start_attached(
         &self,
-        key: u64,
+        entity: u64,
         event: &str,
         origin: [f32; 3],
         volume: f32,
-    ) -> i32 {
+    ) -> u32 {
         let ev = event.as_bytes();
         (self.start_attached_fn)(
             self.ctx,
-            key,
+            entity,
             ev.as_ptr(),
             ev.len(),
             origin[0],
@@ -90,8 +92,12 @@ impl AudioApi {
         )
     }
 
-    /// Stop a previously started attached sound.
-    pub fn stop_attached(&self, key: u64) -> i32 {
-        (self.stop_attached_fn)(self.ctx, key)
+    pub fn stop_sound(&self, sound_id: u32) {
+        let _ = (self.stop_sound_fn)(self.ctx, sound_id);
+    }
+
+    /// @deprecated — use [`Self::stop_sound`].
+    pub fn stop_attached(&self, sound_id: u32) {
+        self.stop_sound(sound_id);
     }
 }

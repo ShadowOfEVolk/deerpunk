@@ -1,4 +1,4 @@
-use crate::bsp_lightmap::LightmapAtlasLayers;
+use crate::lightmap_atlas::LightmapAtlasLayers;
 use crate::wad::RgbaImage;
 
 /// CPU lightmap atlas (4 style layers) awaiting GPU upload.

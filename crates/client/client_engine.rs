@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use deerpunk_engine_common::network::sound_event::SoundPlayRpc;
+use std::collections::HashMap;
 use deerpunk_engine_common::components::{SoundEmitter, TransformComponent};
 use deerpunk_engine_common::input::Input;
 use deerpunk_engine_common::resource::{path_to_file_uri, ResourceManager};
@@ -17,6 +19,12 @@ use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
 use crate::render_extractor::RenderExtractor;
 use crate::ui_controller::UiController;
 
+#[derive(Clone, Copy)]
+struct ServerLoopSound {
+    net_id: u16,
+    origin: [f32; 3],
+}
+
 pub struct ClientEngine {
     pub(crate) app: App,
     renderer: Renderer,
@@ -32,6 +40,8 @@ pub struct ClientEngine {
     audio: Option<Box<dyn AudioBackend>>,
     /// Client entity ids with a started attached (looping) event.
     audio_started: HashSet<u64>,
+    /// Server `sound_id` → loop instance (FMOD key = sound_id).
+    server_sound_loops: HashMap<u32, ServerLoopSound>,
     audio_query: Option<QueryId>,
     /// Entity whose BSP mesh was installed as the audio simulation scene.
     audio_scene_entity: Option<u64>,
@@ -65,6 +75,7 @@ impl ClientEngine {
             ui: None,
             audio: None,
             audio_started: HashSet::new(),
+            server_sound_loops: HashMap::new(),
             audio_query: None,
             audio_scene_entity: None,
             audio_volume: 1.0,
@@ -154,6 +165,55 @@ impl ClientEngine {
         self.audio_started.remove(&entity);
     }
 
+    pub fn audio_apply_play(&mut self, rpc: &SoundPlayRpc) {
+        let params: Vec<(&str, f32)> = rpc
+            .params
+            .iter()
+            .map(|(n, v)| (n.as_str(), *v))
+            .collect();
+        if rpc.is_2d() {
+            self.audio_play_2d(&rpc.event, rpc.volume, &params);
+            return;
+        }
+        if rpc.is_loop() {
+            let key = rpc.sound_id as u64;
+            if let Some(a) = self.audio.as_mut() {
+                a.start_attached(key, &rpc.event, rpc.origin, rpc.volume);
+            }
+            self.server_sound_loops.insert(
+                rpc.sound_id,
+                ServerLoopSound {
+                    net_id: rpc.net_id,
+                    origin: rpc.origin,
+                },
+            );
+            return;
+        }
+        self.audio_play_3d(&rpc.event, rpc.origin, rpc.volume, &params);
+    }
+
+    pub fn audio_apply_stop(&mut self, sound_id: u32) {
+        let key = sound_id as u64;
+        if let Some(a) = self.audio.as_mut() {
+            a.stop_attached(key);
+        }
+        self.server_sound_loops.remove(&sound_id);
+    }
+
+    pub fn server_loops_with_net_id(&self) -> Vec<(u32, u16)> {
+        self.server_sound_loops
+            .iter()
+            .filter(|(_, s)| s.net_id != 0)
+            .map(|(&id, s)| (id, s.net_id))
+            .collect()
+    }
+
+    pub fn set_server_loop_origin(&mut self, sound_id: u32, origin: [f32; 3]) {
+        if let Some(s) = self.server_sound_loops.get_mut(&sound_id) {
+            s.origin = origin;
+        }
+    }
+
     /// Enumerate Studio events from loaded FMOD banks.
     pub fn audio_list_events(&self) -> Vec<FmodEventInfo> {
         self.audio
@@ -220,6 +280,10 @@ impl ClientEngine {
             backend.start_attached(e, &event, pos, volume);
             self.audio_started.insert(e);
             attached.push((e, pos));
+        }
+
+        for (&sid, st) in &self.server_sound_loops {
+            attached.push((sid as u64, st.origin));
         }
 
         backend.update(&listener, &attached, self.audio_volume);

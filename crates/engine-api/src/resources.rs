@@ -1,4 +1,6 @@
-use crate::{EntityId, Resolver};
+use std::ffi::c_void;
+
+use crate::Resolver;
 
 fn resolve(r: Resolver, name: &str) -> *const () {
     let bytes = name.as_bytes();
@@ -9,22 +11,32 @@ fn resolve(r: Resolver, name: &str) -> *const () {
     ptr
 }
 
-/// C ABI handle for a loaded BSP asset (mesh + materials + entities lump).
-///
-/// Opaque: data lives in the host ResourceManager. Use [`ResourcesApi::place_bsp`].
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BspMap {
-    pub id: u64,
-}
+pub type LoadFn = extern "C" fn(
+    user: *mut c_void,
+    path_ptr: *const u8,
+    path_len: usize,
+    query_ptr: *const u8,
+    query_len: usize,
+) -> *mut c_void;
 
-type LoadBspFn = extern "C" fn(*mut u8, *const u8, usize, *mut u64) -> i32;
-type PlaceBspFn = extern "C" fn(*mut u8, u64, *const u8, usize) -> u64;
+pub type DropFn = extern "C" fn(*mut c_void);
+
+#[repr(C)]
+pub struct ResourceLoaderDesc {
+    pub id_ptr: *const u8,
+    pub id_len: usize,
+    pub extensions_ptr: *const u8,
+    pub extensions_len: usize,
+    pub type_tag_ptr: *const u8,
+    pub type_tag_len: usize,
+    pub user_data: *mut c_void,
+    pub load: LoadFn,
+    pub drop_fn: DropFn,
+}
 
 pub struct ResourcesApi {
     ctx: *mut u8,
-    load_bsp_fn: LoadBspFn,
-    place_bsp_fn: PlaceBspFn,
+    register_fn: extern "C" fn(*mut u8, *const ResourceLoaderDesc) -> i32,
 }
 
 unsafe impl Send for ResourcesApi {}
@@ -34,33 +46,43 @@ impl ResourcesApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            load_bsp_fn: unsafe { std::mem::transmute(resolve(r, "v1:resources:load_bsp")) },
-            place_bsp_fn: unsafe { std::mem::transmute(resolve(r, "v1:resources:place_bsp")) },
+            register_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:resources:register"))
+            },
         }
     }
 
-    /// Load BSP via AssetManager / ResourceManager.
+    /// Register a loader on the host [`ResourceManager`].
     ///
-    /// `path`: bare map name (`oldlifehome`), `maps/foo.bsp`, or absolute path.
-    pub fn load_bsp(&self, path: &str) -> Result<BspMap, String> {
-        let bytes = path.as_bytes();
-        let mut id = 0u64;
-        let rc = (self.load_bsp_fn)(self.ctx, bytes.as_ptr(), bytes.len(), &mut id);
-        if rc == 0 && id != 0 {
-            Ok(BspMap { id })
+    /// `load` returns an opaque pointer owned by the gamelib; host calls `drop_fn` on unload.
+    pub fn register(&self, desc: &ResourceLoaderDesc) -> Result<(), String> {
+        if (self.register_fn)(self.ctx, desc) == 0 {
+            Ok(())
         } else {
-            Err(format!("resources.load_bsp failed: {path}"))
+            Err("resources.register failed".into())
         }
     }
 
-    /// Place loaded BSP into the world (geometry + map entities). Returns worldspawn entity.
-    pub fn place_bsp(&self, map: BspMap, map_name: &str) -> Result<EntityId, String> {
-        let bytes = map_name.as_bytes();
-        let entity = (self.place_bsp_fn)(self.ctx, map.id, bytes.as_ptr(), bytes.len());
-        if entity == 0 {
-            Err(format!("resources.place_bsp failed: id={} name={map_name}", map.id))
-        } else {
-            Ok(entity)
-        }
+    pub fn register_loader(
+        &self,
+        id: &str,
+        extensions: &str,
+        type_tag: &str,
+        user_data: *mut c_void,
+        load: LoadFn,
+        drop_fn: DropFn,
+    ) -> Result<(), String> {
+        let desc = ResourceLoaderDesc {
+            id_ptr: id.as_ptr(),
+            id_len: id.len(),
+            extensions_ptr: extensions.as_ptr(),
+            extensions_len: extensions.len(),
+            type_tag_ptr: type_tag.as_ptr(),
+            type_tag_len: type_tag.len(),
+            user_data,
+            load,
+            drop_fn,
+        };
+        self.register(&desc)
     }
 }

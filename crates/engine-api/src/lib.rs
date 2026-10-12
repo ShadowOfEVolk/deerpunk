@@ -7,12 +7,14 @@ pub mod input;
 pub mod net;
 pub mod physics;
 pub mod renderer;
+pub mod host_access;
 pub mod resources;
 pub mod scene;
 pub mod schedule;
 pub mod ui;
 pub mod version;
 pub mod world;
+pub mod client_world;
 
 use std::ffi::c_void;
 
@@ -35,6 +37,7 @@ pub struct ServerInitData {
 pub struct EngineApi {
     pub ctx: *mut u8,
     pub world: world::WorldApiResolved,
+    pub client_world: client_world::ClientWorldApi,
     pub schedule: schedule::ScheduleApi,
     pub input: input::InputApi,
     pub imgui: imgui::ImGuiApi,
@@ -45,6 +48,7 @@ pub struct EngineApi {
     pub cmd: cmd::CmdApi,
     pub cvar: cvar::CvarApi,
     pub net: net::NetApi,
+    pub host: host_access::HostAccessApi,
     pub resources: resources::ResourcesApi,
     pub audio: audio::AudioApi,
 
@@ -76,6 +80,7 @@ impl EngineApi {
         Self {
             ctx,
             world: world::WorldApiResolved::new(ctx, resolver),
+            client_world: client_world::ClientWorldApi::new(ctx, resolver),
             schedule: schedule::ScheduleApi::new(ctx, resolver),
             input: input::InputApi::new(ctx, resolver),
             imgui: imgui::ImGuiApi::new(ctx, resolver),
@@ -86,6 +91,7 @@ impl EngineApi {
             cmd: cmd::CmdApi::new(ctx, resolver),
             cvar: cvar::CvarApi::new(ctx, resolver),
             net: net::NetApi::new(ctx, resolver),
+            host: host_access::HostAccessApi::new(ctx, resolver),
             resources: resources::ResourcesApi::new(ctx, resolver),
             audio: audio::AudioApi::new(ctx, resolver),
 

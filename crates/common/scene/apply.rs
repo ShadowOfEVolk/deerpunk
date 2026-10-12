@@ -1,8 +1,7 @@
 use std::path::Path;
 
-use crate::bsp30::BspWorldMesh;
 use crate::components::{
-    CameraComponent, FallRescue, LuaScript, Material, Mesh3D, NetworkEntity, PendingBspAtlas,
+    CameraComponent, FallRescue, LuaScript, Material, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
     PlayerMovement, PlayerUse, PointLight, SoundEmitter, TransformComponent, UiDocumentComponent,
 };
 use crate::network::field_path::FieldPathId;
@@ -12,8 +11,6 @@ use crate::resource::{path_to_file_uri, LoadOpts, ResourceManager};
 use crate::world::{EntityId, World};
 use glam::{Quat, Vec3};
 use serde_json::Value;
-
-use super::bsp_place::place_bsp_map;
 
 pub fn apply_component(
     world: &World,
@@ -247,8 +244,8 @@ pub fn apply_component(
             world.set(entity, id, Mesh3D::with_mesh(mesh));
             if let Some(obj_path) = obj_fs_path {
                 if let Some(img) = crate::resource::obj::load_obj_diffuse_albedo(&obj_path) {
-                    let pending_id = world.component_init::<PendingBspAtlas>();
-                    world.set(entity, pending_id, PendingBspAtlas::new(img));
+                    let pending_id = world.component_init::<PendingAlbedoAtlas>();
+                    world.set(entity, pending_id, PendingAlbedoAtlas::new(img));
                 }
             }
             Ok(())
@@ -274,28 +271,9 @@ pub fn apply_component(
             world.set(entity, id, light);
             Ok(())
         }
-        "Worldspawn" => {
-            let map = value
-                .get("map")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "Worldspawn.map missing".to_string())?;
-            let map = map.trim().trim_end_matches(".bsp");
-            let bsp_path = gamedir.join("maps").join(format!("{map}.bsp"));
-            let uri = path_to_file_uri(&bsp_path);
-            let handle = resources.load_with::<BspWorldMesh>(
-                &uri,
-                LoadOpts::default().loader("bsp"),
-            );
-            let loaded = handle.try_get().ok_or_else(|| {
-                format!("bsp load failed via ResourceManager: {uri} (asset={:?})", handle.id())
-            })?;
-            log::info!(
-                "[scene] Worldspawn map={map} asset={:?} uri={uri}",
-                handle.id()
-            );
-            place_bsp_map(world, gamedir, resources, entity, loaded, map, true)?;
-            Ok(())
-        }
+        "Worldspawn" => Err(
+            "Worldspawn BSP load moved to gamelib (darkdemo-bsp); scenes removed".into(),
+        ),
         "NetworkEntity" => {
             let mut hot = Vec::new();
             let mut cold = Vec::new();

@@ -13,7 +13,7 @@ pub use component_types::ComponentType;
 pub use entity_state::EntityState;
 pub use field_path::{FieldPathId, FieldValue};
 pub use prefab_rep::{NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, SpawnPrefabRpc};
-pub use sound_event::SoundEventRpc;
+pub use sound_event::{SoundPlayRpc, SoundStopRpc, SND_FLAG_2D, SND_FLAG_LOOP, SND_FLAG_NET_ENTITY};
 pub use user_message::{
     decode_light_style, decode_map_name, decode_set_view, encode_light_style, encode_map_name,
     encode_set_view, UserMessageRpc, UM_DEST_BROADCAST,

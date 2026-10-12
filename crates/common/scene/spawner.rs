@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::bsp30::BspSubmodel;
 use crate::bsp_entities::{parse_vec3_str, EntityKv};
+use super::map_submodel::BspSubmodel;
 use crate::components::{MapKv, TransformComponent};
 use crate::resource::ResourceManager;
 use crate::world::{EntityId, World};
@@ -187,40 +187,3 @@ fn apply_transform_from_map(
     world.set(entity, t_id, t);
 }
 
-/// Spawn all non-worldspawn entities from a BSP entities lump.
-pub fn spawn_map_entities(
-    world: &World,
-    gamedir: &Path,
-    resources: &mut ResourceManager,
-    entities_lump: &str,
-    submodels: &[BspSubmodel],
-) -> (u32, u32) {
-    use crate::bsp_entities::parse_entity_blocks;
-
-    let mut spawner = EntitySpawner::new();
-    let mut spawned = 0u32;
-    let mut skipped = 0u32;
-
-    for block in parse_entity_blocks(entities_lump) {
-        let Some(classname) = block.get("classname").cloned() else {
-            skipped += 1;
-            continue;
-        };
-        if classname.eq_ignore_ascii_case("worldspawn") {
-            continue;
-        }
-        let desc = EntitySpawnDescriptor::from_kv(classname.clone(), &block);
-        match spawner.spawn(world, gamedir, resources, desc.clone(), submodels) {
-            Ok(_) => spawned += 1,
-            Err(e) => {
-                // No prefab / empty def — still create a minimal entity with
-                // transform + MapKv so game logic can see it (info_node, etc.).
-                let id = spawn_minimal(world, &desc, submodels);
-                log::info!("[spawn] {classname} (minimal) → entity={id:#x} ({e})");
-                spawned += 1;
-            }
-        }
-    }
-
-    (spawned, skipped)
-}

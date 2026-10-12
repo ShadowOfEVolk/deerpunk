@@ -1,39 +1,31 @@
 use crate::engine_api::engine_api::EngineApiMethod;
+use crate::engine_api::resources::read_str;
 
-fn read_str(ptr: *const u8, len: usize) -> String {
-    if ptr.is_null() || len == 0 {
-        return String::new();
-    }
-    unsafe {
-        let bytes = std::slice::from_raw_parts(ptr, len);
-        String::from_utf8_lossy(bytes).into_owned()
+#[cfg(any(feature = "client", feature = "full"))]
+use deerpunk_engine_client::client_engine::ClientEngine;
+
+#[cfg(any(feature = "client", feature = "full"))]
+fn with_client<F>(engine: *mut u8, f: F) -> i32
+where
+    F: FnOnce(&mut ClientEngine) -> Result<(), String>,
+{
+    let host = unsafe { &mut *(engine as *mut crate::Host) };
+    let Some(client) = host.client_engine.as_mut() else {
+        log::error!("[ui] no client engine");
+        return -1;
+    };
+    match f(client) {
+        Ok(()) => 0,
+        Err(e) => {
+            log::error!("[ui] {e}");
+            -1
+        }
     }
 }
 
-fn with_client<F>(engine: *mut u8, f: F) -> i32
-where
-    F: FnOnce(&mut deerpunk_engine_client::client_engine::ClientEngine) -> Result<(), String>,
-{
-    #[cfg(any(feature = "client", feature = "full"))]
-    {
-        let host = unsafe { &mut *(engine as *mut crate::Host) };
-        let Some(client) = host.client_engine.as_mut() else {
-            log::error!("[ui] no client engine");
-            return -1;
-        };
-        match f(client) {
-            Ok(()) => 0,
-            Err(e) => {
-                log::error!("[ui] {e}");
-                -1
-            }
-        }
-    }
-    #[cfg(not(any(feature = "client", feature = "full")))]
-    {
-        let _ = (engine, f);
-        -1
-    }
+#[cfg(not(any(feature = "client", feature = "full")))]
+fn with_client(_engine: *mut u8, _f: ()) -> i32 {
+    -1
 }
 
 /// Load UI document asset into the client widget list (hidden).

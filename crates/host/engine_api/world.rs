@@ -57,8 +57,9 @@ pub extern "C" fn tramp_clear_world(engine: *mut u8) {
     for id in ids {
         world.destroy(id);
     }
-    // Flush deferred deletes so the next place_bsp cannot leave a second world mesh.
+    // Flush deferred deletes so the next map place cannot leave stale entities.
     world.simulate(0.0);
+    log::debug!("[world] clear done");
 }
 
 pub extern "C" fn tramp_spawn_bundle(

@@ -359,8 +359,16 @@ inventory::submit! {
 
 /// `v1:net:player_net_id(slot)` → net_id or 0.
 pub extern "C" fn tramp_net_player_net_id(engine: *mut u8, slot: u32) -> u32 {
-    let host = unsafe { &*(engine as *const crate::Host) };
-    host.player_net_id(slot).unwrap_or(0) as u32
+    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
+    {
+        let host = unsafe { &*(engine as *const crate::Host) };
+        return host.player_net_id(slot).unwrap_or(0) as u32;
+    }
+    #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
+    {
+        let _ = (engine, slot);
+        0
+    }
 }
 
 inventory::submit! {
@@ -423,35 +431,3 @@ inventory::submit! {
     }
 }
 
-/// `v1:client:place_map(name)`
-pub extern "C" fn tramp_client_place_map(
-    engine: *mut u8,
-    name_ptr: *const u8,
-    name_len: usize,
-) -> i32 {
-    let name = read_str(name_ptr, name_len);
-    #[cfg(any(feature = "client", feature = "full"))]
-    {
-        let host = unsafe { &mut *(engine as *mut crate::Host) };
-        match host.client_place_map(&name) {
-            Ok(()) => 0,
-            Err(e) => {
-                log::error!("[client] place_map: {e}");
-                -1
-            }
-        }
-    }
-    #[cfg(not(any(feature = "client", feature = "full")))]
-    {
-        let _ = (engine, name);
-        -1
-    }
-}
-
-inventory::submit! {
-    EngineApiMethod {
-        name: "v1:client:place_map",
-        callback: tramp_client_place_map as *const (),
-        flags: 0,
-    }
-}

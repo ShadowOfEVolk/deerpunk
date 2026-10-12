@@ -365,6 +365,7 @@ fn is_game_component_token(token: &str) -> bool {
             | "TerrainNeedRebuild"
             | "TerrainCollider"
             | "TerrainRenderer"
+            | "PendingAlbedoAtlas"
             | "PendingBspAtlas"
             | "PendingLightmap"
             | "LightmapId"

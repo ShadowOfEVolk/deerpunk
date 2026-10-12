@@ -36,7 +36,7 @@ pub struct LoadedAsset {
 
 pub trait Loader: Send + Sync {
     /// Registry id (also used as URI protocol when no extension match).
-    fn id(&self) -> &'static str;
+    fn id(&self) -> &str;
 
     /// File extensions without dot (`"bsp"`, `"obj"`). Empty = protocol-only.
     fn extensions(&self) -> &'static [&'static str] {

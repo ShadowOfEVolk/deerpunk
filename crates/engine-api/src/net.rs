@@ -36,8 +36,6 @@ type PlayerNetIdFn = extern "C" fn(*mut u8, u32) -> u32;
 type ClientSetViewNetIdFn = extern "C" fn(*mut u8, u16) -> i32;
 type ClientSetLightstyleFn =
     extern "C" fn(*mut u8, u8, *const u8, usize) -> i32;
-type ClientPlaceMapFn = extern "C" fn(*mut u8, *const u8, usize) -> i32;
-
 pub struct NetApi {
     ctx: *mut u8,
     client_cmd_fn: ClientCmdFn,
@@ -57,7 +55,6 @@ pub struct NetApi {
     player_net_id_fn: PlayerNetIdFn,
     client_set_view_net_id_fn: ClientSetViewNetIdFn,
     client_set_lightstyle_fn: ClientSetLightstyleFn,
-    client_place_map_fn: ClientPlaceMapFn,
 }
 
 unsafe impl Send for NetApi {}
@@ -97,9 +94,6 @@ impl NetApi {
             },
             client_set_lightstyle_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client:set_lightstyle"))
-            },
-            client_place_map_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client:place_map"))
             },
         }
     }
@@ -284,14 +278,4 @@ impl NetApi {
         }
     }
 
-    /// Client: load BSP world geometry (`maps/<name>.bsp`).
-    pub fn client_place_map(&self, map_name: &str) -> Result<(), String> {
-        let bytes = map_name.as_bytes();
-        let rc = (self.client_place_map_fn)(self.ctx, bytes.as_ptr(), bytes.len());
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(format!("client.place_map '{map_name}' failed"))
-        }
-    }
 }

@@ -1,4 +1,3 @@
-pub mod bsp_loader;
 pub mod loader;
 pub mod mesh;
 pub mod obj;
@@ -13,7 +12,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub use bsp_loader::BspLoader;
 pub use loader::{LoadOpts, LoadedAsset};
 
 /// Stable id for a loaded (or failed) asset. Survives aliases.
@@ -94,9 +92,9 @@ pub struct AssetInfo {
 }
 
 pub struct ResourceManager {
-    loaders: HashMap<&'static str, Box<dyn Loader>>,
+    loaders: HashMap<String, Box<dyn Loader>>,
     /// extension (no dot, lowercase) → loader id
-    extensions: HashMap<String, &'static str>,
+    extensions: HashMap<String, String>,
     /// uri / alias → AssetId
     keys: HashMap<String, AssetId>,
     assets: HashMap<AssetId, AssetRecord>,
@@ -121,9 +119,6 @@ impl ResourceManager {
     pub fn set_base_dir(&mut self, dir: impl Into<PathBuf>) {
         self.base_dir = dir.into();
         // Refresh loaders that embed gamedir.
-        if self.loaders.contains_key("bsp") {
-            self.register_loader(Box::new(BspLoader::new(&self.base_dir)));
-        }
         if self.loaders.contains_key("wad") {
             self.register_loader(Box::new(wad_loader::WadLoader {
                 root: self.base_dir.clone(),
@@ -136,10 +131,10 @@ impl ResourceManager {
     }
 
     pub fn register_loader(&mut self, loader: Box<dyn Loader>) {
-        let id = loader.id();
+        let id = loader.id().to_string();
         for ext in loader.extensions() {
             self.extensions
-                .insert(ext.to_ascii_lowercase(), id);
+                .insert(ext.to_ascii_lowercase(), id.clone());
         }
         self.loaders.insert(id, loader);
     }
@@ -287,8 +282,8 @@ impl ResourceManager {
             return id.to_string();
         }
         if let Some(ext) = file_extension(path) {
-            if let Some(&id) = self.extensions.get(&ext) {
-                return id.to_string();
+            if let Some(id) = self.extensions.get(&ext) {
+                return id.clone();
             }
         }
         protocol.to_string()
@@ -301,11 +296,10 @@ impl Default for ResourceManager {
     }
 }
 
-/// Register built-in host loaders (`file`, `bsp`, `wad`) for `gamedir`.
+/// Register built-in host loaders (`file`, `wad`) for `gamedir`. Game registers `bsp` etc.
 pub fn register_default_loaders(rm: &mut ResourceManager, gamedir: &Path) {
     rm.set_base_dir(gamedir);
     rm.register_loader(Box::new(FileLoader));
-    rm.register_loader(Box::new(BspLoader::new(gamedir)));
     rm.register_loader(Box::new(wad_loader::WadLoader {
         root: gamedir.to_path_buf(),
     }));

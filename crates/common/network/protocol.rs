@@ -8,8 +8,8 @@ pub enum SVC {
     Nop = 0,
     /// Invalid / unknown (never emitted).
     Bad = 1,
-    /// Sound event RPC ([`super::sound_event::SoundEventRpc`]).
-    SoundEvent = 2,
+    /// Start / one-shot sound ([`super::sound_event::SoundPlayRpc`], server `sound_id`).
+    SoundPlay = 2,
     /// Spawn prefab on client (`SpawnPrefabRpc`).
     /// `net_id == 0` → static/scene (e.g. worldspawn); else NetworkEntity.
     SpawnPrefab = 3,
@@ -23,6 +23,8 @@ pub enum SVC {
     PrefabDef = 7,
     /// End of join **init** phase; client may enter **play** (UserCmd, full sim UI).
     InitDone = 8,
+    /// Stop a playing/looping sound by server [`super::sound_event::SoundStopRpc::sound_id`].
+    SoundStop = 9,
 }
 
 impl SVC {
@@ -30,13 +32,14 @@ impl SVC {
         match v {
             0 => Some(Self::Nop),
             1 => Some(Self::Bad),
-            2 => Some(Self::SoundEvent),
+            2 => Some(Self::SoundPlay),
             3 => Some(Self::SpawnPrefab),
             4 => Some(Self::NetDelta),
             5 => Some(Self::NetDestroy),
             6 => Some(Self::UserMessage),
             7 => Some(Self::PrefabDef),
             8 => Some(Self::InitDone),
+            9 => Some(Self::SoundStop),
             _ => None,
         }
     }

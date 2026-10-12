@@ -18,7 +18,25 @@ pub struct MethodDB {
 
 static METHODDB_PTR: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
+#[derive(Clone, Copy, Debug)]
+pub struct MethodEntry {
+    pub name: &'static str,
+    pub flags: u32,
+}
+
 impl MethodDB {
+    /// All tramps registered via [`inventory::submit!`] (sorted by name).
+    pub fn inventory_entries() -> Vec<MethodEntry> {
+        let mut entries: Vec<MethodEntry> = inventory::iter::<EngineApiMethod>()
+            .map(|m| MethodEntry {
+                name: m.name,
+                flags: m.flags,
+            })
+            .collect();
+        entries.sort_by_key(|e| e.name);
+        entries
+    }
+
     pub fn new() -> Self {
         let mut hashmap = HashMap::new();
         for method in inventory::iter::<EngineApiMethod> {
