@@ -14,7 +14,6 @@ pub mod camera;
 pub mod lightstyle_table;
 pub mod pending_albedo_atlas;
 pub mod pending_lightmap;
-pub mod bsp_world_debug;
 pub mod ui_document;
 pub mod map_kv;
 pub mod point_light;
@@ -23,12 +22,9 @@ pub mod lua_script;
 pub mod worldspawn;
 pub mod player_use;
 pub mod fall_rescue;
-pub mod player_movement;
-
 pub use map_kv::MapKv;
 pub use player_use::PlayerUse;
 pub use fall_rescue::FallRescue;
-pub use player_movement::PlayerMovement;
 pub use point_light::PointLight;
 pub use sound_emitter::SoundEmitter;
 pub use lua_script::LuaScript;
@@ -48,7 +44,6 @@ pub use camera::CameraComponent;
 pub use lightstyle_table::{LightstyleTable, MAX_LIGHTSTYLES};
 pub use pending_albedo_atlas::{PendingAlbedoAtlas, PendingBspAtlas};
 pub use pending_lightmap::{LightmapId, PendingLightmap};
-pub use bsp_world_debug::BspWorldDebug;
 pub use ui_document::UiDocumentComponent;
 pub use worldspawn::Worldspawn;
 

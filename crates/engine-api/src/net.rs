@@ -83,9 +83,11 @@ impl NetApi {
             local_entity_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:players:local_entity"))
             },
-            um_register_fn: unsafe { std::mem::transmute(resolve(r, "v1:um:register")) },
-            um_send_fn: unsafe { std::mem::transmute(resolve(r, "v1:um:send")) },
-            um_hook_fn: unsafe { std::mem::transmute(resolve(r, "v1:um:hook")) },
+            um_register_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:net:msg_register"))
+            },
+            um_send_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:msg_send")) },
+            um_hook_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:msg_hook")) },
             player_net_id_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:net:player_net_id"))
             },

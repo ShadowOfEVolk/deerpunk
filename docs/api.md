@@ -33,7 +33,6 @@ Safe-обёртка: `crates/engine-api`.
 
 | Name | Notes |
 |---|---|
-| `v1:engine:initialize` | `(ctx, gamedir, len)` |
 | `v1:engine:frame` | `(ctx, dt) → i32` |
 | `v1:engine:shutdown` | `(ctx)` |
 | `v1:engine:with_world_mut` | `(ctx, callback, user_data, free_user_data)` |
@@ -45,6 +44,7 @@ Safe-обёртка: `crates/engine-api`.
 | `v1:world:get` | `(ctx, entity, comp) → *mut c_void` — указатель в storage Flecs |
 | `v1:world:set` | `(ctx, entity, comp, data, size)` |
 | `v1:world:has` / `remove` / `spawn` / `destroy` | |
+| `v1:world:spawn_prefab` | `(ctx, name, len, opts: *const SpawnPrefabOpts) → u64` — prefab + optional map opts |
 | `v1:world:clear` | stub |
 | `v1:world:spawn_bundle` | stub |
 | `v1:world:query` / `query_count` / `query_matches` | stub |
@@ -60,7 +60,9 @@ Safe-обёртка: `crates/engine-api`.
 | `v1:schedule:add_system` / `clear` / `run` |
 | `v1:input:is_key_down` / `mouse_dx` / `mouse_dy` |
 | `v1:imgui:begin_window` / `end_window` / `text` / `value_f32` / `value_vec3` / `separator` |
-| `v1:physics:spawn_dynamic_box` |
+| `v1:physics:create_shape` / `destroy_shape` / `create_parts` / `destroy_parts` |
+| `v1:physics:cast_capsule` | Rapier swept capsule |
+| `v1:physics:trace_line` | BSP mesh ray (`TraceLineResult` out-param) |
 | `v1:renderer:load_texture` |
 
 ---

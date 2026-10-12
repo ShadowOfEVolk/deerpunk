@@ -15,6 +15,7 @@ pub struct AudioApi {
     play_3d_fn: extern "C" fn(*mut u8, *const u8, usize, f32, f32, f32, u32, *const u8, usize, f32) -> u32,
     start_attached_fn: extern "C" fn(*mut u8, u64, *const u8, usize, f32, f32, f32, u32) -> u32,
     stop_sound_fn: extern "C" fn(*mut u8, u32) -> i32,
+    set_world_mesh_fn: extern "C" fn(*mut u8, u64) -> i32,
 }
 
 unsafe impl Send for AudioApi {}
@@ -30,6 +31,9 @@ impl AudioApi {
                 std::mem::transmute(resolve(r, "v1:audio:start_attached"))
             },
             stop_sound_fn: unsafe { std::mem::transmute(resolve(r, "v1:audio:stop_sound")) },
+            set_world_mesh_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:audio:set_world_mesh"))
+            },
         }
     }
 
@@ -94,6 +98,11 @@ impl AudioApi {
 
     pub fn stop_sound(&self, sound_id: u32) {
         let _ = (self.stop_sound_fn)(self.ctx, sound_id);
+    }
+
+    /// Install client-world entity mesh as the audio simulation scene (mesh-only).
+    pub fn set_world_mesh(&self, entity: u64) -> bool {
+        (self.set_world_mesh_fn)(self.ctx, entity) == 0
     }
 
     /// @deprecated — use [`Self::stop_sound`].

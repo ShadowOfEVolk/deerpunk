@@ -1,5 +1,5 @@
 //! Phonon Source registry: one `Source` per sound key, cached simulation outputs.
-//! Ported from darkdemo-lib client-audio.
+//! Ported from game-lib client-audio.
 
 use std::collections::BTreeMap;
 
@@ -273,7 +273,10 @@ impl SimRegistry {
         self.map.get(&key).map(|e| &e.results)
     }
 
-    pub fn get_cached_outputs_mut(&mut self, key: i32) -> Option<&mut audionimbus::SimulationOutputs> {
+    pub fn get_cached_outputs_mut(
+        &mut self,
+        key: i32,
+    ) -> Option<&mut audionimbus::SimulationOutputs> {
         self.map.get_mut(&key).map(|e| &mut e.results)
     }
 

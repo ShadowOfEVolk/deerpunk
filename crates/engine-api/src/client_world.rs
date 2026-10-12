@@ -1,3 +1,4 @@
+use crate::components::{no_prefab_apply, ComponentRegisterDesc};
 use crate::Resolver;
 use crate::{ComponentId, EntityId};
 
@@ -17,7 +18,16 @@ pub struct ClientWorldApi {
     set_fn: extern "C" fn(*mut u8, u64, u64, *const std::ffi::c_void, usize),
     has_fn: extern "C" fn(*mut u8, u64, u64) -> bool,
     spawn_fn: extern "C" fn(*mut u8) -> u64,
-    component_init_raw_fn: extern "C" fn(*mut u8, *const u8, usize, usize, usize) -> u64,
+    component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
+    query_fn: extern "C" fn(
+        *mut u8,
+        *const u64,
+        usize,
+        *const u64,
+        usize,
+        *mut u64,
+        usize,
+    ) -> usize,
 }
 
 unsafe impl Send for ClientWorldApi {}
@@ -31,9 +41,10 @@ impl ClientWorldApi {
             set_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:set")) },
             has_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:has")) },
             spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:spawn")) },
-            component_init_raw_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client_world:component_init_raw"))
+            component_register_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:client_world:component_register"))
             },
+            query_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:query")) },
         }
     }
 
@@ -74,7 +85,44 @@ impl ClientWorldApi {
         std::mem::forget(value);
     }
 
-    pub fn component_init_raw(&self, name: &str, size: usize, align: usize) -> ComponentId {
-        (self.component_init_raw_fn)(self.ctx, name.as_ptr(), name.len(), size, align)
+    pub fn component_register(&self, desc: &ComponentRegisterDesc) -> Result<ComponentId, String> {
+        let id = (self.component_register_fn)(self.ctx, desc);
+        if id == 0 {
+            Err("client component_register failed".into())
+        } else {
+            Ok(id)
+        }
+    }
+
+    pub fn register_component(
+        &self,
+        name: &str,
+        size: usize,
+        align: usize,
+    ) -> Result<ComponentId, String> {
+        let desc = ComponentRegisterDesc::new(
+            name,
+            size,
+            align,
+            std::ptr::null_mut(),
+            no_prefab_apply(),
+        );
+        self.component_register(&desc)
+    }
+
+    pub fn query(&self, require: &[ComponentId], exclude: &[ComponentId]) -> Vec<EntityId> {
+        let max = 4096;
+        let mut buf = vec![0u64; max];
+        let count = (self.query_fn)(
+            self.ctx,
+            require.as_ptr(),
+            require.len(),
+            exclude.as_ptr(),
+            exclude.len(),
+            buf.as_mut_ptr(),
+            max,
+        );
+        buf.truncate(count);
+        buf
     }
 }

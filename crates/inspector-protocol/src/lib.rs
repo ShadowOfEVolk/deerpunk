@@ -1,7 +1,6 @@
 //! Wire protocol for `deerpunk-inspector` (JSON-RPC 2.0 over WebSocket).
 //!
-//! Component *field* inspection across the game DLL FFI boundary is not defined yet —
-//! servers may return stub `ComponentSnapshot` data until a layout bridge exists.
+//! Component fields: JSON Schema + instance data via `component_register` (schema/dump as CBOR).
 
 pub mod jsonrpc;
 pub mod types;
@@ -42,20 +41,29 @@ pub fn initialize_result(
         server_version: Some(server_version.into()),
         collections,
         capabilities: Some(json!({
-            "componentFields": false,
+            "componentFields": true,
             "eventsStream": false,
         })),
     }
 }
 
-/// Stub component payload until FFI layout bridge exists.
+/// Fallback when no inspect bridge is registered for this component.
 pub fn stub_component(slug: &str) -> ComponentSnapshot {
     ComponentSnapshot::Data {
         slug: slug.to_string(),
+        schema: None,
         data: json!({
             "_stub": true,
-            "_note": "component fields require FFI layout bridge",
+            "_note": "no inspect dump for this component",
         }),
+    }
+}
+
+pub fn component_data(slug: &str, schema: Option<Value>, data: Value) -> ComponentSnapshot {
+    ComponentSnapshot::Data {
+        slug: slug.to_string(),
+        schema,
+        data,
     }
 }
 

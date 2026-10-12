@@ -10,8 +10,9 @@ use crate::world::{EntityId, World};
 use json_comments::StripComments;
 use serde_json::Value;
 
-use super::apply::apply_component;
-use super::format::{PrefabFile, SceneFile};
+use super::apply::{apply_component, apply_prefab_component_value};
+use super::map_spawn::{apply_map_spawn_tail, MapSpawnOpts};
+use super::format::PrefabFile;
 use super::prefab_manager::PrefabManager;
 
 #[derive(Debug)]
@@ -44,70 +45,34 @@ fn prefab_path(gamedir: &Path, name: &str) -> PathBuf {
     gamedir.join("prefabs").join(format!("{name}.prefab"))
 }
 
-fn scene_path(gamedir: &Path, name: &str) -> PathBuf {
-    let name = name.trim_end_matches(".scene");
-    gamedir.join("scenes").join(format!("{name}.scene"))
-}
-
 pub fn load_prefab_file(gamedir: &Path, name: &str) -> Result<PrefabFile, SceneLoadError> {
     let path = prefab_path(gamedir, name);
     read_jsonc(&path)
 }
 
-/// Load `{gamedir}/scenes/{name}.scene`, resolve prefabs, spawn entities into `world`.
-pub fn load_scene(
+/// Spawn `{gamedir}/prefabs/{name}.prefab` on the server world (host-only entry).
+pub fn spawn_prefab_entity(
     world: &World,
     gamedir: &Path,
     resources: &mut ResourceManager,
     name: &str,
-) -> Result<Vec<EntityId>, SceneLoadError> {
-    let path = scene_path(gamedir, name);
-    let scene: SceneFile = read_jsonc(&path)?;
-    log::info!(
-        "[scene] load {} ({} entities)",
-        path.display(),
-        scene.entities.len()
-    );
-
-    let mut prefab_cache: HashMap<String, PrefabFile> = HashMap::new();
-    let mut spawned = Vec::with_capacity(scene.entities.len());
-
-    for (i, ent) in scene.entities.iter().enumerate() {
-        let mut components: HashMap<String, Value> = HashMap::new();
-
-        if let Some(prefab_name) = ent.prefab.as_deref() {
-            if !prefab_cache.contains_key(prefab_name) {
-                let prefab = load_prefab_file(gamedir, prefab_name)?;
-                prefab_cache.insert(prefab_name.to_string(), prefab);
-            }
-            if let Some(prefab) = prefab_cache.get(prefab_name) {
-                for (k, v) in &prefab.components {
-                    components.insert(k.clone(), v.clone());
-                }
-            }
-        }
-
-        for (k, v) in &ent.components {
-            components.insert(k.clone(), v.clone());
-        }
-
-        if components.is_empty() {
-            return Err(format!("scene entity[{i}]: no components (prefab/inline)").into());
-        }
-
-        let entity = world.spawn();
-        for (comp_name, value) in &components {
-            apply_component(world, gamedir, resources, entity, comp_name, value)
-                .map_err(|e| format!("entity[{i}] {comp_name}: {e}"))?;
-        }
-        if let Some(prefab_name) = ent.prefab.as_deref() {
-            stamp_network_prefab_name(world, entity, prefab_name);
-        }
-        log::info!("[scene] spawned entity={entity:#x} prefab={:?}", ent.prefab);
-        spawned.push(entity);
+    map: Option<&MapSpawnOpts>,
+) -> Result<EntityId, SceneLoadError> {
+    let prefab = load_prefab_file(gamedir, name)?;
+    if prefab.components.is_empty() {
+        return Err(format!("prefab '{name}': no components").into());
     }
-
-    Ok(spawned)
+    let entity = world.spawn();
+    for (comp_name, value) in &prefab.components {
+        apply_prefab_component_value(world, gamedir, resources, entity, comp_name, value)
+            .map_err(|e| format!("prefab '{name}' {comp_name}: {e}"))?;
+    }
+    stamp_network_prefab_name(world, entity, name);
+    if let Some(map) = map {
+        apply_map_spawn_tail(world, entity, map);
+    }
+    log::info!("[scene] spawned prefab '{name}' entity={entity:#x}");
+    Ok(entity)
 }
 
 /// Spawn a single entity from `{gamedir}/prefabs/{name}.prefab`.

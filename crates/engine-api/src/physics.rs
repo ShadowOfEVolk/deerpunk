@@ -46,6 +46,7 @@ pub struct CapsuleCastHit {
     pub toi: f32,
     pub normal: [f32; 3],
     pub point: [f32; 3],
+    pub entity: u64,
 }
 
 type CreateShapeFn = extern "C" fn(*mut u8, *const u8, usize) -> u32;
@@ -63,6 +64,41 @@ type CastCapsuleFn = extern "C" fn(
     *mut CapsuleCastHit,
 ) -> i32;
 
+type TraceLineFn = extern "C" fn(
+    *mut u8,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    u64,
+    *mut PhysicsTraceResult,
+) -> i32;
+
+/// Rapier segment trace (`v1:physics:trace_line`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PhysicsTraceResult {
+    pub hit: u32,
+    pub entity: u64,
+    pub fraction: f32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+impl Default for PhysicsTraceResult {
+    fn default() -> Self {
+        Self {
+            hit: 0,
+            entity: 0,
+            fraction: 1.0,
+            point: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+        }
+    }
+}
+
 pub struct PhysicsApiResolved {
     ctx: *mut u8,
     create_shape_fn: CreateShapeFn,
@@ -70,6 +106,7 @@ pub struct PhysicsApiResolved {
     create_parts_fn: CreatePartsFn,
     destroy_parts_fn: DestroyPartsFn,
     cast_capsule_fn: CastCapsuleFn,
+    trace_line_fn: TraceLineFn,
 }
 
 unsafe impl Send for PhysicsApiResolved {}
@@ -88,6 +125,7 @@ impl PhysicsApiResolved {
                 std::mem::transmute(resolve(r, "v1:physics:destroy_parts"))
             },
             cast_capsule_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:cast_capsule")) },
+            trace_line_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:trace_line")) },
         }
     }
 
@@ -135,6 +173,32 @@ impl PhysicsApiResolved {
             return None;
         }
         if out.hit != 0 {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// Segment trace vs Rapier colliders (`exclude_entity` = 0 for none).
+    pub fn trace_line(
+        &self,
+        origin: [f32; 3],
+        end: [f32; 3],
+        exclude_entity: u64,
+    ) -> Option<PhysicsTraceResult> {
+        let mut out = PhysicsTraceResult::default();
+        let hit = (self.trace_line_fn)(
+            self.ctx,
+            origin[0],
+            origin[1],
+            origin[2],
+            end[0],
+            end[1],
+            end[2],
+            exclude_entity,
+            &mut out,
+        );
+        if hit != 0 {
             Some(out)
         } else {
             None

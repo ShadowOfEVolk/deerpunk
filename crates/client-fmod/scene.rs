@@ -1,10 +1,11 @@
 //! Steam Audio scene built from the client BSP world mesh + probe batch.
-//! Ported from darkdemo-lib client-audio/scene_builder.rs (data source differs:
+//! Ported from game-lib client-audio/scene_builder.rs (data source differs:
 //! we already have a resolved Mesh + BspFaceDebug with texture names).
 
-use audionimbus::geometry::{Point, Scene, SceneSettings, StaticMesh, StaticMeshSettings, Triangle};
+use audionimbus::geometry::{
+    Point, Scene, SceneSettings, StaticMesh, StaticMeshSettings, Triangle,
+};
 use audionimbus::{Material, ProbeBatch, SteamAudioError};
-use deerpunk_engine_common::bsp_debug::BspWorldDebug;
 use deerpunk_engine_common::resource::mesh::Mesh;
 use glam::Vec3;
 
@@ -18,27 +19,6 @@ fn xash_to_steam(v: Vec3) -> Point {
         v.z * METERS_IN_UNIT,
         -v.y * METERS_IN_UNIT,
     )
-}
-
-/// BSP texture name first char → Steam Audio material
-/// (same mapping as reference CHAR_TEX → Material).
-fn tex_name_to_material(tex_name: &str) -> Material {
-    let c = tex_name.as_bytes().first().copied().unwrap_or(b'C');
-    match c {
-        // concrete
-        b'C' | b'V' | b'T' | b'S' | b'G' | b'P' => Material::CONCRETE,
-        // metal family (metal / vent / grate / computer)
-        b'M' => Material::METAL,
-        // dirt
-        b'D' => Material::GRAVEL,
-        // wood
-        b'W' => Material::WOOD,
-        // carpet / flesh
-        b'R' | b'F' => Material::CARPET,
-        // glass
-        b'Y' => Material::GLASS,
-        _ => Material::CONCRETE,
-    }
 }
 
 fn compute_aabb(vertices: &[Point]) -> Option<(Point, Point)> {
@@ -78,10 +58,7 @@ pub fn build_tiny_scene(context: &audionimbus::Context) -> Result<WorldScene, St
     let triangles = [Triangle::new(0, 1, 2)];
     let materials = [Material::CONCRETE];
     let material_indices = [0usize];
-    let aabb = (
-        Point::new(0.0, 0.0, 0.0),
-        Point::new(1.0, 0.0, 1.0),
-    );
+    let aabb = (Point::new(0.0, 0.0, 0.0), Point::new(1.0, 0.0, 1.0));
 
     let mut scene = Scene::try_new(context, &SceneSettings::Default)?;
     let mesh_settings = StaticMeshSettings {
@@ -102,11 +79,10 @@ pub fn build_tiny_scene(context: &audionimbus::Context) -> Result<WorldScene, St
     })
 }
 
-/// Builds a Steam Audio scene from the world mesh (per-triangle materials).
+/// Builds a Steam Audio scene from the world mesh (uniform concrete material).
 pub fn build_scene_from_mesh(
     context: &audionimbus::Context,
     mesh: &Mesh,
-    debug: &BspWorldDebug,
 ) -> Result<WorldScene, SteamAudioError> {
     let mut vertices: Vec<Point> = Vec::with_capacity(mesh.positions.len());
     for p in &mesh.positions {
@@ -122,7 +98,14 @@ pub fn build_scene_from_mesh(
     for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
         let (a, b, c) = (tri[0] as i32, tri[1] as i32, tri[2] as i32);
         // Skip degenerate / OOB — phonon BVH heap-corrupts on bad tris.
-        if a == b || b == c || a == c || a < 0 || b < 0 || c < 0 || a >= nverts || b >= nverts
+        if a == b
+            || b == c
+            || a == c
+            || a < 0
+            || b < 0
+            || c < 0
+            || a >= nverts
+            || b >= nverts
             || c >= nverts
         {
             continue;
@@ -142,17 +125,11 @@ pub fn build_scene_from_mesh(
         }
 
         triangles.push(Triangle::new(a, b, c));
-        let mat = match debug.face_for_tri(t as u32) {
-            Some(face) => tex_name_to_material(&face.tex_name),
-            None => Material::CONCRETE,
-        };
-        let idx = materials
-            .iter()
-            .position(|m| *m == mat)
-            .unwrap_or_else(|| {
-                materials.push(mat);
-                materials.len() - 1
-            });
+        let mat = Material::CONCRETE;
+        let idx = materials.iter().position(|m| *m == mat).unwrap_or_else(|| {
+            materials.push(mat);
+            materials.len() - 1
+        });
         material_indices.push(idx);
     }
 
@@ -203,7 +180,11 @@ pub fn build_probe_batch(
     let max_y = max.y + PROBE_MARGIN;
     let max_z = max.z + PROBE_MARGIN;
     let (sx, sy, sz) = (max_x - min_x, max_y - min_y, max_z - min_z);
-    let (cx, cy, cz) = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5, (min_z + max_z) * 0.5);
+    let (cx, cy, cz) = (
+        (min_x + max_x) * 0.5,
+        (min_y + max_y) * 0.5,
+        (min_z + max_z) * 0.5,
+    );
 
     let floor_transform = audionimbus::Matrix::new([
         [sx, 0.0, 0.0, cx],

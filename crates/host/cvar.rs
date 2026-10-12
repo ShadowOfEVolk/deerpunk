@@ -15,6 +15,8 @@ pub struct CvarDef {
 
 inventory::collect!(CvarDef);
 
+use deerpunk_macro as methoddb;
+
 pub struct CvarSystem {
     initialized: bool,
     values: RwLock<HashMap<String, String>>,
@@ -149,5 +151,35 @@ impl CvarSystem {
 impl Default for CvarSystem {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[methoddb::namespace(
+    name = "v1:cvar",
+    host_field = "cvar",
+    scope = ["server", "client"],
+)]
+impl CvarSystem {
+    #[methoddb::bind(name = "set")]
+    pub fn api_set(&self, name: &str, value: &str) -> i32 {
+        if name.is_empty() {
+            return -1;
+        }
+        self.set_or_create(name, value);
+        0
+    }
+
+    #[methoddb::bind(name = "get_f32")]
+    pub fn api_get_f32(&self, name: &str, out: &mut f32) -> i32 {
+        if name.is_empty() {
+            return -1;
+        }
+        match self.get_f32(name) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => -1,
+        }
     }
 }

@@ -13,7 +13,7 @@ use super::abi::{
     decode_shape, Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle, BODY_TYPE_DYNAMIC,
     BODY_TYPE_KINEMATIC, PARTS_HANDLE_INVALID, SHAPE_HANDLE_INVALID,
 };
-use super::backend::{CapsuleCastHit, PhysicsBackend};
+use super::backend::{CapsuleCastHit, PhysicsBackend, RayCastHit};
 use super::character::CharacterController;
 use super::world::{categories, BodyType, PhysicsWorld};
 use crate::components::TransformComponent;
@@ -346,6 +346,22 @@ impl RapierPhysicsBackend {
 
     /// Rebuild BVH leaves for every collider so `query_pipeline` sees OnSet bodies
     /// even before / between physics steps.
+    fn entity_for_collider(&self, ch: ColliderHandle) -> u64 {
+        let colliders = &self.world.inner.colliders;
+        let Some(collider) = colliders.get(ch) else {
+            return 0;
+        };
+        let Some(rb) = collider.parent() else {
+            return 0;
+        };
+        for (entity, handle) in &self.world.body_map {
+            if *handle == rb {
+                return *entity;
+            }
+        }
+        0
+    }
+
     fn sync_query_bvh(&mut self) {
         let handles: Vec<ColliderHandle> =
             self.world.inner.colliders.iter().map(|(h, _)| h).collect();
@@ -466,7 +482,7 @@ impl PhysicsBackend for RapierPhysicsBackend {
             compute_impact_geometry_on_penetration: true,
         };
         // QueryPipeline: normal1/witness1 = hit collider, world space.
-        let (_handle, hit) = queries.cast_shape(&pose, d, shape.as_ref(), opts)?;
+        let (collider_handle, hit) = queries.cast_shape(&pose, d, shape.as_ref(), opts)?;
         let toi = hit.time_of_impact;
         let start_solid = matches!(
             hit.status,
@@ -479,6 +495,50 @@ impl PhysicsBackend for RapierPhysicsBackend {
             normal: [n.x, n.y, n.z],
             point: [point.x, point.y, point.z],
             start_solid,
+            entity: self.entity_for_collider(collider_handle),
+        })
+    }
+
+    fn cast_ray(
+        &mut self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_dist: f32,
+        exclude_entity: u64,
+    ) -> Option<RayCastHit> {
+        let max_dist = max_dist.max(0.0);
+        if max_dist < 1e-8 {
+            return None;
+        }
+        let mut d = Vec3::from_array(dir);
+        let dlen = d.length();
+        if dlen < 1e-8 {
+            return None;
+        }
+        d /= dlen;
+
+        self.sync_query_bvh();
+
+        let exclude = if exclude_entity != 0 {
+            self.world.body_map.get(&exclude_entity).copied()
+        } else {
+            None
+        };
+        let filter = player_query_filter(exclude);
+        let queries = self.world.inner.query_pipeline_with_filter(filter);
+        let ray = Ray::new(Vec3::from_array(origin), d);
+        let Some((collider_handle, hit)) = queries.cast_ray_and_get_normal(&ray, max_dist, true)
+        else {
+            return None;
+        };
+        let toi = hit.time_of_impact;
+        let n = hit.normal;
+        let point = ray.point_at(toi);
+        Some(RayCastHit {
+            fraction: if max_dist > 0.0 { toi / max_dist } else { 1.0 },
+            normal: [n.x, n.y, n.z],
+            point: [point.x, point.y, point.z],
+            entity: self.entity_for_collider(collider_handle),
         })
     }
 

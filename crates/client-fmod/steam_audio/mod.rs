@@ -1,16 +1,15 @@
-//! Steam Audio core: context, HRTF, simulation. Ported from darkdemo-lib.
+//! Steam Audio core: context, HRTF, simulation. Ported from game-lib.
 
 pub mod registry;
 pub mod simulation_manager;
 
-use audionimbus::{AudioSettings, Context, ContextSettings, Hrtf, HrtfSettings};
 use crate::ListenerView;
+use audionimbus::{AudioSettings, Context, ContextSettings, Hrtf, HrtfSettings};
 
 /// GoldSrc: 40 world units per meter.
 pub const METERS_IN_UNIT: f32 = 1.0 / 40.0;
 pub const PATHING_VISIBILITY_RADIUS_HL: f32 = 256.0;
-pub const PATHING_VISIBILITY_RADIUS_METERS: f32 =
-    PATHING_VISIBILITY_RADIUS_HL * METERS_IN_UNIT;
+pub const PATHING_VISIBILITY_RADIUS_METERS: f32 = PATHING_VISIBILITY_RADIUS_HL * METERS_IN_UNIT;
 pub const OUTPUT_RATE: u32 = 44100;
 pub const BLOCK_FRAME_SIZE: u32 = 512;
 /// Ambisonics order for pathing/reflections. Order 1 = 4 channels.
@@ -34,7 +33,8 @@ impl SteamAudio {
 
         let context = Context::try_new(&ContextSettings::default())?;
         let hrtf = Hrtf::try_new(&context, &audio_settings, &HrtfSettings::default())?;
-        let simulation_manager = simulation_manager::SimulationManager::new(&context, &audio_settings);
+        let simulation_manager =
+            simulation_manager::SimulationManager::new(&context, &audio_settings);
 
         Ok(Self {
             context,
@@ -49,7 +49,8 @@ impl SteamAudio {
     pub fn update(&self, listener: &ListenerView) {
         self.simulation_manager.tick_listener(listener);
         let mut registry = self.registry.borrow_mut();
-        self.simulation_manager.run_paint_frame(listener, &mut registry);
+        self.simulation_manager
+            .run_paint_frame(listener, &mut registry);
     }
 }
 

@@ -65,14 +65,8 @@ pub trait AudioBackend {
     /// Stop (fade out) and free the attached event for `key`, if any.
     fn stop_attached(&mut self, key: u64);
 
-    /// Install the world geometry scene for simulation (Steam Audio etc.).
-    /// Called when the client world receives a BSP map mesh.
-    fn set_world_scene(
-        &mut self,
-        _mesh: &deerpunk_engine_common::resource::mesh::Mesh,
-        _debug: &deerpunk_engine_common::bsp_debug::BspWorldDebug,
-    ) {
-    }
+    /// Install world geometry for simulation (Steam Audio etc.) — mesh only.
+    fn set_world_scene(&mut self, _mesh: &deerpunk_engine_common::resource::mesh::Mesh) {}
 
     /// Stop everything and release the runtime.
     fn shutdown(&mut self);

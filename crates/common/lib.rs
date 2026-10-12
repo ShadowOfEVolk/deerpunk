@@ -1,12 +1,13 @@
 pub mod atlas;
 pub mod lightmap_atlas;
-pub mod bsp_debug;
 pub mod bsp_entities;
 pub mod components;
 pub mod input;
 pub mod ipc;
 pub mod logger;
 pub mod network;
+pub mod component_inspect;
+pub mod prefab;
 pub mod scene;
 pub mod wad;
 pub mod world;
@@ -21,9 +22,8 @@ pub mod scheduler;
 pub mod transform;
 pub mod ui_draw;
 
-pub use bsp_debug::{raycast_mesh, raycast_tris, BspFaceDebug, BspPickHit};
 pub use components::{
-    BspWorldDebug, CameraComponent, LightmapId, LightstyleTable, MapKv, MeshRenderer, MeshTexture,
+    CameraComponent, LightmapId, LightstyleTable, MapKv, MeshRenderer, MeshTexture,
     NetReplicatedComponent, NetworkEntity, PendingAlbedoAtlas, PendingBspAtlas, PendingLightmap,
     PointLight,
     SimpleEntity, Terrain, TerrainCollider, TerrainNeedRebuild, TerrainRenderer,

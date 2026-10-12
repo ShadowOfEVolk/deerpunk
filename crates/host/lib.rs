@@ -5,6 +5,13 @@ use deerpunk_engine_client::render_extractor;
 use std::sync::atomic::{AtomicBool, Ordering};
 pub type Entity = u64;
 
+/// `v1:world:query_execute` gamelib callback.
+pub type WorldQueryCallback =
+    extern "C" fn(u64, *const *const std::ffi::c_void, usize, *mut std::ffi::c_void);
+
+/// `v1:schedule:add_system` gamelib system fn (stub host schedule).
+pub type ScheduleSystemFn = extern "C" fn(f32, *mut std::ffi::c_void);
+
 static REQUEST_QUIT: AtomicBool = AtomicBool::new(false);
 /// `s_play <event>` console commands queued for the client frame.
 static S_PLAY_QUEUE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -28,11 +35,14 @@ enum PendingDemoCmd {
 static PENDING_DEMO: std::sync::Mutex<Vec<PendingDemoCmd>> = std::sync::Mutex::new(Vec::new());
 
 pub mod binds;
-pub mod bsp_debug_ui;
 #[cfg(any(feature = "client", feature = "full"))]
 pub mod phys_debug;
 pub mod config_io;
 pub mod cmd;
+mod engine_methoddb;
+mod world_host_api;
+mod spawn_prefab;
+mod physics_trace;
 pub mod console;
 pub mod cvar;
 pub mod fs;
@@ -40,7 +50,6 @@ pub mod gameinfo;
 pub mod inspector;
 pub mod move_state;
 pub mod schedule;
-pub mod scene_cmd;
 pub mod stdin_cmd;
 pub mod system_profiler;
 pub mod players;
@@ -62,14 +71,8 @@ use deerpunk_engine_common::components::{LightstyleTable, MAX_LIGHTSTYLES};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::UserCmd;
 use connection::{ClientSessionPhase, SlotPlayGate};
-pub use engine_api::cmd::*;
-pub use engine_api::imgui::*;
-pub use engine_api::input::*;
-pub use engine_api::physics::*;
-pub use engine_api::resources::*;
-pub use engine_api::scene::*;
+pub use crate::cmd::CmdCallback;
 pub use engine_api::ui::*;
-pub use engine_api::world::*;
 
 pub mod channel;
 pub mod client_dll;
@@ -128,14 +131,6 @@ inventory::submit! {
 }
 inventory::submit! {
     cvar::CvarDef {
-        name: "sv_initial_scene",
-        default: "",
-        desc: "Scene name to load after gamelib init (e.g. menu). Empty = gamelib loads itself.",
-        flags: 0,
-    }
-}
-inventory::submit! {
-    cvar::CvarDef {
         name: "sv_inspector_port",
         default: "9000",
         desc: "WebSocket port for deerpunk-inspector (0 = disabled).",
@@ -179,14 +174,6 @@ inventory::submit! {
         name: "r_lightmap",
         default: "0",
         desc: "Debug: draw lightmap only (1=on).",
-        flags: cvar::RENDERINFO,
-    }
-}
-inventory::submit! {
-    cvar::CvarDef {
-        name: "r_bsp_debug",
-        default: "0",
-        desc: "Client BSP face pick: 0=off, 1=face dump, 2=+LM atlas layers + face rect.",
         flags: cvar::RENDERINFO,
     }
 }
@@ -404,6 +391,7 @@ pub struct Host {
     demo_writer: Option<demo::DemoWriter>,
     #[cfg(any(feature = "client", feature = "full"))]
     demo_player: Option<demo::DemoPlayer>,
+    pub inspector: inspector::Inspector,
 }
 
 impl Host {
@@ -454,6 +442,7 @@ impl Host {
             demo_writer: None,
             #[cfg(any(feature = "client", feature = "full"))]
             demo_player: None,
+            inspector: inspector::Inspector::new(),
         }
     }
 
@@ -479,7 +468,6 @@ impl Host {
         self.cmd.initialize();
         binds::Binds::register_commands(&mut self.cmd);
         move_state::register_commands(&mut self.cmd);
-        scene_cmd::register(&mut self.cmd);
         self.cmd.register_command("quit", |_| {
             REQUEST_QUIT.store(true, Ordering::SeqCst);
         });
@@ -529,7 +517,7 @@ impl Host {
         }
 
         // Descriptors early; WS starts after gamelibs + `.rc` / stuffcmds (see `start_inspector`).
-        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
             id: "assets".into(),
             label: "Assets".into(),
             group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
@@ -540,7 +528,7 @@ impl Host {
             id_field: "index".into(),
             nested_in: None,
         });
-        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
             id: "systems".into(),
             label: "Systems".into(),
             group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
@@ -549,7 +537,7 @@ impl Host {
             nested_in: None,
         });
         #[cfg(any(feature = "client", feature = "full"))]
-        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
             id: "fmod_events".into(),
             label: "FMOD Events".into(),
             group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
@@ -560,7 +548,7 @@ impl Host {
             id_field: "index".into(),
             nested_in: None,
         });
-        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
             id: "players".into(),
             label: "Players".into(),
             group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
@@ -571,7 +559,7 @@ impl Host {
             id_field: "index".into(),
             nested_in: None,
         });
-        inspector::register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
             id: "methoddb".into(),
             label: "MethodDB".into(),
             group: deerpunk_inspector_protocol::CollectionGroup::Definitions,
@@ -588,7 +576,7 @@ impl Host {
     }
 
     /// Start inspector WS using current cvars (after configs / stuffcmds).
-    pub fn start_inspector(&self) {
+    pub fn start_inspector(&mut self) {
         let port = self
             .cvar
             .get_string("sv_inspector_port")
@@ -599,38 +587,24 @@ impl Host {
             .get_string("sv_inspector_host")
             .unwrap_or_else(|| "127.0.0.1".into());
         log::info!("[inspector] start host={host} port={port}");
-        inspector::start(&host, port);
-        inspector::sync_methoddb();
+        self.inspector.start(&host, port);
+        self.inspector.sync_methoddb();
     }
 
     fn register_internal_components(&mut self) {
         use deerpunk_engine_common::components::*;
-        use deerpunk_engine_common::physics::{CharacterController, Collider};
+        use deerpunk_engine_common::physics::Collider;
         let register = |w: &deerpunk_engine_common::world::World| {
-            w.component_init::<TransformComponent>();
-            w.component_init::<Mesh3D>();
-            w.component_init::<Material>();
-            w.component_init::<CameraComponent>();
-            w.component_init::<SimpleEntity>();
-            w.component_init::<UiDocumentComponent>();
+            deerpunk_engine_common::scene::register_engine_prefab_appliers(w);
+            deerpunk_engine_common::scene::register_engine_component_inspect(w);
             w.component_init::<Terrain>();
             w.component_init::<TerrainSplatMaterial>();
             w.component_init::<Worldspawn>();
-            w.component_init::<PendingAlbedoAtlas>();
             w.component_init::<PendingLightmap>();
             w.component_init::<LightmapId>();
             w.component_init::<LightstyleTable>();
-            w.component_init::<BspWorldDebug>();
             w.component_init::<MapKv>();
-            w.component_init::<PointLight>();
             w.component_init::<Collider>();
-            w.component_init::<CharacterController>();
-            w.component_init::<PlayerUse>();
-            w.component_init::<FallRescue>();
-            w.component_init::<PlayerMovement>();
-            w.component_init::<SoundEmitter>();
-            w.component_init::<LuaScript>();
-            w.component_init::<NetworkEntity>();
         };
         register(&self.server_engine.world);
         #[cfg(any(feature = "client", feature = "full"))]
@@ -660,8 +634,6 @@ impl Host {
                 log::error!("server DLL load failed: {}. Running without server gamelib.", e);
             }
         }
-
-        self.load_initial_scene_from_cvar();
 
         // Xash: `{gamefolder}.rc` (exec configs…; stuffcmds). After gamelibs so cmds exist.
         self.exec_game_rc();
@@ -704,6 +676,9 @@ impl Host {
             Ok(client) => {
                 unsafe {
                     client.init(ctx_ptr, resolver);
+                }
+                if let Some(ce) = self.client_engine.as_mut() {
+                    ce.set_audio_world_scene_hook(client.audio_world_scene_fn());
                 }
                 self.client_dll = Some(client);
                 log::info!("client DLL loaded: {}", path);
@@ -1091,43 +1066,6 @@ impl Host {
         deerpunk_ui::set_client_in_game(false);
     }
 
-    /// Spawn `{gamedir}/prefabs/{name}.prefab` into the server world.
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    pub fn spawn_prefab(&mut self, name: &str) -> Result<u64, String> {
-        let gamedir = self.fs.gamedir().to_path_buf();
-        deerpunk_engine_server::spawn_prefab(
-            &self.server_engine.world,
-            &gamedir,
-            &mut self.resources,
-            name,
-        )
-        .map_err(|e| e.message)
-    }
-
-    #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-    pub fn spawn_prefab(&mut self, _name: &str) -> Result<u64, String> {
-        Err("spawn_prefab unavailable".into())
-    }
-
-    /// Load a scene file `{gamedir}/scenes/{name}.scene` (server-owned).
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    pub fn load_scene(&mut self, name: &str) -> Result<Vec<u64>, String> {
-        let gamedir = self.fs.gamedir().to_path_buf();
-        log::info!("[host] load_scene '{name}' gamedir={}", gamedir.display());
-        let ids = deerpunk_engine_server::load_scene(
-            &self.server_engine.world,
-            &gamedir,
-            &mut self.resources,
-            name,
-        )
-        .map_err(|e| e.message)?;
-        log::info!("[host] load_scene '{name}' ok — {} entities", ids.len());
-        self.flush_pending_albedos();
-        // Help verify Worldspawn/BSP in the console too.
-        self.server_engine.world.debug_dump(&["Worldspawn", "Mesh3D", "TransformComponent"]);
-        Ok(ids)
-    }
-
     /// Upload pending albedo atlases on the server world (legacy path / dedicated tools).
     #[cfg(any(feature = "client", feature = "full"))]
     fn flush_pending_albedos(&mut self) {
@@ -1248,35 +1186,6 @@ impl Host {
     #[cfg(not(any(feature = "client", feature = "full")))]
     fn drain_ui_commands(&mut self) {}
 
-    fn drain_scene_cmd(&mut self) {
-        #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-        {
-            if let Some(name) = scene_cmd::take_pending() {
-                match self.load_scene(&name) {
-                    Ok(ids) => println!("[cmd] scene {name}: spawned {}", ids.len()),
-                    Err(e) => println!("[cmd] scene {name}: FAILED — {e}"),
-                }
-            }
-        }
-    }
-
-    fn load_initial_scene_from_cvar(&mut self) {
-        #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-        {
-            let Some(name) = self.cvar.get_string("sv_initial_scene") else {
-                return;
-            };
-            let name = name.trim();
-            if name.is_empty() {
-                return;
-            }
-            match self.load_scene(name) {
-                Ok(ids) => log::info!("[host] sv_initial_scene={name} spawned {}", ids.len()),
-                Err(e) => log::error!("[host] sv_initial_scene={name} failed: {e}"),
-            }
-        }
-    }
-
     pub fn frame(&mut self, delta_time: f32) {
         system_profiler::begin_frame();
 
@@ -1286,7 +1195,6 @@ impl Host {
             stdin_cmd::drain(&self.cmd);
             self.drain_ui_commands();
             self.drain_channel_cmds();
-            self.drain_scene_cmd();
             self.time_secs += delta_time.max(0.0);
             #[cfg(any(feature = "client", feature = "full"))]
             self.drain_pending_demo_cmds();
@@ -1368,9 +1276,10 @@ impl Host {
         }
         {
             let _g = system_profiler::scope("host.inspector");
-            inspector::sync_world(&self.server_engine.world, delta_time);
-            inspector::sync_assets(self.resources.list_assets());
-            inspector::sync_systems(system_profiler::snapshot_for_inspector());
+            self.inspector.sync_world(&self.server_engine.world, delta_time);
+            self.inspector.sync_assets(self.resources.list_assets());
+            self.inspector
+                .sync_systems(system_profiler::snapshot_for_inspector());
             self.sync_inspector_players();
             #[cfg(any(feature = "client", feature = "full"))]
             if let Some(client) = self.client_engine.as_ref() {
@@ -1385,8 +1294,9 @@ impl Host {
                         params: e.params,
                     })
                     .collect();
-                inspector::sync_fmod_events(events);
+                self.inspector.sync_fmod_events(events);
             }
+            self.inspector.poll(&self.server_engine.world);
         }
 
         system_profiler::end_frame();
@@ -1419,8 +1329,6 @@ impl Host {
             return;
         };
         console.tick_draw(cvar);
-        bsp_debug_ui::tick(cvar, &client.world, &server_engine.world);
-
         let (view_yaw, view_pitch) = view.map(|v| (v.yaw, v.pitch)).unwrap_or((0.0, 0.0));
         deerpunk_engine_client::infobox::tick(
             show_fps,
@@ -1432,10 +1340,11 @@ impl Host {
             net_hud.as_ref(),
         );
 
-        // Client gamelib ImGui overlays.
+        // Client gamelib ImGui overlays (host-owned `imgui::Context`).
         if let Some(ref dll) = client_dll {
+            let imgui_ctx = client.renderer().imgui_context_ptr();
             unsafe {
-                dll.ui();
+                dll.imgui_frame(imgui_ctx);
             }
         }
     }
@@ -1606,7 +1515,7 @@ impl Host {
         deerpunk_engine_client::infobox::NetHudInfo { lines }
     }
 
-    fn sync_inspector_players(&self) {
+    fn sync_inspector_players(&mut self) {
         let remote_addrs: std::collections::HashMap<u32, String> = self
             .net
             .remote_slot_debug()
@@ -1633,7 +1542,7 @@ impl Host {
                 })
             })
             .collect();
-        inspector::sync_players(serde_json::json!({
+        self.inspector.sync_players(serde_json::json!({
             "time": self.time_secs,
             "count": players.len(),
             "players": players,
@@ -2172,7 +2081,6 @@ impl Host {
             stdin_cmd::drain(&self.cmd);
             self.drain_ui_commands();
             self.drain_channel();
-            self.drain_scene_cmd();
 
             if REQUEST_QUIT.load(Ordering::SeqCst) {
                 break;

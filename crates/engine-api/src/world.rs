@@ -1,5 +1,7 @@
 use std::ffi::c_void;
 
+use crate::components::{no_prefab_apply, ComponentRegisterDesc};
+use crate::spawn_prefab::SpawnPrefabOpts;
 use crate::Resolver;
 
 pub type EntityId = u64;
@@ -28,29 +30,10 @@ pub struct WorldApiResolved {
         extern "C" fn(*mut u8, *const u64, usize, *const u64, usize, *mut u64, usize) -> usize,
     query_count_fn: extern "C" fn(*mut u8, *const u64, usize, *const u64, usize) -> usize,
     query_matches_fn: extern "C" fn(*mut u8, u64, *const u64, usize, *const u64, usize) -> bool,
-    component_init_raw_fn: extern "C" fn(*mut u8, *const u8, usize, usize, usize) -> u64,
     query_prepare_fn: extern "C" fn(*mut u8, *const u8, usize) -> u32,
     query_execute_fn: extern "C" fn(*mut u8, u32, extern "C" fn(u64, *const *const c_void, usize, *mut c_void), *mut c_void),
-    trace_line_fn: extern "C" fn(*mut u8, f32, f32, f32, f32, f32, f32, *mut TraceLineResult) -> i32,
-}
-
-/// Mirrors host `engine_host::engine_api::world::TraceLineResult`.
-#[repr(C)]
-pub struct TraceLineResult {
-    /// 1 = hit, 0 = miss.
-    pub hit: u32,
-    /// Distance fraction along the ray (0..1), 1.0 on miss.
-    pub fraction: f32,
-    /// World-space hit point (origin on miss).
-    pub point: [f32; 3],
-    /// NUL-padded texture name of the hit face.
-    pub tex: [u8; 64],
-}
-
-impl Default for TraceLineResult {
-    fn default() -> Self {
-        Self { hit: 0, fraction: 1.0, point: [0.0; 3], tex: [0; 64] }
-    }
+    spawn_prefab_fn: extern "C" fn(*mut u8, *const u8, usize, *const SpawnPrefabOpts) -> u64,
+    component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
 }
 
 unsafe impl Send for WorldApiResolved {}
@@ -71,10 +54,12 @@ impl WorldApiResolved {
             query_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query")) },
             query_count_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_count")) },
             query_matches_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_matches")) },
-            component_init_raw_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:component_init_raw")) },
             query_prepare_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_prepare")) },
             query_execute_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_execute")) },
-            trace_line_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:trace_line")) },
+            spawn_prefab_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn_prefab")) },
+            component_register_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:world:component_register"))
+            },
         }
     }
 
@@ -195,8 +180,30 @@ impl WorldApiResolved {
         )
     }
 
-    pub fn component_init_raw(&self, name: &str, size: usize, align: usize) -> ComponentId {
-        (self.component_init_raw_fn)(self.ctx, name.as_ptr(), name.len(), size, align)
+    pub fn component_register(&self, desc: &ComponentRegisterDesc) -> Result<ComponentId, String> {
+        let id = (self.component_register_fn)(self.ctx, desc);
+        if id == 0 {
+            Err("component_register failed".into())
+        } else {
+            Ok(id)
+        }
+    }
+
+    /// Register component type (no prefab applier).
+    pub fn register_component(
+        &self,
+        name: &str,
+        size: usize,
+        align: usize,
+    ) -> Result<ComponentId, String> {
+        let desc = ComponentRegisterDesc::new(
+            name,
+            size,
+            align,
+            std::ptr::null_mut(),
+            no_prefab_apply(),
+        );
+        self.component_register(&desc)
     }
 
     pub fn query_prepare(&self, expression: &str) -> u32 {
@@ -215,22 +222,19 @@ impl WorldApiResolved {
     /// Trace a line against the server BSP world mesh.
     /// Returns `Some(result)` on hit (with hit point, fraction, texture name),
     /// `None` on miss.
-    pub fn trace_line(&self, origin: [f32; 3], end: [f32; 3]) -> Option<TraceLineResult> {
-        let mut out = TraceLineResult::default();
-        let hit = (self.trace_line_fn)(
-            self.ctx,
-            origin[0],
-            origin[1],
-            origin[2],
-            end[0],
-            end[1],
-            end[2],
-            &mut out,
-        );
-        if hit != 0 {
-            Some(out)
+    /// Spawn `{gamedir}/prefabs/{name}.prefab` into the server world.
+    pub fn spawn_prefab(
+        &self,
+        name: &str,
+        opts: &SpawnPrefabOpts,
+    ) -> Result<EntityId, String> {
+        let bytes = name.as_bytes();
+        let id = (self.spawn_prefab_fn)(self.ctx, bytes.as_ptr(), bytes.len(), opts as *const _);
+        if id == 0 {
+            Err(format!("spawn_prefab failed: {name}"))
         } else {
-            None
+            Ok(id)
         }
     }
+
 }

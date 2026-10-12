@@ -1,14 +1,11 @@
-//! WebSocket inspector server (deerpunk-inspector-protocol).
-//! Component field values are stubbed until an FFI layout bridge exists.
-//! Host can register extra collections (e.g. `assets`).
+//! WebSocket inspector (deerpunk-inspector-protocol).
+//! Polled non-blocking from [`Host::frame`] — same thread as the server world.
 
 mod ws;
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::Duration;
 
 use deerpunk_engine_common::resource::AssetInfo;
 use deerpunk_engine_common::world::{InspectEntity, World};
@@ -16,6 +13,8 @@ use deerpunk_inspector_protocol as proto;
 use serde_json::{Value, json};
 
 use ws::{WsConnection, WsIncoming};
+
+const MAX_REQUESTS_PER_FRAME: usize = 64;
 
 #[derive(Clone)]
 struct EntitySnap {
@@ -38,13 +37,9 @@ struct Snapshot {
     time: f32,
     entities: Vec<EntitySnap>,
     assets: Vec<AssetInfo>,
-    /// Published `systems.list` payload (darkdemo-style timings).
     systems: Value,
-    /// Loaded FMOD Studio events (`fmod_events.list`).
     fmod_events: Vec<FmodEventSnap>,
-    /// Player connections (`players.list`).
     players: Value,
-    /// Engine API tramps (`methoddb.list`).
     methoddb: Vec<MethodDbSnap>,
 }
 
@@ -58,107 +53,66 @@ struct ClientState {
     socket: WsConnection,
 }
 
-struct InspectorInner {
-    snapshot: Arc<Mutex<Snapshot>>,
-    collections: Arc<Mutex<Vec<proto::CollectionDescriptor>>>,
-    running: Arc<Mutex<bool>>,
+struct ActiveInspector {
+    listener: TcpListener,
+    clients: HashMap<u64, ClientState>,
+    next_client_id: u64,
+    snapshot: Snapshot,
+    collections: Vec<proto::CollectionDescriptor>,
 }
 
-static mut INSPECTOR: *const InspectorInner = std::ptr::null();
-
-/// Extra collections registered before/after `start` (merged with `entities`).
-static EXTRA_COLLECTIONS: OnceLock<Mutex<Vec<proto::CollectionDescriptor>>> = OnceLock::new();
-
-fn extra_collections() -> &'static Mutex<Vec<proto::CollectionDescriptor>> {
-    EXTRA_COLLECTIONS.get_or_init(|| Mutex::new(Vec::new()))
+/// Owned by [`crate::Host`].
+pub struct Inspector {
+    extra_collections: Vec<proto::CollectionDescriptor>,
+    active: Option<ActiveInspector>,
 }
 
-fn inner() -> Option<&'static InspectorInner> {
-    unsafe {
-        if INSPECTOR.is_null() {
-            None
-        } else {
-            Some(&*INSPECTOR)
+impl Inspector {
+    pub fn new() -> Self {
+        Self {
+            extra_collections: Vec::new(),
+            active: None,
         }
     }
-}
 
-pub fn is_running() -> bool {
-    inner().is_some()
-}
+    pub fn is_running(&self) -> bool {
+        self.active.is_some()
+    }
 
-/// Register a host-side collection (descriptor shown in `inspector.initialize`).
-/// Safe to call before or after [`start`]; live inspector picks up new descriptors.
-pub fn register_collection(desc: proto::CollectionDescriptor) {
-    let id = desc.id.clone();
-    {
-        let mut extras = extra_collections().lock().unwrap();
-        if let Some(slot) = extras.iter_mut().find(|c| c.id == id) {
+    fn merged_collections(&self) -> Vec<proto::CollectionDescriptor> {
+        let mut cols = proto::default_collections();
+        for c in &self.extra_collections {
+            if !cols.iter().any(|e| e.id == c.id) {
+                cols.push(c.clone());
+            }
+        }
+        cols
+    }
+
+    pub fn register_collection(&mut self, desc: proto::CollectionDescriptor) {
+        let id = desc.id.clone();
+        if let Some(slot) = self.extra_collections.iter_mut().find(|c| c.id == id) {
             *slot = desc.clone();
         } else {
-            extras.push(desc.clone());
+            self.extra_collections.push(desc.clone());
+        }
+        if let Some(insp) = self.active.as_mut() {
+            if let Some(slot) = insp.collections.iter_mut().find(|c| c.id == id) {
+                *slot = desc;
+            } else {
+                insp.collections.push(desc);
+            }
         }
     }
-    if let Some(inner) = inner() {
-        let mut cols = inner.collections.lock().unwrap();
-        if let Some(slot) = cols.iter_mut().find(|c| c.id == id) {
-            *slot = desc;
-        } else {
-            cols.push(desc);
+
+    /// Bind WS listener. No-op if `port == 0` or already started.
+    pub fn start(&mut self, host: &str, port: u16) {
+        if port == 0 || self.active.is_some() {
+            return;
         }
-    }
-}
 
-fn merged_collections() -> Vec<proto::CollectionDescriptor> {
-    let mut cols = proto::default_collections();
-    let extras = extra_collections().lock().unwrap();
-    for c in extras.iter() {
-        if !cols.iter().any(|e| e.id == c.id) {
-            cols.push(c.clone());
-        }
-    }
-    cols
-}
-
-/// Start WS inspector on `host:port`. No-op if port == 0 or already started.
-pub fn start(host: &str, port: u16) {
-    if port == 0 {
-        return;
-    }
-    if is_running() {
-        return;
-    }
-
-    let host = host.trim().trim_matches('"').trim_matches('\'').trim();
-    let host = if host.is_empty() { "127.0.0.1" } else { host }.to_string();
-
-    let collections = Arc::new(Mutex::new(merged_collections()));
-    let inner = Box::new(InspectorInner {
-        snapshot: Arc::new(Mutex::new(Snapshot {
-            time: 0.0,
-            entities: Vec::new(),
-            assets: Vec::new(),
-            systems: json!({
-                "frame_count": 0,
-                "period_secs": 0.0,
-                "systems": [],
-            }),
-            fmod_events: Vec::new(),
-            players: json!({
-                "time": 0.0,
-                "count": 0,
-                "players": [],
-            }),
-            methoddb: Vec::new(),
-        })),
-        collections: collections.clone(),
-        running: Arc::new(Mutex::new(true)),
-    });
-
-    let snapshot = inner.snapshot.clone();
-    let running = inner.running.clone();
-
-    thread::spawn(move || {
+        let host = host.trim().trim_matches('"').trim_matches('\'').trim();
+        let host = if host.is_empty() { "127.0.0.1" } else { host };
         let addr = format!("{host}:{port}");
         let listener = match TcpListener::bind(&addr) {
             Ok(l) => {
@@ -172,164 +126,177 @@ pub fn start(host: &str, port: u16) {
             }
         };
 
-        let mut clients: HashMap<u64, ClientState> = HashMap::new();
-        let mut next_id: u64 = 1;
+        self.active = Some(ActiveInspector {
+            listener,
+            clients: HashMap::new(),
+            next_client_id: 1,
+            snapshot: Snapshot {
+                time: 0.0,
+                entities: Vec::new(),
+                assets: Vec::new(),
+                systems: json!({
+                    "frame_count": 0,
+                    "period_secs": 0.0,
+                    "systems": [],
+                }),
+                fmod_events: Vec::new(),
+                players: json!({
+                    "time": 0.0,
+                    "count": 0,
+                    "players": [],
+                }),
+                methoddb: Vec::new(),
+            },
+            collections: self.merged_collections(),
+        });
+    }
+
+    pub fn stop(&mut self) {
+        if self.active.is_some() {
+            self.active = None;
+            log::info!("[inspector] stopped");
+        }
+    }
+
+    pub fn poll(&mut self, world: &World) {
+        let Some(insp) = self.active.as_mut() else {
+            return;
+        };
 
         loop {
-            if !*running.lock().unwrap() {
-                break;
+            match insp.listener.accept() {
+                Ok((stream, addr)) => match WsConnection::accept(stream) {
+                    Ok(ws) => {
+                        log::info!("[inspector] client {addr}");
+                        let id = insp.next_client_id;
+                        insp.next_client_id += 1;
+                        insp.clients.insert(id, ClientState { socket: ws });
+                    }
+                    Err(e) => log::warn!("[inspector] handshake {addr}: {e}"),
+                },
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => {
+                    log::warn!("[inspector] accept: {e}");
+                    break;
+                }
             }
+        }
 
+        let mut disconnected = Vec::new();
+        let mut responses: Vec<(u64, String)> = Vec::new();
+        let mut budget = MAX_REQUESTS_PER_FRAME;
+
+        for (&id, client) in insp.clients.iter_mut() {
             loop {
-                match listener.accept() {
-                    Ok((stream, addr)) => match WsConnection::accept(stream) {
-                        Ok(ws) => {
-                            log::info!("[inspector] client {addr}");
-                            clients.insert(next_id, ClientState { socket: ws });
-                            next_id += 1;
+                if budget == 0 {
+                    break;
+                }
+                match client.socket.read_incoming() {
+                    Ok(WsIncoming::Text(text)) => {
+                        budget -= 1;
+                        match handle_message(
+                            text.trim(),
+                            &insp.snapshot,
+                            &insp.collections,
+                            world,
+                        ) {
+                            Ok(msgs) => {
+                                for m in msgs {
+                                    responses.push((id, m));
+                                }
+                            }
+                            Err(e) => log::warn!("[inspector] client {id}: {e}"),
                         }
-                        Err(e) => log::warn!("[inspector] handshake {addr}: {e}"),
-                    },
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    }
+                    Ok(WsIncoming::Ping(p)) => {
+                        let _ = client.socket.send_pong(&p);
+                    }
+                    Ok(WsIncoming::Close) => {
+                        disconnected.push(id);
+                        break;
+                    }
+                    Ok(WsIncoming::WouldBlock) => break,
                     Err(e) => {
-                        log::warn!("[inspector] accept: {e}");
+                        log::warn!("[inspector] read {id}: {e}");
+                        disconnected.push(id);
                         break;
                     }
                 }
             }
-
-            let mut disconnected = Vec::new();
-            let mut responses: Vec<(u64, String)> = Vec::new();
-
-            for (&id, client) in clients.iter_mut() {
-                loop {
-                    match client.socket.read_incoming() {
-                        Ok(WsIncoming::Text(text)) => {
-                            match handle_message(text.trim(), &snapshot, &collections) {
-                                Ok(msgs) => {
-                                    for m in msgs {
-                                        responses.push((id, m));
-                                    }
-                                }
-                                Err(e) => log::warn!("[inspector] client {id}: {e}"),
-                            }
-                        }
-                        Ok(WsIncoming::Ping(p)) => {
-                            let _ = client.socket.send_pong(&p);
-                        }
-                        Ok(WsIncoming::Close) => {
-                            disconnected.push(id);
-                            break;
-                        }
-                        Ok(WsIncoming::WouldBlock) => break,
-                        Err(e) => {
-                            log::warn!("[inspector] read {id}: {e}");
-                            disconnected.push(id);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            for (id, msg) in responses {
-                if let Some(c) = clients.get_mut(&id) {
-                    if c.socket.send_text(&msg).is_err() {
-                        disconnected.push(id);
-                    }
-                }
-            }
-
-            for id in disconnected {
-                clients.remove(&id);
-            }
-
-            thread::sleep(Duration::from_millis(50));
         }
 
-        log::info!("[inspector] thread exit");
-    });
+        for (id, msg) in responses {
+            if let Some(c) = insp.clients.get_mut(&id) {
+                if c.socket.send_text(&msg).is_err() {
+                    disconnected.push(id);
+                }
+            }
+        }
 
-    unsafe {
-        INSPECTOR = Box::into_raw(inner);
+        for id in disconnected {
+            insp.clients.remove(&id);
+        }
     }
-}
 
-pub fn stop() {
-    if let Some(inner) = inner() {
-        *inner.running.lock().unwrap() = false;
+    pub fn sync_world(&mut self, world: &World, time: f32) {
+        let Some(insp) = self.active.as_mut() else {
+            return;
+        };
+        insp.snapshot.entities = world
+            .inspect_entities()
+            .into_iter()
+            .map(|e: InspectEntity| EntitySnap {
+                id: e.id,
+                name: e.name,
+                components: e.components,
+            })
+            .collect();
+        insp.snapshot.time = time;
     }
-}
 
-/// Refresh entity list from the server world (call each frame / tick).
-pub fn sync_world(world: &World, time: f32) {
-    let Some(inner) = inner() else {
-        return;
-    };
-    let entities: Vec<EntitySnap> = world
-        .inspect_entities()
-        .into_iter()
-        .map(|e: InspectEntity| EntitySnap {
-            id: e.id,
-            name: e.name,
-            components: e.components,
-        })
-        .collect();
-    let mut snap = inner.snapshot.lock().unwrap();
-    snap.time = time;
-    snap.entities = entities;
-}
+    pub fn sync_assets(&mut self, assets: Vec<AssetInfo>) {
+        if let Some(insp) = self.active.as_mut() {
+            insp.snapshot.assets = assets;
+        }
+    }
 
-/// Refresh asset list from [`ResourceManager`](deerpunk_engine_common::resource::ResourceManager).
-pub fn sync_assets(assets: Vec<AssetInfo>) {
-    let Some(inner) = inner() else {
-        return;
-    };
-    inner.snapshot.lock().unwrap().assets = assets;
-}
+    pub fn sync_systems(&mut self, systems: Value) {
+        if let Some(insp) = self.active.as_mut() {
+            insp.snapshot.systems = systems;
+        }
+    }
 
-/// Refresh systems profiler snapshot (`systems.list`).
-pub fn sync_systems(systems: Value) {
-    let Some(inner) = inner() else {
-        return;
-    };
-    inner.snapshot.lock().unwrap().systems = systems;
-}
+    pub fn sync_fmod_events(&mut self, events: Vec<FmodEventSnap>) {
+        if let Some(insp) = self.active.as_mut() {
+            insp.snapshot.fmod_events = events;
+        }
+    }
 
-/// Refresh FMOD Studio event list (`fmod_events.list`).
-pub fn sync_fmod_events(events: Vec<FmodEventSnap>) {
-    let Some(inner) = inner() else {
-        return;
-    };
-    inner.snapshot.lock().unwrap().fmod_events = events;
-}
+    pub fn sync_players(&mut self, players: Value) {
+        if let Some(insp) = self.active.as_mut() {
+            insp.snapshot.players = players;
+        }
+    }
 
-/// Refresh player connections (`players.list`).
-pub fn sync_players(players: Value) {
-    let Some(inner) = inner() else {
-        return;
-    };
-    inner.snapshot.lock().unwrap().players = players;
-}
-
-/// Refresh engine [`MethodDB`](crate::engine_api::engine_api::MethodDB) tramp list (`methoddb.list`).
-pub fn sync_methoddb() {
-    let Some(inner) = inner() else {
-        return;
-    };
-    let methoddb = crate::engine_api::engine_api::MethodDB::inventory_entries()
-        .into_iter()
-        .map(|e| MethodDbSnap {
-            name: e.name.to_string(),
-            flags: e.flags,
-        })
-        .collect();
-    inner.snapshot.lock().unwrap().methoddb = methoddb;
+    pub fn sync_methoddb(&mut self) {
+        let Some(insp) = self.active.as_mut() else {
+            return;
+        };
+        insp.snapshot.methoddb = crate::engine_api::engine_api::MethodDB::inventory_entries()
+            .into_iter()
+            .map(|e| MethodDbSnap {
+                name: e.name.to_string(),
+                flags: e.flags,
+            })
+            .collect();
+    }
 }
 
 fn handle_message(
     line: &str,
-    snapshot: &Arc<Mutex<Snapshot>>,
-    collections: &Arc<Mutex<Vec<proto::CollectionDescriptor>>>,
+    snapshot: &Snapshot,
+    collections: &[proto::CollectionDescriptor],
+    world: &World,
 ) -> Result<Vec<String>, String> {
     if line.is_empty() {
         return Ok(Vec::new());
@@ -342,14 +309,13 @@ fn handle_message(
     let id = msg.get("id").cloned();
     let params = msg.get("params").cloned().unwrap_or(json!({}));
 
-    let cols = collections.lock().unwrap().clone();
     if let Some(resp) = proto::handle_session_rpc(
         method,
         id.as_ref(),
         &params,
         "deerpunk",
         env!("CARGO_PKG_VERSION"),
-        &cols,
+        collections,
     ) {
         return Ok(vec![resp]);
     }
@@ -363,11 +329,11 @@ fn handle_message(
     };
 
     if let Some((col_id, action)) = method.rsplit_once('.') {
-        let known = cols.iter().any(|c| c.id == col_id);
+        let known = collections.iter().any(|c| c.id == col_id);
         if known {
             return match action {
                 "list" => Ok(vec![proto::ok(&id, collection_list(col_id, snapshot))]),
-                "get" => Ok(vec![collection_get(col_id, &id, &params, snapshot)]),
+                "get" => Ok(vec![collection_get(col_id, &id, &params, snapshot, world)]),
                 _ => Ok(vec![proto::err(
                     &id,
                     proto::ERR_METHOD_NOT_FOUND,
@@ -384,8 +350,7 @@ fn handle_message(
     )])
 }
 
-fn collection_list(col_id: &str, snapshot: &Arc<Mutex<Snapshot>>) -> Value {
-    let snap = snapshot.lock().unwrap();
+fn collection_list(col_id: &str, snap: &Snapshot) -> Value {
     match col_id {
         "entities" => {
             let entities: Vec<Value> = snap
@@ -476,11 +441,24 @@ fn collection_list(col_id: &str, snapshot: &Arc<Mutex<Snapshot>>) -> Value {
     }
 }
 
+fn component_snapshot(world: &World, entity: u64, slug: &str) -> proto::ComponentSnapshot {
+    if let Some((schema, data)) = world.inspect_component_fields(entity, slug) {
+        let schema = if schema.is_null() {
+            None
+        } else {
+            Some(schema)
+        };
+        return proto::component_data(slug, schema, data);
+    }
+    proto::stub_component(slug)
+}
+
 fn collection_get(
     col_id: &str,
     id: &Value,
     params: &Value,
-    snapshot: &Arc<Mutex<Snapshot>>,
+    snap: &Snapshot,
+    world: &World,
 ) -> String {
     let index = match params.get("index").and_then(|v| v.as_u64()) {
         Some(i) => i,
@@ -488,7 +466,6 @@ fn collection_get(
             return proto::err(id, proto::ERR_INVALID_PARAMS, "missing index");
         }
     };
-    let snap = snapshot.lock().unwrap();
     match col_id {
         "entities" => {
             let Some(ent) = snap.entities.iter().find(|e| e.id == index) else {
@@ -497,7 +474,10 @@ fn collection_get(
             let components: Vec<Value> = ent
                 .components
                 .iter()
-                .map(|slug| serde_json::to_value(proto::stub_component(slug)).unwrap_or(Value::Null))
+                .map(|slug| {
+                    serde_json::to_value(component_snapshot(world, ent.id, slug))
+                        .unwrap_or(Value::Null)
+                })
                 .collect();
             proto::ok(
                 id,

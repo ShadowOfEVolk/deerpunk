@@ -4,4 +4,4 @@ pub mod server;
 pub mod systems;
 
 pub use network::ServerPrefabReplication;
-pub use scene::{SceneLoadError, load_scene, spawn_prefab};
+pub use scene::{SceneLoadError, spawn_prefab};

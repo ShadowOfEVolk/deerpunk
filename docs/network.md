@@ -369,9 +369,9 @@ Named SVC payloads beyond the fixed engine protocol (`SetView`, `LightStyle`, ga
 
 | Method | Назначение |
 |---|---|
-| `v1:um:register(name, size)` | Server **и** client регистрируют имя; → msgid. `size` = max bytes или `-1` |
-| `v1:um:send(dest, name, data)` | `dest=0` broadcast; `dest=slot+1` одному игроку |
-| `v1:um:hook(name, cb)` | Client MsgFunc: `fn(name_ptr, name_len, data_ptr, data_len)` |
+| `v1:net:msg_register(name, size)` | Server **и** client регистрируют имя; → msgid. `size` = max bytes или `-1` |
+| `v1:net:msg_send(dest, name, data)` | `dest=0` broadcast; `dest=slot+1` одному игроку |
+| `v1:net:msg_hook(name, cb)` | Client MsgFunc: `fn(name_ptr, name_len, data_ptr, data_len)` |
 
 Safe: `NetApi::um_register` / `um_broadcast` / `um_send_slot` / `um_hook`.
 

@@ -59,6 +59,8 @@ pub enum ComponentSnapshot {
     },
     Data {
         slug: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<Value>,
         data: Value,
     },
 }

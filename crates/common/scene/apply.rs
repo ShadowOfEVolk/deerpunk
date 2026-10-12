@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::components::{
     CameraComponent, FallRescue, LuaScript, Material, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
-    PlayerMovement, PlayerUse, PointLight, SoundEmitter, TransformComponent, UiDocumentComponent,
+    PlayerUse, PointLight, SoundEmitter, TransformComponent, UiDocumentComponent,
 };
 use crate::network::field_path::FieldPathId;
 use crate::physics::CharacterController;
@@ -118,30 +118,6 @@ pub fn apply_component(
             }
             let id = world.component_init::<FallRescue>();
             world.set(entity, id, fr);
-            Ok(())
-        }
-        "PlayerMovement" => {
-            let mut pm = PlayerMovement::default();
-            if let Some(v) = value.get("walk_speed").and_then(|v| v.as_f64()) {
-                pm.walk_speed = v as f32;
-            }
-            if let Some(v) = value.get("sprint_mult").and_then(|v| v.as_f64()) {
-                pm.sprint_mult = v as f32;
-            }
-            if let Some(v) = value.get("stamina").and_then(|v| v.as_f64()) {
-                pm.stamina = (v as f32).clamp(0.0, 1.0);
-            }
-            if let Some(v) = value.get("stamina_drain_time").and_then(|v| v.as_f64()) {
-                pm.stamina_drain_time = v as f32;
-            }
-            if let Some(v) = value.get("stamina_regen_standing").and_then(|v| v.as_f64()) {
-                pm.stamina_regen_standing = v as f32;
-            }
-            if let Some(v) = value.get("stamina_regen_moving").and_then(|v| v.as_f64()) {
-                pm.stamina_regen_moving = v as f32;
-            }
-            let id = world.component_init::<PlayerMovement>();
-            world.set(entity, id, pm);
             Ok(())
         }
         "SoundEmitter" => {
@@ -272,7 +248,7 @@ pub fn apply_component(
             Ok(())
         }
         "Worldspawn" => Err(
-            "Worldspawn BSP load moved to gamelib (darkdemo-bsp); scenes removed".into(),
+            "Worldspawn BSP load moved to gamelib (game-bsp); scenes removed".into(),
         ),
         "NetworkEntity" => {
             let mut hot = Vec::new();
@@ -304,6 +280,22 @@ pub fn apply_component(
             Ok(())
         }
         other => Err(format!("unknown component in prefab/scene: {other}")),
+    }
+}
+
+/// Gamelib-registered applier first, then built-in engine prefab apply.
+pub fn apply_prefab_component_value(
+    world: &World,
+    gamedir: &Path,
+    resources: &mut ResourceManager,
+    entity: EntityId,
+    comp_name: &str,
+    value: &Value,
+) -> Result<(), String> {
+    match world.try_prefab_apply_registered(gamedir, resources, entity, comp_name, value) {
+        Ok(true) => Ok(()),
+        Ok(false) => apply_component(world, gamedir, resources, entity, comp_name, value),
+        Err(e) => Err(e),
     }
 }
 

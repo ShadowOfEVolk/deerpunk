@@ -3,7 +3,7 @@
 //! Same idea as client `AudioBackend`: engine owns ECS observers; backend owns
 //! Rapier (or Null) + shape/parts arenas.
 //!
-//! Frame phases (names match darkdemo-lib):
+//! Frame phases (names match game-lib):
 //! `physics.prepare` → `physics.sim.step` → `physics.writeback`.
 
 use super::abi::{Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle};
@@ -17,6 +17,17 @@ pub struct CapsuleCastHit {
     pub point: [f32; 3],
     /// Already overlapping at the start pose.
     pub start_solid: bool,
+    /// ECS entity owning the hit collider (0 if unknown).
+    pub entity: u64,
+}
+
+/// Result of [`PhysicsBackend::cast_ray`] (world-space segment).
+#[derive(Clone, Copy, Debug)]
+pub struct RayCastHit {
+    pub fraction: f32,
+    pub normal: [f32; 3],
+    pub point: [f32; 3],
+    pub entity: u64,
 }
 
 /// Pluggable physics. Single-threaded (server sim thread).
@@ -60,6 +71,18 @@ pub trait PhysicsBackend: Send {
         exclude_entity: u64,
     ) -> Option<CapsuleCastHit> {
         let _ = (center, half_height, radius, dir, max_dist, exclude_entity);
+        None
+    }
+
+    /// Ray vs colliders along segment `origin` → `origin + dir * max_dist` (`dir` unit).
+    fn cast_ray(
+        &mut self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_dist: f32,
+        exclude_entity: u64,
+    ) -> Option<RayCastHit> {
+        let _ = (origin, dir, max_dist, exclude_entity);
         None
     }
 
@@ -123,13 +146,7 @@ impl PhysicsBackend for NullPhysics {
 
     fn remove_body(&mut self, _entity: u64) {}
 
-    fn set_body_transform(
-        &mut self,
-        _entity: u64,
-        _position: [f32; 3],
-        _rotation_xyzw: [f32; 4],
-    ) {
-    }
+    fn set_body_transform(&mut self, _entity: u64, _position: [f32; 3], _rotation_xyzw: [f32; 4]) {}
 
     fn prepare(&mut self, _world: &crate::world::World, _dt: f32) {}
 

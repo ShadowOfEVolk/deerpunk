@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::path::Path;
 
 use crate::cvar::CvarSystem;
@@ -15,6 +16,25 @@ pub struct CommandExecutionContext<'a> {
 }
 
 type CommandCallback = Box<dyn Fn(CommandExecutionContext) + Send + Sync>;
+
+/// Gamelib console callback (`v1:cmd:register`).
+pub type CmdCallback =
+    extern "C" fn(i32, *const *const u8, *const usize, *mut c_void);
+
+struct DllCmd {
+    callback: CmdCallback,
+    user: *mut c_void,
+}
+
+unsafe impl Send for DllCmd {}
+unsafe impl Sync for DllCmd {}
+
+fn invoke_dll_cmd(dll: &DllCmd, args: &[&str]) {
+    let argc = args.len() as i32;
+    let ptrs: Vec<*const u8> = args.iter().map(|s| s.as_ptr()).collect();
+    let lens: Vec<usize> = args.iter().map(|s| s.len()).collect();
+    (dll.callback)(argc, ptrs.as_ptr(), lens.as_ptr(), dll.user);
+}
 
 pub struct CmdBuffer {
     commands: [Option<String>; CMD_MAX_BUFFER],
@@ -291,6 +311,27 @@ impl CmdSystem {
         buffer.commands[write_pos] = Some(command);
         buffer.write_pos = (buffer.write_pos + 1) % CMD_MAX_BUFFER;
         buffer.count += 1;
+    }
+
+    #[methoddb::bind(name = "register")]
+    pub fn api_register(
+        &mut self,
+        name: &str,
+        callback: CmdCallback,
+        user: *mut c_void,
+    ) -> i32 {
+        let name = name.trim();
+        if name.is_empty() {
+            log::error!("[cmd] register: empty name");
+            return -1;
+        }
+        let dll = DllCmd { callback, user };
+        let name_owned = name.to_string();
+        self.register_command(&name_owned, move |ctx: CommandExecutionContext<'_>| {
+            invoke_dll_cmd(&dll, &ctx.args);
+        });
+        log::info!("[cmd] registered gamelib command '{name_owned}'");
+        0
     }
 
     #[methoddb::bind(name = "execute")]

@@ -1,6 +1,6 @@
 //! FMOD Studio backend for the deerpunk [`AudioBackend`] trait.
 //!
-//! Ported (simplified) from darkdemo-lib `client-audio`: Studio events over
+//! Ported (simplified) from game-lib `client-audio`: Studio events over
 //! banks in `{gamedir}/sound`, HL-units → meters 3D mapping, entity-attached
 //! looping instances, Steam Audio (phonon) spatialization + occlusion +
 //! parametric reflections/pathing via the phonon_fmod plugin.
@@ -14,12 +14,17 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use deerpunk_engine_client::audio::{AttachedSounds, AudioBackend, AudioListener, FmodEventInfo};
-use libfmod::{Attributes3d, ChannelGroup, Dsp, EventInstance, Init, LoadBank, Studio, StudioInit, Vector};
+use libfmod::{
+    Attributes3d, ChannelGroup, Dsp, EventInstance, Init, LoadBank, Studio, StudioInit, Vector,
+};
 
 use steam_audio::SteamAudio;
-use steam_audio_bridge::{FmodSteamBridge, IPL_SPATIALIZE_APPLY_REFLECTIONS, IPL_SPATIALIZE_APPLY_PATHING, IPL_SPATIALIZE_SIMULATION_DEFINED, IPL_SPATIALIZE_SIMULATION_OUTPUTS_HANDLE};
+use steam_audio_bridge::{
+    FmodSteamBridge, IPL_SPATIALIZE_APPLY_PATHING, IPL_SPATIALIZE_APPLY_REFLECTIONS,
+    IPL_SPATIALIZE_SIMULATION_DEFINED, IPL_SPATIALIZE_SIMULATION_OUTPUTS_HANDLE,
+};
 
-/// HL world units → FMOD meters (same basis as darkdemo-lib).
+/// HL world units → FMOD meters (same basis as game-lib).
 const METERS_IN_UNIT: f32 = 1.0 / 40.0;
 const OUTPUT_RATE: i32 = 44100;
 const DSP_BLOCK: u32 = 512;
@@ -95,7 +100,7 @@ impl Default for FmodBackend {
 }
 
 impl FmodBackend {
-    /// HL world position → FMOD (HL is Z-up, FMOD is Y-up; same axis swap as darkdemo-lib).
+    /// HL world position → FMOD (HL is Z-up, FMOD is Y-up; same axis swap as game-lib).
     fn hl_pos(origin: [f32; 3]) -> Vector {
         Vector::new(
             origin[0] * METERS_IN_UNIT,
@@ -114,11 +119,7 @@ impl FmodBackend {
             velocity: Vector::new(0.0, 0.0, 0.0),
             forward: Self::hl_dir(listener.forward),
             // HL left-handed: forward×up = −right; FMOD derives right from forward×up.
-            up: Self::hl_dir([
-                -listener.up[0],
-                -listener.up[1],
-                -listener.up[2],
-            ]),
+            up: Self::hl_dir([-listener.up[0], -listener.up[1], -listener.up[2]]),
         }
     }
 
@@ -196,11 +197,20 @@ impl FmodBackend {
 
     /// True when the spatializer consumes simulation outputs (occlusion etc.).
     fn spatializer_needs_phonon_bind(dsp: &Dsp) -> bool {
-        Self::dsp_uses_sim_defined_int(dsp, steam_audio_bridge::IPL_SPATIALIZE_APPLY_DISTANCEATTENUATION)
-            || Self::dsp_uses_sim_defined_int(dsp, steam_audio_bridge::IPL_SPATIALIZE_APPLY_AIRABSORPTION)
-            || Self::dsp_uses_sim_defined_int(dsp, steam_audio_bridge::IPL_SPATIALIZE_APPLY_DIRECTIVITY)
-            || Self::dsp_uses_sim_defined_int(dsp, steam_audio_bridge::IPL_SPATIALIZE_APPLY_OCCLUSION)
-            || Self::dsp_uses_sim_defined_int(dsp, steam_audio_bridge::IPL_SPATIALIZE_APPLY_TRANSMISSION)
+        Self::dsp_uses_sim_defined_int(
+            dsp,
+            steam_audio_bridge::IPL_SPATIALIZE_APPLY_DISTANCEATTENUATION,
+        ) || Self::dsp_uses_sim_defined_int(
+            dsp,
+            steam_audio_bridge::IPL_SPATIALIZE_APPLY_AIRABSORPTION,
+        ) || Self::dsp_uses_sim_defined_int(
+            dsp,
+            steam_audio_bridge::IPL_SPATIALIZE_APPLY_DIRECTIVITY,
+        ) || Self::dsp_uses_sim_defined_int(dsp, steam_audio_bridge::IPL_SPATIALIZE_APPLY_OCCLUSION)
+            || Self::dsp_uses_sim_defined_int(
+                dsp,
+                steam_audio_bridge::IPL_SPATIALIZE_APPLY_TRANSMISSION,
+            )
             || Self::dsp_uses_sim_defined_bool(dsp, IPL_SPATIALIZE_APPLY_REFLECTIONS)
             || Self::dsp_uses_sim_defined_bool(dsp, IPL_SPATIALIZE_APPLY_PATHING)
     }
@@ -245,7 +255,8 @@ impl FmodBackend {
             for i in 0..num {
                 if let Ok(dsp) = group.get_dsp(i) {
                     if Self::is_steam_spatializer(&dsp) {
-                        let refl = dsp.set_parameter_bool(IPL_SPATIALIZE_APPLY_REFLECTIONS, enabled);
+                        let refl =
+                            dsp.set_parameter_bool(IPL_SPATIALIZE_APPLY_REFLECTIONS, enabled);
                         let path = dsp.set_parameter_bool(IPL_SPATIALIZE_APPLY_PATHING, enabled);
                         applied |= refl.is_ok() || path.is_ok();
                     }
@@ -288,7 +299,9 @@ impl FmodBackend {
         if self.steam_sim_edicts.borrow_mut().remove(&key) {
             if let Some(steam) = self.steam.as_ref() {
                 let mut registry = steam.registry.borrow_mut();
-                steam.simulation_manager.pop_entity(&mut registry, key as i32);
+                steam
+                    .simulation_manager
+                    .pop_entity(&mut registry, key as i32);
             }
         }
         self.entity_steam_wired.borrow_mut().remove(&key);
@@ -320,7 +333,12 @@ impl FmodBackend {
 
     /// Drop phonon source binds without stopping FMOD instances (scene swap).
     fn detach_all_steam_wires(&self) {
-        let handles: Vec<i32> = self.entity_sa_handles.borrow_mut().drain().map(|(_, h)| h).collect();
+        let handles: Vec<i32> = self
+            .entity_sa_handles
+            .borrow_mut()
+            .drain()
+            .map(|(_, h)| h)
+            .collect();
         if let Some(bridge) = self.steam_bridge.as_ref() {
             for h in handles {
                 bridge.remove_source(h);
@@ -330,7 +348,9 @@ impl FmodBackend {
             let edicts: Vec<u64> = self.steam_sim_edicts.borrow_mut().drain().collect();
             let mut registry = steam.registry.borrow_mut();
             for key in edicts {
-                steam.simulation_manager.pop_entity(&mut registry, key as i32);
+                steam
+                    .simulation_manager
+                    .pop_entity(&mut registry, key as i32);
             }
         }
         self.entity_steam_wired.borrow_mut().clear();
@@ -486,7 +506,9 @@ impl AudioBackend for FmodBackend {
         }
 
         // Direct output — deerpunk owns no legacy mixer (unlike xash DMA path).
-        if let Err(err) = system.set_software_format(Some(OUTPUT_RATE), Some(libfmod::SpeakerMode::Stereo), None) {
+        if let Err(err) =
+            system.set_software_format(Some(OUTPUT_RATE), Some(libfmod::SpeakerMode::Stereo), None)
+        {
             log::warn!("[fmod] set_software_format failed: {err}");
             let _ = studio.release();
             return false;
@@ -522,7 +544,11 @@ impl AudioBackend for FmodBackend {
             let _ = studio.update();
         }
 
-        log::info!("[fmod] runtime ready (output: system default, banks: {}/{})", gamedir.display(), BANKS_SUBDIR);
+        log::info!(
+            "[fmod] runtime ready (output: system default, banks: {}/{})",
+            gamedir.display(),
+            BANKS_SUBDIR
+        );
 
         self.studio = Some(studio);
         self.entities = RefCell::new(HashMap::new());
@@ -568,11 +594,7 @@ impl AudioBackend for FmodBackend {
         }
     }
 
-    fn set_world_scene(
-        &mut self,
-        mesh: &deerpunk_engine_common::resource::mesh::Mesh,
-        debug: &deerpunk_engine_common::bsp_debug::BspWorldDebug,
-    ) {
+    fn set_world_scene(&mut self, mesh: &deerpunk_engine_common::resource::mesh::Mesh) {
         // TEMP: BSP Simulator::SetScene heap-corrupts (0xC0000374) with phonon_fmod.
         // Skip scene/occlusion/reflections; HRTF spatialize still works via bridge.
         const ENABLE_STEAM_SCENE_SIM: bool = false;
@@ -580,8 +602,7 @@ impl AudioBackend for FmodBackend {
             let tris = mesh.indices.len() / 3;
             let verts = mesh.positions.len();
             log::info!(
-                "[fmod] set_world_scene SKIPPED (sim off; HRTF only) verts={verts} tris={tris} faces={}",
-                debug.faces.len()
+                "[fmod] set_world_scene SKIPPED (sim off; HRTF only) verts={verts} tris={tris}",
             );
             return;
         }
@@ -605,10 +626,7 @@ impl AudioBackend for FmodBackend {
             }
         }
 
-        let core = self
-            .studio
-            .as_ref()
-            .and_then(|s| s.get_core_system().ok());
+        let core = self.studio.as_ref().and_then(|s| s.get_core_system().ok());
         if let Some(sys) = core.as_ref() {
             if let Err(err) = sys.mixer_suspend() {
                 log::warn!("[fmod] mixer_suspend before set_scene: {err}");
@@ -627,7 +645,7 @@ impl AudioBackend for FmodBackend {
         }
 
         let context = &steam.context;
-        let result = scene::build_scene_from_mesh(context, mesh, debug);
+        let result = scene::build_scene_from_mesh(context, mesh);
         let build_ok = match result {
             Ok(world_scene) => {
                 let scene::WorldScene {
@@ -635,22 +653,17 @@ impl AudioBackend for FmodBackend {
                     static_meshes,
                     aabb: _,
                 } = world_scene;
-                steam
-                    .simulation_manager
-                    .set_scene(scene, static_meshes);
+                steam.simulation_manager.set_scene(scene, static_meshes);
                 log::info!(
-                    "[fmod] steam scene installed (has_scene={}, verts={}, tris={}, faces={}, mode=DIRECT-only)",
+                    "[fmod] steam scene installed (has_scene={}, verts={}, tris={}, mode=DIRECT-only)",
                     steam.simulation_manager.has_scene(),
                     verts,
                     tris,
-                    debug.faces.len()
                 );
                 true
             }
             Err(err) => {
-                log::warn!(
-                    "[fmod] steam scene build failed: {err} (verts={verts}, tris={tris})"
-                );
+                log::warn!("[fmod] steam scene build failed: {err} (verts={verts}, tris={tris})");
                 false
             }
         };
@@ -790,9 +803,7 @@ impl AudioBackend for FmodBackend {
         if steam_wiring {
             self.pending_steam_wires.borrow_mut().push(key);
         }
-        log::info!(
-            "[fmod] start_attached key={key:#x} '{path}' wait_scene={wait_scene}"
-        );
+        log::info!("[fmod] start_attached key={key:#x} '{path}' wait_scene={wait_scene}");
     }
 
     fn stop_attached(&mut self, key: u64) {
@@ -979,7 +990,9 @@ fn module_file_name(name: &str) -> Option<PathBuf> {
     if n == 0 {
         return None;
     }
-    Some(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize])))
+    Some(PathBuf::from(std::ffi::OsString::from_wide(
+        &buf[..n as usize],
+    )))
 }
 
 /// Load `path` only if `module_name` is not already mapped. `Ok(true)` = newly
@@ -1037,7 +1050,9 @@ fn load_banks(studio: &Studio, gamedir: &Path) {
     banks.sort();
 
     for path in strings_banks.iter().chain(banks.iter()) {
-        let Some(path_str) = path.to_str() else { continue };
+        let Some(path_str) = path.to_str() else {
+            continue;
+        };
         match studio.load_bank_file(path_str, LoadBank::NORMAL) {
             Ok(_) => log::info!("[fmod] loaded bank: {path_str}"),
             Err(err) => log::warn!("[fmod] load bank {path_str} failed: {err}"),

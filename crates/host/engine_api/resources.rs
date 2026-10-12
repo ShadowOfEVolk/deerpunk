@@ -1,10 +1,8 @@
-//! `v1:resources:*` — gamelib registers opaque loaders on the host [`ResourceManager`].
+//! `v1:resources:*` — see [`crate::engine_methoddb`].
 
 use deerpunk_engine_api::resources::ResourceLoaderDesc;
 
-use crate::engine_api::engine_api::EngineApiMethod;
-
-use super::callback_loader::{CallbackLoader, DropFn, LoadFn};
+use super::callback_loader::CallbackLoader;
 
 pub(crate) fn read_str(ptr: *const u8, len: usize) -> String {
     if ptr.is_null() || len == 0 {
@@ -24,12 +22,7 @@ fn parse_extensions(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// `v1:resources:register`
-pub extern "C" fn tramp_resources_register(engine: *mut u8, desc: *const ResourceLoaderDesc) -> i32 {
-    if desc.is_null() {
-        return -1;
-    }
-    let desc = unsafe { &*desc };
+pub(crate) fn register_loader_desc(host: &mut crate::Host, desc: &ResourceLoaderDesc) -> i32 {
     if desc.load as usize == 0 || desc.drop_fn as usize == 0 {
         return -1;
     }
@@ -44,7 +37,6 @@ pub extern "C" fn tramp_resources_register(engine: *mut u8, desc: *const Resourc
         return -1;
     }
 
-    let host = unsafe { &mut *(engine as *mut crate::Host) };
     let loader = CallbackLoader::new(
         id.clone(),
         extensions,
@@ -56,12 +48,4 @@ pub extern "C" fn tramp_resources_register(engine: *mut u8, desc: *const Resourc
     host.resources.register_loader(Box::new(loader));
     log::info!("[resources] registered loader '{id}'");
     0
-}
-
-inventory::submit! {
-    EngineApiMethod {
-        name: "v1:resources:register",
-        callback: tramp_resources_register as *const (),
-        flags: 0,
-    }
 }

@@ -1,6 +1,6 @@
 //! FMOD Studio ↔ Steam Audio bridge: shared context, reverb source, per-entity sources.
 //! Loads `iplFMOD*` entry points from phonon_fmod.dll at runtime.
-//! Ported from darkdemo-lib client-audio/fmod_steam_audio.rs.
+//! Ported from game-lib client-audio/fmod_steam_audio.rs.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -54,10 +54,10 @@ impl SteamFmodApi {
             let init = *lib.get::<FnInit>(b"iplFMODInitialize\0").ok()?;
             let terminate = *lib.get::<FnTerminate>(b"iplFMODTerminate\0").ok()?;
             let set_hrtf = *lib.get::<FnSetHrtf>(b"iplFMODSetHRTF\0").ok()?;
-            let set_simulation_settings =
-                *lib.get::<FnSetSim>(b"iplFMODSetSimulationSettings\0").ok()?;
-            let set_reverb_source =
-                *lib.get::<FnSetReverb>(b"iplFMODSetReverbSource\0").ok()?;
+            let set_simulation_settings = *lib
+                .get::<FnSetSim>(b"iplFMODSetSimulationSettings\0")
+                .ok()?;
+            let set_reverb_source = *lib.get::<FnSetReverb>(b"iplFMODSetReverbSource\0").ok()?;
             let add_source = *lib.get::<FnAddSource>(b"iplFMODAddSource\0").ok()?;
             let remove_source = *lib.get::<FnRemoveSource>(b"iplFMODRemoveSource\0").ok()?;
             Some(Self {
@@ -94,7 +94,10 @@ impl FmodSteamBridge {
         if !plugin_already_loaded {
             match system.load_plugin(&plugin_path.to_string_lossy(), None) {
                 Ok(_) => {
-                    info!("[fmod] FMOD loaded Steam Audio plugin: {}", plugin_path.display());
+                    info!(
+                        "[fmod] FMOD loaded Steam Audio plugin: {}",
+                        plugin_path.display()
+                    );
                     bridge.plugin_loaded.store(true, Ordering::Relaxed);
                 }
                 Err(err) => {
@@ -106,7 +109,10 @@ impl FmodSteamBridge {
 
         match SteamFmodApi::load(&plugin_path) {
             Some(api) => {
-                info!("[fmod] Steam Audio API resolved from {}", plugin_path.display());
+                info!(
+                    "[fmod] Steam Audio API resolved from {}",
+                    plugin_path.display()
+                );
                 bridge.api = Some(api);
             }
             None => warn!("[fmod] phonon_fmod.dll loaded but iplFMOD* symbols missing"),

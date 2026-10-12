@@ -20,13 +20,16 @@ impl Loader for WadLoader {
     }
 
     fn load(&self, path: &str, _query: &str) -> Result<LoadedAsset, String> {
-        // path: "darkdemo.wad/concrete" or bare file.wad (whole archive — not yet)
+        // path: "game.wad/concrete" or bare file.wad (whole archive — not yet)
         let (wad_file, tex) = match path.split_once('/') {
             Some((w, t)) => (Some(w), t),
             None => {
-                // file://darkdemo.wad → load archive listing not supported; need /tex
+                // file://game.wad → load archive listing not supported; need /tex
                 if path.ends_with(".wad") {
-                    return Err("wad file load needs texture: file.wad/texname or wad://file.wad/texname".into());
+                    return Err(
+                        "wad file load needs texture: file.wad/texname or wad://file.wad/texname"
+                            .into(),
+                    );
                 }
                 (None, path)
             }

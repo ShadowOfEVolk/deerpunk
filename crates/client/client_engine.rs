@@ -43,8 +43,10 @@ pub struct ClientEngine {
     /// Server `sound_id` → loop instance (FMOD key = sound_id).
     server_sound_loops: HashMap<u32, ServerLoopSound>,
     audio_query: Option<QueryId>,
-    /// Entity whose BSP mesh was installed as the audio simulation scene.
+    /// Entity whose mesh was passed to the gamelib audio scene hook.
     audio_scene_entity: Option<u64>,
+    /// Optional `client_audio_world_scene` from the client gamelib DLL.
+    audio_world_scene_hook: Option<unsafe extern "C" fn(u64)>,
     /// Master volume (from `s_volume`), applied in the per-frame update.
     audio_volume: f32,
     /// Accumulated client time (seconds) for postfx / animated shaders.
@@ -78,6 +80,7 @@ impl ClientEngine {
             server_sound_loops: HashMap::new(),
             audio_query: None,
             audio_scene_entity: None,
+            audio_world_scene_hook: None,
             audio_volume: 1.0,
             time: 0.0,
             pending_debug_draw: DebugDraw::new(),
@@ -289,42 +292,69 @@ impl ClientEngine {
         backend.update(&listener, &attached, self.audio_volume);
     }
 
-    /// Installs the world BSP mesh as the audio simulation scene (once per map).
+    /// Notifies gamelib when a world mesh entity appears (gamelib installs audio via API).
     fn audio_scene_tick(&mut self) {
-        let Some(backend) = self.audio.as_mut() else {
+        let hook = self.audio_world_scene_hook;
+        if hook.is_none() {
             return;
-        };
-        let dbg_id = self.world.component_init::<deerpunk_engine_common::bsp_debug::BspWorldDebug>();
+        }
         let mesh_id = self.world.component_init::<deerpunk_engine_common::components::mesh3d::Mesh3D>();
-        let q = self.world.query_prepare_ids(&[dbg_id, mesh_id]);
+        let ws_id = self.world.component_init::<deerpunk_engine_common::components::Worldspawn>();
+        let q = self.world.query_prepare_ids(&[ws_id, mesh_id]);
         let mut installed = self.audio_scene_entity;
         let mut found = false;
         if let Some(batches) = self.world.query_batches(q) {
             for batch in batches {
                 let ents = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 let meshes = unsafe {
-                    std::slice::from_raw_parts(batch.columns[1] as *const deerpunk_engine_common::components::mesh3d::Mesh3D, batch.count)
+                    std::slice::from_raw_parts(
+                        batch.columns[1] as *const deerpunk_engine_common::components::mesh3d::Mesh3D,
+                        batch.count,
+                    )
                 };
                 for (i, e) in ents.iter().enumerate() {
-                    found = true;
-                    if let Some(mesh) = &meshes[i].mesh {
-                        if self.audio_scene_entity != Some(*e) {
-                            // Clone the debug meta once — it may be large.
-                            let debug = unsafe {
-                                (*(batch.columns[0] as *const deerpunk_engine_common::bsp_debug::BspWorldDebug)).clone()
-                            };
-                            log::info!("[client] audio: world scene install (entity {e:#x})");
-                            backend.set_world_scene(mesh, &debug);
-                        }
-                        installed = Some(*e);
-                        break;
+                    if meshes[i].mesh.is_none() {
+                        continue;
                     }
+                    found = true;
+                    if self.audio_scene_entity != Some(*e) {
+                        log::info!("[client] audio: world scene hook (entity {e:#x})");
+                        unsafe {
+                            hook.unwrap()(*e);
+                        }
+                        self.audio_scene_entity = Some(*e);
+                    }
+                    installed = Some(*e);
+                    break;
                 }
             }
         }
         self.world.query_release(q);
-        // World cleared / map changed — allow reinstall.
         self.audio_scene_entity = if found { installed } else { None };
+    }
+
+    pub fn set_audio_world_scene_hook(&mut self, hook: Option<unsafe extern "C" fn(u64)>) {
+        self.audio_world_scene_hook = hook;
+        self.audio_scene_entity = None;
+    }
+
+    /// Gamelib `v1:audio:set_world_mesh` — mesh from client world entity.
+    pub fn install_audio_world_mesh(&mut self, entity: u64) -> bool {
+        let mesh_id = self.world.component_init::<deerpunk_engine_common::components::Mesh3D>();
+        let ptr = self.world.get_raw(entity, mesh_id);
+        if ptr.is_null() {
+            return false;
+        }
+        let mesh3d =
+            unsafe { &*(ptr as *const deerpunk_engine_common::components::mesh3d::Mesh3D) };
+        let Some(mesh) = mesh3d.mesh.as_ref() else {
+            return false;
+        };
+        let Some(backend) = self.audio.as_mut() else {
+            return false;
+        };
+        backend.set_world_scene(mesh);
+        true
     }
 
     /// Init RmlUi from `{ui_root}` (usually `{gamedir}/ui`). Widgets via [`UiController`].

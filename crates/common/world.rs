@@ -1,7 +1,16 @@
-use std::ffi::{CStr, CString};
+use std::collections::HashMap;
+use std::ffi::{c_void, CStr, CString};
+use std::path::Path;
+use std::sync::Mutex;
 
 use flecs_ecs_sys::{self as sys};
+use serde_json::Value;
 
+use crate::component_inspect::{
+    schema_cbor, ComponentInspectDumpFn, ComponentInspectRegistry, NativeInspectDumpFn,
+};
+use crate::prefab::value_to_cbor;
+use crate::resource::ResourceManager;
 use crate::util::short_type_name;
 
 pub static SEPARATOR: &CStr = c".";
@@ -10,10 +19,51 @@ pub type SystemId = u64;
 pub type ComponentId = u64;
 pub type QueryId = usize;
 
+/// Gamelib prefab apply: CBOR blob is the component JSON object from `.prefab`.
+pub type PrefabComponentApplyFn = extern "C" fn(
+    user: *mut c_void,
+    entity: EntityId,
+    component_id: ComponentId,
+    cbor_ptr: *const u8,
+    cbor_len: usize,
+) -> i32;
+
 pub struct ComponentDescriptor {
     pub name: String,
     pub size: usize,
     pub align: usize,
+    pub prefab_apply_user: *mut c_void,
+    pub prefab_apply: Option<PrefabComponentApplyFn>,
+    /// JSON Schema bytes (CBOR-encoded JSON).
+    pub inspect_schema_cbor: Vec<u8>,
+    pub inspect_dump_user: *mut c_void,
+    pub inspect_dump_native: Option<NativeInspectDumpFn>,
+    pub inspect_dump_ffi: Option<ComponentInspectDumpFn>,
+}
+
+/// Host/engine prefab apply (JSON `Value` from prefab file).
+pub type NativePrefabApplyFn = fn(
+    &World,
+    &Path,
+    &mut ResourceManager,
+    EntityId,
+    ComponentId,
+    &Value,
+) -> Result<(), String>;
+
+#[derive(Clone, Copy)]
+enum PrefabApplierKind {
+    Native(NativePrefabApplyFn),
+    Ffi {
+        user: *mut c_void,
+        apply: PrefabComponentApplyFn,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct PrefabApplier {
+    component_id: ComponentId,
+    kind: PrefabApplierKind,
 }
 
 pub struct SystemDescriptor {
@@ -26,6 +76,8 @@ pub struct SystemDescriptor {
 pub struct World {
     inner: *mut sys::ecs_world_t,
     queries: Vec<*mut sys::ecs_query_t>,
+    prefab_appliers: Mutex<HashMap<String, PrefabApplier>>,
+    inspect: ComponentInspectRegistry,
 }
 
 unsafe impl Send for World {}
@@ -38,7 +90,38 @@ impl World {
         Self {
             inner,
             queries: Vec::new(),
+            prefab_appliers: Mutex::new(HashMap::new()),
+            inspect: ComponentInspectRegistry::new(),
         }
+    }
+
+    pub fn inspect_registry(&self) -> &ComponentInspectRegistry {
+        &self.inspect
+    }
+
+    /// Inspector field dump: `(schema, data)` JSON values.
+    pub fn inspect_component_fields(
+        &self,
+        entity: EntityId,
+        component_slug: &str,
+    ) -> Option<(Value, Value)> {
+        self.inspect.dump(self, entity, component_slug)
+    }
+
+    pub fn register_native_inspect(
+        &self,
+        name: &str,
+        component_id: ComponentId,
+        schema: Value,
+        dump: NativeInspectDumpFn,
+    ) -> Result<(), String> {
+        let cbor = if schema.is_null() {
+            Vec::new()
+        } else {
+            schema_cbor(&schema)?
+        };
+        self.inspect
+            .register_native(name, component_id, &cbor, dump)
     }
 
     pub fn as_ptr(&self) -> *mut sys::ecs_world_t {
@@ -52,7 +135,67 @@ impl World {
             name: short_type_name::<T>().to_string(),
             size: std::mem::size_of::<T>(),
             align: std::mem::align_of::<T>(),
+            prefab_apply_user: std::ptr::null_mut(),
+            prefab_apply: None,
+            inspect_schema_cbor: Vec::new(),
+            inspect_dump_user: std::ptr::null_mut(),
+            inspect_dump_native: None,
+            inspect_dump_ffi: None,
         })
+    }
+
+    /// Apply a registered gamelib prefab applier. Returns `Ok(true)` if handled.
+    pub fn try_prefab_apply_registered(
+        &self,
+        gamedir: &Path,
+        resources: &mut ResourceManager,
+        entity: EntityId,
+        name: &str,
+        value: &Value,
+    ) -> Result<bool, String> {
+        let applier = {
+            let map = self
+                .prefab_appliers
+                .lock()
+                .map_err(|_| "prefab applier lock poisoned".to_string())?;
+            map.get(name).cloned()
+        };
+        let Some(applier) = applier else {
+            return Ok(false);
+        };
+        match applier.kind {
+            PrefabApplierKind::Native(apply) => {
+                apply(self, gamedir, resources, entity, applier.component_id, value)?;
+            }
+            PrefabApplierKind::Ffi { user, apply } => {
+                let cbor = value_to_cbor(value)?;
+                let code = apply(user, entity, applier.component_id, cbor.as_ptr(), cbor.len());
+                if code != 0 {
+                    return Err(format!("prefab apply '{name}' failed (code={code})"));
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Register prefab JSON key → native applier (engine / host).
+    pub fn attach_native_prefab_applier(
+        &self,
+        prefab_key: &str,
+        component_id: ComponentId,
+        apply: NativePrefabApplyFn,
+    ) {
+        let mut map = self
+            .prefab_appliers
+            .lock()
+            .expect("prefab applier lock poisoned");
+        map.insert(
+            prefab_key.to_string(),
+            PrefabApplier {
+                component_id,
+                kind: PrefabApplierKind::Native(apply),
+            },
+        );
     }
 
     pub fn component_init_raw(&self, desc: &ComponentDescriptor) -> ComponentId {
@@ -65,7 +208,7 @@ impl World {
 
         let c_name = CString::new(desc.name.as_str()).expect("component name contains null byte");
         let sep = c".";
-        unsafe {
+        let id = unsafe {
             let entity_desc = sys::ecs_entity_desc_t {
                 _canary: 0,
                 id: 0,
@@ -93,7 +236,49 @@ impl World {
                 },
             )
             .into()
+        };
+        if let Some(apply) = desc.prefab_apply {
+            if apply as usize != 0 {
+                let mut map = self
+                    .prefab_appliers
+                    .lock()
+                    .expect("prefab applier lock poisoned");
+                map.insert(
+                    desc.name.clone(),
+                    PrefabApplier {
+                        component_id: id,
+                        kind: PrefabApplierKind::Ffi {
+                            user: desc.prefab_apply_user,
+                            apply,
+                        },
+                    },
+                );
+            }
         }
+        if !desc.inspect_schema_cbor.is_empty()
+            || desc.inspect_dump_native.is_some()
+            || desc.inspect_dump_ffi.is_some_and(|f| f as usize != 0)
+        {
+            if let Some(dump) = desc.inspect_dump_native {
+                let _ = self.inspect.register_native(
+                    &desc.name,
+                    id,
+                    &desc.inspect_schema_cbor,
+                    dump,
+                );
+            } else if let Some(dump) = desc.inspect_dump_ffi {
+                if dump as usize != 0 {
+                    let _ = self.inspect.register_ffi(
+                        &desc.name,
+                        id,
+                        &desc.inspect_schema_cbor,
+                        desc.inspect_dump_user,
+                        dump,
+                    );
+                }
+            }
+        }
+        id
     }
 
     // ── Entity CRUD ────────────────────────────────────────────
@@ -370,7 +555,6 @@ fn is_game_component_token(token: &str) -> bool {
             | "PendingLightmap"
             | "LightmapId"
             | "LightstyleTable"
-            | "BspWorldDebug"
             | "MeshRenderer"
             | "NetReplicatedComponent"
             | "NetworkEntity"
@@ -415,7 +599,9 @@ impl World {
 
                 let components: Vec<String> = raw_parts
                     .iter()
-                    .filter(|p| is_game_component_token(p))
+                    .filter(|p| {
+                        is_game_component_token(p) || self.inspect.contains(p)
+                    })
                     .cloned()
                     .collect();
                 if components.is_empty() {
