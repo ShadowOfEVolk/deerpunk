@@ -401,6 +401,13 @@ pub struct Host {
     #[cfg(any(feature = "client", feature = "full"))]
     demo_player: Option<demo::DemoPlayer>,
     pub inspector: inspector::Inspector,
+    /// Last albedo atlas slot uploaded from the client world's
+    /// `PendingAlbedoAtlas` (set by `sync_client_world` / demo / net flushes).
+    /// Exposed to gamelib via `flush_pending_albedos` FFI so it can patch the
+    /// `DrawMaterial`'s `_BaseMap` — the internal flushes consume the pending
+    /// component and would otherwise lose the slot.
+    #[cfg(any(feature = "client", feature = "full"))]
+    last_atlas_slot: u32,
 }
 
 impl Host {
@@ -452,6 +459,8 @@ impl Host {
             #[cfg(any(feature = "client", feature = "full"))]
             demo_player: None,
             inspector: inspector::Inspector::new(),
+            #[cfg(any(feature = "client", feature = "full"))]
+            last_atlas_slot: 0,
         }
     }
 
@@ -1075,24 +1084,40 @@ impl Host {
     }
 
     /// Upload pending albedo atlases on the server world (legacy path / dedicated tools).
+    /// Returns the albedo atlas slot (0 if none).
+    ///
+    /// The client world's `PendingAlbedoAtlas` is flushed internally by
+    /// `sync_client_world` / demo / net paths — those uploads happen on the
+    /// host tick and the slot is stored in `last_atlas_slot`. This method
+    /// returns that stored slot so the gamelib can patch a `DrawMaterial`'s
+    /// `_BaseMap`. Also flushes the server world (legacy / dedicated tools).
     #[cfg(any(feature = "client", feature = "full"))]
-    fn flush_pending_albedos(&mut self) {
+    fn flush_pending_albedos(&mut self) -> u32 {
+        // Flush server world too (legacy / dedicated tools path). For listen
+        // servers this is usually a no-op (PendingAlbedoAtlas is on the client
+        // world), but keep it for completeness.
         let world = &self.server_engine.world as *const deerpunk_engine_common::world::World;
         // SAFETY: server world is owned by self; client_engine borrow is separate.
-        unsafe {
-            self.flush_pending_albedos_world(&*world);
+        let server_slot = unsafe { self.flush_pending_albedos_world(&*world) };
+        if server_slot != 0 {
+            self.last_atlas_slot = server_slot;
         }
+        self.last_atlas_slot
     }
 
     /// Upload [`PendingAlbedoAtlas`] / [`PendingLightmap`] from `world` into the client renderer.
+    ///
+    /// Returns the albedo atlas texture slot (0 if none uploaded this call).
+    /// The slot is valid in the renderer's shared texture array — use it to
+    /// build a `DrawMaterial` that references the atlas as `_BaseMap`.
     #[cfg(any(feature = "client", feature = "full"))]
-    pub fn flush_pending_albedos_world(&mut self, world: &deerpunk_engine_common::world::World) {
+    pub fn flush_pending_albedos_world(&mut self, world: &deerpunk_engine_common::world::World) -> u32 {
         use deerpunk_engine_common::components::{
             LightmapId, Material, PendingAlbedoAtlas, PendingLightmap,
         };
 
         let Some(client) = self.client_engine.as_mut() else {
-            return;
+            return 0;
         };
         let pending_id = world.component_init::<PendingAlbedoAtlas>();
         let pending_lm_id = world.component_init::<PendingLightmap>();
@@ -1109,6 +1134,8 @@ impl Host {
             })
             .map(|e| e.id)
             .collect();
+
+        let mut last_atlas_slot = 0u32;
 
         for ent in ents {
             let mut uploaded_atlas = false;
@@ -1128,6 +1155,7 @@ impl Host {
                         img.height,
                         tex.0
                     );
+                    last_atlas_slot = tex.0;
                     let mat_ptr = world.get_raw(ent, mat_id) as *mut Material;
                     if !mat_ptr.is_null() {
                         unsafe {
@@ -1177,10 +1205,12 @@ impl Host {
                 world.set(ent, lm_id_comp, LightmapId::new(0));
             }
         }
+
+        last_atlas_slot
     }
 
     #[cfg(not(any(feature = "client", feature = "full")))]
-    fn flush_pending_albedos(&mut self) {}
+    fn flush_pending_albedos(&mut self) -> u32 { 0 }
 
     #[cfg(any(feature = "client", feature = "full"))]
     fn drain_ui_commands(&mut self) {
@@ -1875,8 +1905,9 @@ impl Host {
         }
         if let Some(client) = self.client_engine.as_ref() {
             let world = &client.world as *const deerpunk_engine_common::world::World;
-            unsafe {
-                self.flush_pending_albedos_world(&*world);
+            let s = unsafe { self.flush_pending_albedos_world(&*world) };
+            if s != 0 {
+                self.last_atlas_slot = s;
             }
         }
         if let Some(v) = self.demo_player.as_ref().and_then(|p| p.last_view) {
@@ -1930,8 +1961,9 @@ impl Host {
 
         let client_world =
             &self.client_engine.as_ref().unwrap().world as *const deerpunk_engine_common::world::World;
-        unsafe {
-            self.flush_pending_albedos_world(&*client_world);
+        let s = unsafe { self.flush_pending_albedos_world(&*client_world) };
+        if s != 0 {
+            self.last_atlas_slot = s;
         }
 
         let client = self.client_engine.as_ref().unwrap();
@@ -2006,8 +2038,9 @@ impl Host {
             if let Some(client) = self.client_engine.as_ref() {
                 let world =
                     &client.world as *const deerpunk_engine_common::world::World;
-                unsafe {
-                    self.flush_pending_albedos_world(&*world);
+                let s = unsafe { self.flush_pending_albedos_world(&*world) };
+                if s != 0 {
+                    self.last_atlas_slot = s;
                 }
             }
         }
@@ -2166,7 +2199,7 @@ impl Host {
             let view_ent = self.client_rep.view_entity();
             let scene = self
                 .client_engine
-                .as_ref()
+                .as_mut()
                 .unwrap()
                 .extract_scene_view(view_ent);
 

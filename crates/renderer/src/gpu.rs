@@ -173,6 +173,8 @@ struct GpuPointLight {
 
 /// Layout must match WGSL `LightsUniform` (uniform address space).
 /// Header is four `u32`s — do **not** use `vec3` in WGSL here (align-16 gap → 1056 vs 1040).
+///
+/// `sun_dir` / `ambient` are scene-level lighting (moved out of per-material SSBO).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct LightsUniform {
@@ -180,10 +182,14 @@ struct LightsUniform {
     _p0: u32,
     _p1: u32,
     _p2: u32,
+    /// xyz = sun direction, w = intensity (0 = sun off).
+    sun_dir: [f32; 4],
+    /// rgb ambient color (alpha unused).
+    ambient: [f32; 4],
     lights: [GpuPointLight; MAX_POINT_LIGHTS],
 }
 
-const _: () = assert!(std::mem::size_of::<LightsUniform>() == 16 + 32 * MAX_POINT_LIGHTS);
+const _: () = assert!(std::mem::size_of::<LightsUniform>() == 16 + 32 + 32 * MAX_POINT_LIGHTS);
 const _: () = assert!(std::mem::size_of::<GpuPointLight>() == 32);
 
 const MAX_LIGHTSTYLES: usize = 64;
@@ -458,6 +464,10 @@ pub struct Renderer {
     /// Flat tangent-space normal (0.5, 0.5, 1.0) — white is NOT a valid default normal.
     flat_normal_tex_view: wgpu::TextureView,
     pub material_allocator: crate::material_allocator::MaterialAllocator,
+
+    // Scene-level lighting (set via set_scene_lighting, was per-material before).
+    scene_sun_dir: [f32; 4],
+    scene_ambient: [f32; 4],
 }
 
 impl Renderer {
@@ -632,6 +642,9 @@ impl Renderer {
             ],
         });
         let material_allocator = crate::material_allocator::MaterialAllocator::new(&device);
+        // Scene-level lighting defaults (no sun, no ambient — gamelib sets via set_scene_lighting).
+        let scene_sun_dir: [f32; 4] = [0.0, 0.0, 1.0, 0.0];
+        let scene_ambient: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
         // White 1x1 texture view for default PBR textures (normal=up, ORM=full white)
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("white 1x1"),
@@ -1536,7 +1549,18 @@ impl Renderer {
             white_tex_view,
             flat_normal_tex_view,
             material_allocator,
+            scene_sun_dir,
+            scene_ambient,
         }
+    }
+
+    /// Set scene-level directional + ambient lighting.
+    ///
+    /// `sun_dir` — xyz = normalized direction, w = intensity (0 = sun off).
+    /// `ambient` — rgb ambient color (alpha unused).
+    pub fn set_scene_lighting(&mut self, sun_dir: [f32; 4], ambient: [f32; 4]) {
+        self.scene_sun_dir = sun_dir;
+        self.scene_ambient = ambient;
     }
 
     /// Snapshot of uploaded GPU assets for the inspector `assets` collection.
@@ -4001,6 +4025,9 @@ impl Renderer {
                 let mut lights = LightsUniform::zeroed();
                 let n = snapshot.point_lights.len().min(MAX_POINT_LIGHTS);
                 lights.count = n as u32;
+                // Scene-level lighting (set via set_scene_lighting).
+                lights.sun_dir = self.scene_sun_dir;
+                lights.ambient = self.scene_ambient;
                 for (i, pl) in snapshot.point_lights.iter().take(n).enumerate() {
                     lights.lights[i] = GpuPointLight {
                         position: pl.position,

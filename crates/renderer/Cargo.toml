@@ -8,6 +8,7 @@ deerpunk-engine-common = { path = "../common" }
 glam = { version = "0.33", features = ["serde"] }
 tiny-skia.workspace = true
 wgpu.workspace = true
+naga = "30"
 pollster.workspace = true
 bytemuck.workspace = true
 raw-window-handle.workspace = true

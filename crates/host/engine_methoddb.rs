@@ -639,8 +639,7 @@ impl crate::Host {
     pub fn api_host_flush_pending_albedos(&mut self) -> i32 {
         #[cfg(any(feature = "client", feature = "full"))]
         {
-            self.flush_pending_albedos();
-            0
+            self.flush_pending_albedos() as i32
         }
         #[cfg(not(any(feature = "client", feature = "full")))]
         {

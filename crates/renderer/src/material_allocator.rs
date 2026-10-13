@@ -88,6 +88,30 @@ impl MaterialAllocator {
             ambient: material.ambient,
         };
 
+        self.upload_entry(device, queue, id, entry)
+    }
+
+    /// Upload a raw GPU entry (used by MaterialStore, bypasses Material struct).
+    /// No dedup — caller is responsible for dedup.
+    pub fn ensure_uploaded_raw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        entry: &MaterialGpuEntry,
+    ) -> u32 {
+        let id = self.entries.len() as u32;
+        self.upload_entry(device, queue, id, *entry)
+    }
+
+    /// Internal: grow buffer if needed, push entry, write to GPU.
+    fn upload_entry(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: u32,
+        entry: MaterialGpuEntry,
+    ) -> u32 {
+
         // Grow buffer if needed.
         let needed = self.entries.len() + 1;
         let cap = self.gpu_buf.size() as usize / std::mem::size_of::<MaterialGpuEntry>();
@@ -108,7 +132,6 @@ impl MaterialAllocator {
         }
 
         self.entries.push(entry);
-        self.cache.insert(hash, id);
         self.dirty = true;
 
         // Write just the new entry.

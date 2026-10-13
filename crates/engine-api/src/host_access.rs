@@ -35,8 +35,8 @@ impl HostAccessApi {
         }
     }
 
-    pub fn flush_pending_albedos(&self) {
-        (self.flush_albedos_fn)(self.ctx);
+    pub fn flush_pending_albedos(&self) -> u32 {
+        (self.flush_albedos_fn)(self.ctx) as u32
     }
 
     pub fn client_track_static_entity(&self, entity: u64) {

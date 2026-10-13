@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use deerpunk_engine_common::material::ShaderPreprocessor;
 use deerpunk_engine_common::network::sound_event::SoundPlayRpc;
 use std::collections::HashMap;
 use deerpunk_engine_common::components::{SoundEmitter, TransformComponent};
@@ -9,6 +10,8 @@ use deerpunk_engine_common::resource::{path_to_file_uri, ResourceManager};
 use deerpunk_engine_common::world::{QueryId, World};
 use deerpunk_engine_renderer::debug_draw::DebugDraw;
 use deerpunk_engine_renderer::gpu::{Renderer, ShaderSources};
+use deerpunk_engine_renderer::material_store::MaterialStore;
+use deerpunk_engine_renderer::shader_registry::ShaderRegistry;
 use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget};
 use deerpunk_ui::{UiDirAssets, UiRuntime};
 
@@ -53,6 +56,10 @@ pub struct ClientEngine {
     time: f32,
     /// Host/game fills each frame; copied into [`RenderSnapshot::debug_draw`].
     pending_debug_draw: DebugDraw,
+    /// Shader registry — loaded .wgsl variants, cached by (path, defines).
+    pub shader_registry: ShaderRegistry,
+    /// Material store — loaded .mat assets, dedup by path/hash, GPU SSBO.
+    pub material_store: MaterialStore,
 }
 
 impl ClientEngine {
@@ -66,6 +73,9 @@ impl ClientEngine {
 
         let (w, h) = app.window_size();
         renderer.set_surface(surface, w, h);
+
+        let shader_registry = ShaderRegistry::new();
+        let material_store = MaterialStore::new();
 
         Self {
             app,
@@ -84,6 +94,8 @@ impl ClientEngine {
             audio_volume: 1.0,
             time: 0.0,
             pending_debug_draw: DebugDraw::new(),
+            shader_registry,
+            material_store,
         }
     }
 
@@ -384,16 +396,25 @@ impl ClientEngine {
         self.extractor = Some(RenderExtractor::new(&mut self.world));
     }
 
-    pub fn extract_scene(&self) -> RenderScene {
+    pub fn extract_scene(&mut self) -> RenderScene {
         self.extract_scene_view(None)
     }
 
     /// Extract with optional view entity (server `SetView` net pawn).
-    pub fn extract_scene_view(&self, view_entity: Option<u64>) -> RenderScene {
+    pub fn extract_scene_view(&mut self, view_entity: Option<u64>) -> RenderScene {
         let mut scene = self
             .extractor
             .as_ref()
-            .map(|e| e.extract(&self.world, view_entity))
+            .map(|e| {
+                e.extract(
+                    &self.world,
+                    view_entity,
+                    &mut self.material_store,
+                    &mut self.renderer.material_allocator,
+                    &self.renderer.device,
+                    &self.renderer.queue,
+                )
+            })
             .unwrap_or_else(RenderScene::new);
         scene.game_time = self.time;
         scene
@@ -595,12 +616,19 @@ fn load_wgsl_required(rm: &mut ResourceManager, shader_dir: &Path, name: &str) -
     let path = shader_dir.join(format!("{name}.wgsl"));
     let uri = path_to_file_uri(&path);
     let handle = rm.load::<String>(&uri);
-    handle.try_get().unwrap_or_else(|| {
+    let source = handle.try_get().unwrap_or_else(|| {
         panic!(
             "Failed to load shader via ResourceManager: {uri} (asset={:?})",
             handle.id()
         )
-    })
+    });
+    // Strip `#@shader` / `#@prop` decorators (and apply `#ifdef` handling) before
+    // handing the source to wgpu — wgpu would otherwise choke on the `#@` lines,
+    // which are not valid WGSL. Files without decorators pass through unchanged.
+    match ShaderPreprocessor::process(&source, &[]) {
+        Ok(processed) => processed.wgsl,
+        Err(err) => panic!("Failed to preprocess shader {uri}: {err}"),
+    }
 }
 
 /// Load WGSL sources through [`ResourceManager`] (`file://…/*.wgsl`).

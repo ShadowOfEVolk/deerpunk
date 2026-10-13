@@ -735,6 +735,7 @@ dependencies = [
  "glam 0.33.3",
  "imgui",
  "imgui-wgpu",
+ "naga",
  "pollster",
  "raw-window-handle",
  "tiny-skia",

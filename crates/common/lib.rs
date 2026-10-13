@@ -17,6 +17,7 @@ pub mod coord;
 pub mod events;
 pub mod frame;
 pub mod frame_buffer;
+pub mod material;
 pub mod physics;
 pub mod resource;
 pub mod scheduler;
@@ -37,3 +38,8 @@ pub use network::replication::{NetworkComponent, NetworkField};
 pub use lightmap_atlas::{LightmapAtlasLayers, LM_STYLE_SLOTS};
 pub use transform::Transform;
 pub mod util;
+
+pub use material::{
+    DrawMaterial, GpuMaterialIndex, MaterialAsset, MaterialHandle, PropertyValueSer,
+    SceneLighting, ShaderError, ShaderId, ShaderMeta, ShaderPreprocessor,
+};

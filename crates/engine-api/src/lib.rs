@@ -16,6 +16,7 @@ pub mod methoddb;
 pub mod world;
 pub mod client_world;
 pub mod spawn_prefab;
+pub mod materials;
 
 pub use deerpunk_engine_ffi::{
     ClientInitData, ComponentId, EntityId, GAMELIB_API_VERSION, GamelibInitData, ResolverFn,
@@ -42,6 +43,7 @@ pub struct EngineApi {
     pub host: host_access::HostAccessApi,
     pub resources: resources::ResourcesApi,
     pub audio: audio::AudioApi,
+    pub materials: materials::MaterialsApi,
 
     pub frame: extern "C" fn(*mut u8, f32) -> i32,
     pub shutdown: extern "C" fn(*mut u8),
@@ -76,6 +78,7 @@ impl EngineApi {
             host: host_access::HostAccessApi::new(ctx, resolver),
             resources: resources::ResourcesApi::new(ctx, resolver),
             audio: audio::AudioApi::new(ctx, resolver),
+            materials: materials::MaterialsApi::new(ctx, resolver),
 
             frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },
             shutdown: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:shutdown")) },
