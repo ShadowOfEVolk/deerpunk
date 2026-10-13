@@ -139,7 +139,7 @@ impl UiRuntime {
 
         let ok = unsafe { ffi::rmlui_init(w as i32, h as i32, cb_ptr, api_ptr) };
         if ok == 0 {
-            log::error!("[deerpunk-ui] rmlui_init failed");
+            log::error!(target: "ui", "rmlui_init failed");
             return Self {
                 ctx: ptr::null_mut(),
                 initialized: false,
@@ -148,7 +148,7 @@ impl UiRuntime {
         }
 
         if !load_default_fonts() {
-            log::error!("[deerpunk-ui] no fonts under {}", assets.base().display());
+            log::error!(target: "ui", "no fonts under {}", assets.base().display());
             unsafe { ffi::rmlui_shutdown() };
             return Self {
                 ctx: ptr::null_mut(),
@@ -160,7 +160,7 @@ impl UiRuntime {
         let name = CString::new(context_name).unwrap_or_else(|_| CString::new("main").unwrap());
         let ctx = unsafe { ffi::rmlui_context_create(name.as_ptr()) };
         if ctx.is_null() {
-            log::error!("[deerpunk-ui] context_create failed");
+            log::error!(target: "ui", "context_create failed");
             unsafe { ffi::rmlui_shutdown() };
             return Self {
                 ctx: ptr::null_mut(),
@@ -170,7 +170,8 @@ impl UiRuntime {
         }
 
         log::info!(
-            "[deerpunk-ui] ready {}x{} base={}",
+            target: "ui",
+            "ready {}x{} base={}",
             w,
             h,
             assets.base().display()
@@ -195,7 +196,7 @@ impl UiRuntime {
         let path = CString::new(relative).ok()?;
         let handle = unsafe { ffi::rmlui_document_load(self.ctx, path.as_ptr()) };
         if handle.is_null() {
-            log::error!("[deerpunk-ui] failed to load document: {relative}");
+            log::error!(target: "ui", "failed to load document: {relative}");
             return None;
         }
         Some(UiDocument { handle })
@@ -265,7 +266,7 @@ impl Drop for UiRuntime {
         if self.initialized {
             unsafe { ffi::rmlui_shutdown() };
             self.initialized = false;
-            log::info!("[deerpunk-ui] Rml::Shutdown");
+            log::info!(target: "ui", "Rml::Shutdown");
         }
         *GEOM.lock().unwrap() = None;
         *DUMMY_RENDER_API.lock().unwrap() = None;
@@ -291,7 +292,7 @@ fn load_default_fonts() -> bool {
             continue;
         };
         if unsafe { ffi::rmlui_load_font(c.as_ptr()) } != 0 {
-            log::info!("[deerpunk-ui] font loaded: {rel}");
+            log::info!(target: "ui", "font loaded: {rel}");
             ok = true;
         }
     }
@@ -382,9 +383,9 @@ unsafe extern "C" fn cb_log(level: c_int, msg: *const c_char) {
     }
     let s = CStr::from_ptr(msg).to_string_lossy();
     match level {
-        0 => log::error!("[RmlUi] {s}"),
-        1 => log::warn!("[RmlUi] {s}"),
-        _ => log::info!("[RmlUi] {s}"),
+        0 => log::error!(target: "rmlui", "{s}"),
+        1 => log::warn!(target: "rmlui", "{s}"),
+        _ => log::info!(target: "rmlui", "{s}"),
     }
 }
 
@@ -579,7 +580,7 @@ pub unsafe extern "C" fn rust_load_texture(
             id as usize
         }
         Err(e) => {
-            log::warn!("[deerpunk-ui] texture load failed {}: {e}", path.display());
+            log::warn!(target: "ui", "texture load failed {}: {e}", path.display());
             0
         }
     }
@@ -658,7 +659,7 @@ pub unsafe extern "C" fn rust_file_open(path: *const c_char) -> *mut std::ffi::c
     match std::fs::read(&full) {
         Ok(data) => Box::into_raw(Box::new(FileState { data, pos: 0 })) as *mut _,
         Err(e) => {
-            log::warn!("[deerpunk-ui] file not found: {} ({e})", full.display());
+            log::warn!(target: "ui", "file not found: {} ({e})", full.display());
             ptr::null_mut()
         }
     }

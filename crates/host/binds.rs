@@ -8,7 +8,8 @@ use std::sync::{Mutex, OnceLock};
 
 use deerpunk_engine_common::input::{Input, VirtualKey};
 
-use crate::cmd::{CmdSystem, CommandExecutionContext};
+use crate::cmd::{CmdSystem, CommandExecutionContext, CommandRegistration, SuggestContext};
+use crate::cmd_completion::suggest_command_arg_names;
 
 /// Process-wide bind table (host console owns it).
 pub fn global() -> &'static Binds {
@@ -68,12 +69,19 @@ impl Binds {
 
     /// Register `bind` / `unbind` / `unbindall` on the host console.
     pub fn register_commands(cmd: &mut CmdSystem) {
-        cmd.register_command("bind", |ctx| bind_cmd(global(), ctx));
-        cmd.register_command("unbind", |ctx| unbind_cmd(global(), ctx));
-        cmd.register_command("unbindall", |_ctx| {
+        cmd.register(
+            CommandRegistration::new("bind")
+                .execute(|ctx| bind_cmd(global(), ctx))
+                .suggest(|line, ctx| suggest_bind(line, ctx)),
+        );
+        cmd.register(
+            CommandRegistration::new("unbind")
+                .execute(|ctx| unbind_cmd(global(), ctx))
+                .suggest(|line, _ctx| suggest_unbind_key(line)),
+        );
+        cmd.register(CommandRegistration::new("unbindall").execute(|_ctx| {
             global().clear();
-            println!("unbindall");
-        });
+        }));
     }
 
     /// Key edges: `+cmd` on press, `-cmd` on release (if bind starts with `+`).
@@ -116,6 +124,32 @@ impl Binds {
     }
 }
 
+fn bind_key_suggestions() -> Vec<String> {
+    [
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        "space", "tab", "enter", "escape", "backspace", "grave", "lshift", "lctrl", "lalt", "up",
+        "down", "left", "right", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11",
+        "f12",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn suggest_bind(line: &str, ctx: &SuggestContext<'_>) -> Vec<String> {
+    let keys = bind_key_suggestions();
+    let from_keys = suggest_command_arg_names(line, "bind", 0, &keys);
+    if !from_keys.is_empty() {
+        return from_keys;
+    }
+    suggest_command_arg_names(line, "bind", 1, ctx.names)
+}
+
+fn suggest_unbind_key(line: &str) -> Vec<String> {
+    suggest_command_arg_names(line, "unbind", 0, &bind_key_suggestions())
+}
+
 fn bind_cmd(binds: &Binds, ctx: CommandExecutionContext<'_>) {
     if ctx.args.is_empty() {
         let list = binds.list();
@@ -144,8 +178,7 @@ fn bind_cmd(binds: &Binds, ctx: CommandExecutionContext<'_>) {
     }
 
     let command = ctx.args[1..].join(" ");
-    binds.set(key, command.clone());
-    println!("bind \"{}\" \"{}\"", key_name(key), command);
+    binds.set(key, command);
 }
 
 fn unbind_cmd(binds: &Binds, ctx: CommandExecutionContext<'_>) {
@@ -157,9 +190,7 @@ fn unbind_cmd(binds: &Binds, ctx: CommandExecutionContext<'_>) {
         println!("unbind: unknown key '{key_tok}'");
         return;
     };
-    if binds.remove(key) {
-        println!("unbind \"{}\"", key_name(key));
-    } else {
+    if !binds.remove(key) {
         println!("\"{}\" is not bound", key_name(key));
     }
 }

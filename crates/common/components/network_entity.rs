@@ -5,6 +5,9 @@ use crate::network::field_path::FieldPathId;
 pub const NET_PREFAB_MAX: usize = 64;
 pub const NET_FIELDS_MAX: usize = 16;
 
+/// Skip per-frame hot replication after initial `stream.in` (map geometry, static func_wall, …).
+pub const NET_FLAG_DORMANT: u8 = 1;
+
 /// Server-authored replication marker. Client spawns via prefab + hot/cold paths.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -17,7 +20,7 @@ pub struct NetworkEntity {
     pub prefab_len: u8,
     pub hot_count: u8,
     pub cold_count: u8,
-    pub _pad2: u8,
+    pub flags: u8,
     pub hot: [u8; NET_FIELDS_MAX],
     pub cold: [u8; NET_FIELDS_MAX],
 }
@@ -31,7 +34,7 @@ impl Default for NetworkEntity {
             prefab_len: 0,
             hot_count: 0,
             cold_count: 0,
-            _pad2: 0,
+            flags: 0,
             hot: [0; NET_FIELDS_MAX],
             cold: [0; NET_FIELDS_MAX],
         }
@@ -44,6 +47,19 @@ impl NetworkEntity {
         e.set_hot(hot);
         e.set_cold(cold);
         e
+    }
+
+    pub fn from_prefab_paths(hot: &[FieldPathId], cold: &[FieldPathId], dormant: bool) -> Self {
+        let mut e = Self::from_paths(hot, cold);
+        if dormant {
+            e.flags |= NET_FLAG_DORMANT;
+        }
+        e
+    }
+
+    #[inline]
+    pub fn is_dormant(&self) -> bool {
+        self.flags & NET_FLAG_DORMANT != 0
     }
 
     pub fn set_prefab(&mut self, name: &str) {

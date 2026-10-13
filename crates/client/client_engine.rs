@@ -66,6 +66,8 @@ pub struct ClientEngine {
     mesh_lifecycle: MeshGpuLifecycle,
     /// Shared fallback mesh (stable `content_id`, retained on GPU).
     fallback_mesh: Arc<Mesh>,
+    /// In-game `~` console — keyboard routed to ImGui before render.
+    console_open: bool,
 }
 
 impl ClientEngine {
@@ -107,7 +109,12 @@ impl ClientEngine {
             material_store,
             mesh_lifecycle,
             fallback_mesh,
+            console_open: false,
         }
+    }
+
+    pub fn set_console_open(&mut self, open: bool) {
+        self.console_open = open;
     }
 
     pub fn mesh_adopt_entity(&mut self, entity: u64) {
@@ -545,13 +552,29 @@ impl ClientEngine {
             return false;
         }
 
+        if self.console_open {
+            unsafe {
+                crate::imgui_console_input::feed(&mut self.input, &self.app);
+            }
+            self.input.clear_keys();
+        }
+
+        let wheel = self.input.take_mouse_wheel();
+
         // Feed OS mouse into ImGui (console / debug windows).
         {
             let (mx, my) = self.input.mouse_position();
             let b = self.input.mouse_buttons();
+            let (wheel_y, wheel_h) = if self.console_open {
+                (wheel, 0.0)
+            } else {
+                (0.0, 0.0)
+            };
             self.renderer.set_imgui_input(
                 [mx, my],
                 [b & 1 != 0, b & 2 != 0, b & 4 != 0, false, false],
+                wheel_y,
+                wheel_h,
             );
         }
 
@@ -566,8 +589,7 @@ impl ClientEngine {
             if self.input.mouse_button_released(0) {
                 ui.mouse_button(0, false);
             }
-            let wheel = self.input.take_mouse_wheel();
-            if wheel != 0.0 {
+            if !self.console_open && wheel != 0.0 {
                 ui.mouse_wheel(wheel);
             }
             if let Some(frame) = ui.frame() {

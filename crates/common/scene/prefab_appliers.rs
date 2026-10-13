@@ -321,7 +321,15 @@ fn apply_network_entity(
             cold.push(path);
         }
     }
-    world.set(entity, comp, NetworkEntity::from_paths(&hot, &cold));
+    let dormant = value
+        .get("dormant")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    world.set(
+        entity,
+        comp,
+        NetworkEntity::from_prefab_paths(&hot, &cold, dormant),
+    );
     Ok(())
 }
 

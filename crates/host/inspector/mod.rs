@@ -7,21 +7,31 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::TcpListener;
 
-use deerpunk_engine_common::resource::AssetInfo;
-use deerpunk_engine_common::world::{InspectEntity, World};
+use deerpunk_engine_common::world::World;
 use deerpunk_inspector_protocol as proto;
 use serde_json::{Value, json};
 
+use deerpunk_engine_common::resource::ResourceManager;
+
+use crate::players::PlayerConnections;
+use crate::system_profiler;
+
 use ws::{WsConnection, WsIncoming};
 
-const MAX_REQUESTS_PER_FRAME: usize = 64;
-
-#[derive(Clone)]
-struct EntitySnap {
-    id: u64,
-    name: String,
-    components: Vec<String>,
+/// Read-only host slice for inspector RPC (avoids borrowing `Host` + `Inspector` together).
+pub struct InspectorRpcCtx<'a> {
+    pub world: &'a World,
+    pub resources: &'a ResourceManager,
+    pub time_secs: f32,
+    pub players: &'a PlayerConnections,
+    pub net: &'a crate::net::NetTransport,
+    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
+    pub server_rep: &'a deerpunk_engine_server::network::ServerPrefabReplication,
+    #[cfg(any(feature = "client", feature = "full"))]
+    pub client_engine: Option<&'a deerpunk_engine_client::client_engine::ClientEngine>,
 }
+
+const MAX_REQUESTS_PER_FRAME: usize = 64;
 
 /// FMOD Studio event snapshot for `fmod_events.*` RPCs.
 #[derive(Clone, Debug, Default)]
@@ -33,22 +43,6 @@ pub struct FmodEventSnap {
     pub params: Vec<String>,
 }
 
-struct Snapshot {
-    time: f32,
-    entities: Vec<EntitySnap>,
-    assets: Vec<AssetInfo>,
-    systems: Value,
-    fmod_events: Vec<FmodEventSnap>,
-    players: Value,
-    methoddb: Vec<MethodDbSnap>,
-}
-
-#[derive(Clone, Debug)]
-pub struct MethodDbSnap {
-    pub name: String,
-    pub flags: u32,
-}
-
 struct ClientState {
     socket: WsConnection,
 }
@@ -57,7 +51,6 @@ struct ActiveInspector {
     listener: TcpListener,
     clients: HashMap<u64, ClientState>,
     next_client_id: u64,
-    snapshot: Snapshot,
     collections: Vec<proto::CollectionDescriptor>,
 }
 
@@ -130,23 +123,6 @@ impl Inspector {
             listener,
             clients: HashMap::new(),
             next_client_id: 1,
-            snapshot: Snapshot {
-                time: 0.0,
-                entities: Vec::new(),
-                assets: Vec::new(),
-                systems: json!({
-                    "frame_count": 0,
-                    "period_secs": 0.0,
-                    "systems": [],
-                }),
-                fmod_events: Vec::new(),
-                players: json!({
-                    "time": 0.0,
-                    "count": 0,
-                    "players": [],
-                }),
-                methoddb: Vec::new(),
-            },
             collections: self.merged_collections(),
         });
     }
@@ -158,7 +134,7 @@ impl Inspector {
         }
     }
 
-    pub fn poll(&mut self, world: &World) {
+    pub fn poll(&mut self, ctx: InspectorRpcCtx<'_>) {
         let Some(insp) = self.active.as_mut() else {
             return;
         };
@@ -194,12 +170,7 @@ impl Inspector {
                 match client.socket.read_incoming() {
                     Ok(WsIncoming::Text(text)) => {
                         budget -= 1;
-                        match handle_message(
-                            text.trim(),
-                            &insp.snapshot,
-                            &insp.collections,
-                            world,
-                        ) {
+                        match handle_message(text.trim(), &ctx, &insp.collections) {
                             Ok(msgs) => {
                                 for m in msgs {
                                     responses.push((id, m));
@@ -238,65 +209,12 @@ impl Inspector {
         }
     }
 
-    pub fn sync_world(&mut self, world: &World, time: f32) {
-        let Some(insp) = self.active.as_mut() else {
-            return;
-        };
-        insp.snapshot.entities = world
-            .inspect_entities()
-            .into_iter()
-            .map(|e: InspectEntity| EntitySnap {
-                id: e.id,
-                name: e.name,
-                components: e.components,
-            })
-            .collect();
-        insp.snapshot.time = time;
-    }
-
-    pub fn sync_assets(&mut self, assets: Vec<AssetInfo>) {
-        if let Some(insp) = self.active.as_mut() {
-            insp.snapshot.assets = assets;
-        }
-    }
-
-    pub fn sync_systems(&mut self, systems: Value) {
-        if let Some(insp) = self.active.as_mut() {
-            insp.snapshot.systems = systems;
-        }
-    }
-
-    pub fn sync_fmod_events(&mut self, events: Vec<FmodEventSnap>) {
-        if let Some(insp) = self.active.as_mut() {
-            insp.snapshot.fmod_events = events;
-        }
-    }
-
-    pub fn sync_players(&mut self, players: Value) {
-        if let Some(insp) = self.active.as_mut() {
-            insp.snapshot.players = players;
-        }
-    }
-
-    pub fn sync_methoddb(&mut self) {
-        let Some(insp) = self.active.as_mut() else {
-            return;
-        };
-        insp.snapshot.methoddb = crate::engine_api::engine_api::MethodDB::inventory_entries()
-            .into_iter()
-            .map(|e| MethodDbSnap {
-                name: e.name.to_string(),
-                flags: e.flags,
-            })
-            .collect();
-    }
 }
 
 fn handle_message(
     line: &str,
-    snapshot: &Snapshot,
+    ctx: &InspectorRpcCtx<'_>,
     collections: &[proto::CollectionDescriptor],
-    world: &World,
 ) -> Result<Vec<String>, String> {
     if line.is_empty() {
         return Ok(Vec::new());
@@ -332,8 +250,8 @@ fn handle_message(
         let known = collections.iter().any(|c| c.id == col_id);
         if known {
             return match action {
-                "list" => Ok(vec![proto::ok(&id, collection_list(col_id, snapshot))]),
-                "get" => Ok(vec![collection_get(col_id, &id, &params, snapshot, world)]),
+                "list" => Ok(vec![proto::ok(&id, collection_list(col_id, ctx))]),
+                "get" => Ok(vec![collection_get(col_id, &id, &params, ctx)]),
                 _ => Ok(vec![proto::err(
                     &id,
                     proto::ERR_METHOD_NOT_FOUND,
@@ -350,12 +268,79 @@ fn handle_message(
     )])
 }
 
-fn collection_list(col_id: &str, snap: &Snapshot) -> Value {
+fn players_value(ctx: &InspectorRpcCtx<'_>) -> Value {
+    let remote_addrs: std::collections::HashMap<u32, String> =
+        ctx.net.remote_slot_debug().into_iter().collect();
+    let players: Vec<Value> = ctx
+        .players
+        .list()
+        .iter()
+        .map(|p| {
+            #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
+            let net_id = p.entity.and_then(|e| ctx.server_rep.net_id_of(e));
+            #[cfg(not(any(
+                feature = "dedicated-server",
+                feature = "client",
+                feature = "full"
+            )))]
+            let net_id: Option<u16> = None;
+            json!({
+                "index": p.slot,
+                "name": p.name,
+                "local": p.local,
+                "entity": p.entity,
+                "netId": net_id,
+                "addr": remote_addrs.get(&p.slot).cloned().unwrap_or_else(|| {
+                    if p.local { "local".into() } else { "?".into() }
+                }),
+            })
+        })
+        .collect();
+    json!({
+        "time": ctx.time_secs,
+        "count": players.len(),
+        "players": players,
+        "role": ctx.net.hud_stats().role,
+        "hosting": ctx.net.is_hosting(),
+        "client": ctx.net.is_client(),
+    })
+}
+
+fn fmod_events(ctx: &InspectorRpcCtx<'_>) -> Vec<FmodEventSnap> {
+    #[cfg(any(feature = "client", feature = "full"))]
+    {
+        return ctx
+            .client_engine
+            .map(|client| {
+                client
+                    .audio_list_events()
+                    .into_iter()
+                    .map(|e| FmodEventSnap {
+                        path: e.path,
+                        bank: e.bank,
+                        is_3d: e.is_3d,
+                        oneshot: e.oneshot,
+                        params: e.params,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    #[cfg(not(any(feature = "client", feature = "full")))]
+    {
+        Vec::new()
+    }
+}
+
+fn collection_list(col_id: &str, ctx: &InspectorRpcCtx<'_>) -> Value {
+    let time = ctx.time_secs;
+    let world = ctx.world;
     match col_id {
         "entities" => {
-            let entities: Vec<Value> = snap
-                .entities
-                .iter()
+            let _scope = system_profiler::scope("inspector.entities.list");
+            let entities: Vec<Value> = world
+                .inspect_entities()
+                .into_iter()
                 .map(|e| {
                     json!({
                         "index": e.id,
@@ -364,15 +349,16 @@ fn collection_list(col_id: &str, snap: &Snapshot) -> Value {
                 })
                 .collect();
             json!({
-                "time": snap.time,
+                "time": time,
                 "count": entities.len(),
                 "entities": entities,
             })
         }
         "assets" => {
-            let assets: Vec<Value> = snap
-                .assets
-                .iter()
+            let assets: Vec<Value> = ctx
+                .resources
+                .list_assets()
+                .into_iter()
                 .map(|a| {
                     json!({
                         "index": a.id.0,
@@ -385,15 +371,15 @@ fn collection_list(col_id: &str, snap: &Snapshot) -> Value {
                 })
                 .collect();
             json!({
-                "time": snap.time,
+                "time": time,
                 "count": assets.len(),
                 "assets": assets,
             })
         }
-        "systems" => snap.systems.clone(),
+        "systems" => system_profiler::snapshot_for_inspector(),
         "fmod_events" => {
-            let events: Vec<Value> = snap
-                .fmod_events
+            let fmod = fmod_events(ctx);
+            let events: Vec<Value> = fmod
                 .iter()
                 .enumerate()
                 .map(|(i, e)| {
@@ -408,16 +394,15 @@ fn collection_list(col_id: &str, snap: &Snapshot) -> Value {
                 })
                 .collect();
             json!({
-                "time": snap.time,
+                "time": time,
                 "count": events.len(),
                 "events": events,
             })
         }
-        "players" => snap.players.clone(),
+        "players" => players_value(ctx),
         "methoddb" => {
-            let methods: Vec<Value> = snap
-                .methoddb
-                .iter()
+            let methods: Vec<Value> = crate::engine_api::engine_api::MethodDB::inventory_entries()
+                .into_iter()
                 .enumerate()
                 .map(|(i, m)| {
                     json!({
@@ -428,13 +413,13 @@ fn collection_list(col_id: &str, snap: &Snapshot) -> Value {
                 })
                 .collect();
             json!({
-                "time": snap.time,
+                "time": time,
                 "count": methods.len(),
                 "methods": methods,
             })
         }
         _ => json!({
-            "time": snap.time,
+            "time": time,
             "count": 0,
             "items": [],
         }),
@@ -453,13 +438,8 @@ fn component_snapshot(world: &World, entity: u64, slug: &str) -> proto::Componen
     proto::stub_component(slug)
 }
 
-fn collection_get(
-    col_id: &str,
-    id: &Value,
-    params: &Value,
-    snap: &Snapshot,
-    world: &World,
-) -> String {
+fn collection_get(col_id: &str, id: &Value, params: &Value, ctx: &InspectorRpcCtx<'_>) -> String {
+    let world = ctx.world;
     let index = match params.get("index").and_then(|v| v.as_u64()) {
         Some(i) => i,
         None => {
@@ -468,7 +448,11 @@ fn collection_get(
     };
     match col_id {
         "entities" => {
-            let Some(ent) = snap.entities.iter().find(|e| e.id == index) else {
+            let Some(ent) = world
+                .inspect_entities()
+                .into_iter()
+                .find(|e| e.id == index)
+            else {
                 return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "entity not found");
             };
             let components: Vec<Value> = ent
@@ -489,7 +473,8 @@ fn collection_get(
             )
         }
         "fmod_events" => {
-            let Some(e) = snap.fmod_events.get(index as usize) else {
+            let fmod = fmod_events(ctx);
+            let Some(e) = fmod.get(index as usize) else {
                 return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "fmod event not found");
             };
             proto::ok(
@@ -505,7 +490,12 @@ fn collection_get(
             )
         }
         "assets" => {
-            let Some(a) = snap.assets.iter().find(|e| e.id.0 == index) else {
+            let Some(a) = ctx
+                .resources
+                .list_assets()
+                .into_iter()
+                .find(|e| e.id.0 == index)
+            else {
                 return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "asset not found");
             };
             proto::ok(
@@ -521,8 +511,7 @@ fn collection_get(
             )
         }
         "players" => {
-            let list = snap
-                .players
+            let list = players_value(ctx)
                 .get("players")
                 .and_then(|v| v.as_array())
                 .cloned()
@@ -534,7 +523,8 @@ fn collection_get(
             proto::ok(id, p.clone())
         }
         "methoddb" => {
-            let Some(m) = snap.methoddb.get(index as usize) else {
+            let entries = crate::engine_api::engine_api::MethodDB::inventory_entries();
+            let Some(m) = entries.get(index as usize) else {
                 return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "method not found");
             };
             proto::ok(

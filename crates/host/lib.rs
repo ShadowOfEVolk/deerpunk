@@ -35,27 +35,28 @@ enum PendingDemoCmd {
 static PENDING_DEMO: std::sync::Mutex<Vec<PendingDemoCmd>> = std::sync::Mutex::new(Vec::new());
 
 pub mod binds;
-#[cfg(any(feature = "client", feature = "full"))]
-pub mod phys_debug;
-pub mod entity_debug;
-pub mod config_io;
 pub mod cmd;
-mod engine_methoddb;
-mod world_host_api;
-mod spawn_prefab;
-mod physics_trace;
+pub mod cmd_completion;
+pub mod config_io;
 pub mod console;
 pub mod cvar;
+mod engine_methoddb;
+pub mod entity_debug;
 pub mod fs;
 pub mod gameinfo;
 pub mod inspector;
 pub mod move_state;
+#[cfg(any(feature = "client", feature = "full"))]
+pub mod phys_debug;
+mod physics_trace;
+pub mod players;
 pub mod schedule;
+mod spawn_prefab;
 pub mod stdin_cmd;
 pub mod system_profiler;
-pub mod players;
-pub use schedule::Schedule;
+mod world_host_api;
 pub use players::{PlayerConnection, PlayerConnections};
+pub use schedule::Schedule;
 
 pub mod api;
 pub use api::{ComponentId, EntityId};
@@ -66,25 +67,25 @@ pub use server_engine::ServerEngine;
 pub mod engine_api;
 pub use deerpunk_engine_common::world;
 
+pub use crate::cmd::CmdCallback;
+use connection::{ClientSessionPhase, SlotPlayGate};
 use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
-use deerpunk_engine_common::{LightstyleTable, MAX_LIGHTSTYLES};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::UserCmd;
-use connection::{ClientSessionPhase, SlotPlayGate};
-pub use crate::cmd::CmdCallback;
+use deerpunk_engine_common::{LightstyleTable, MAX_LIGHTSTYLES};
 pub use engine_api::ui::*;
 
 pub mod channel;
 pub mod client_dll;
-#[cfg(any(feature = "client", feature = "full"))]
-pub mod demo;
 pub mod connect_auth;
 pub mod connection;
+#[cfg(any(feature = "client", feature = "full"))]
+pub mod demo;
 pub mod lan;
 pub mod net;
-pub mod udp_demux;
 pub mod server_dll;
+pub mod udp_demux;
 pub mod user_messages;
 pub use channel::{Channel, ClientCmd};
 pub use client_dll::{ClientDll, ClientInitData};
@@ -232,6 +233,14 @@ inventory::submit! {
         default: "0",
         desc: "Infobox net: 0=off, 1=role+rtt+B/s, 2=+loss+players.",
         flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "cl_cmdrate",
+        default: "30",
+        desc: "Max UserCmd sends per second from client (0 = every frame). Does not affect server replication tick.",
+        flags: cvar::ARCHIVE,
     }
 }
 inventory::submit! {
@@ -400,7 +409,9 @@ pub struct Host {
     /// Last patterns broadcast via LightStyle UM (diff).
     last_ls_patterns: Vec<String>,
     /// Accumulated host time for lightstyle animation (`a`..`z`).
-    time_secs: f32,
+    pub(crate) time_secs: f32,
+    /// Throttle `send_usercmd` (`cl_cmdrate`); same path for listen and UDP.
+    last_usercmd_send_secs: f32,
     /// Last client-authored view stamp (survives replicate overwrite).
     #[cfg(any(feature = "client", feature = "full"))]
     local_view: Option<LocalViewStamp>,
@@ -424,9 +435,7 @@ impl Host {
         // dangling pointers inside cmd. Rebind in `rebind_cmd_refs` after place is stable.
         let mut resources = deerpunk_engine_common::resource::ResourceManager::new();
         // FileLoader must exist before client loads WGSL through the asset manager.
-        resources.register_loader(Box::new(
-            deerpunk_engine_common::resource::FileLoader,
-        ));
+        resources.register_loader(Box::new(deerpunk_engine_common::resource::FileLoader));
         #[cfg(any(feature = "client", feature = "full"))]
         let client_engine = Some(ClientEngine::new(&mut resources));
         Self {
@@ -460,6 +469,7 @@ impl Host {
             client_lightstyles: LightstyleTable::hl_defaults(),
             last_ls_patterns: vec![String::new(); MAX_LIGHTSTYLES],
             time_secs: 0.0,
+            last_usercmd_send_secs: -1.0,
             #[cfg(any(feature = "client", feature = "full"))]
             local_view: None,
             #[cfg(any(feature = "client", feature = "full"))]
@@ -494,16 +504,19 @@ impl Host {
         self.cmd.initialize();
         binds::Binds::register_commands(&mut self.cmd);
         move_state::register_commands(&mut self.cmd);
-        self.cmd.register_command("quit", |_| {
-            REQUEST_QUIT.store(true, Ordering::SeqCst);
-        });
+        self.cmd
+            .register(cmd::CommandRegistration::new("quit").execute(|_| {
+                REQUEST_QUIT.store(true, Ordering::SeqCst);
+            }));
         self.register_net_commands();
         #[cfg(any(feature = "client", feature = "full"))]
         self.register_demo_commands();
         self.cmd.set_cmdline(std::env::args().collect());
         self.gameinfo = gameinfo::GameInfo::from_gamedir(gamedir.as_ref());
-        self.cvar.set_or_create("gamename", &self.gameinfo.gamefolder);
-        self.cvar.set_or_create("gamedir", &gamedir.as_ref().to_string_lossy());
+        self.cvar
+            .set_or_create("gamename", &self.gameinfo.gamefolder);
+        self.cvar
+            .set_or_create("gamedir", &gamedir.as_ref().to_string_lossy());
         #[cfg(any(feature = "client", feature = "full"))]
         if let Some(client) = self.client_engine.as_mut() {
             let title = self.gameinfo.window_title().to_string();
@@ -532,70 +545,76 @@ impl Host {
                     &gamedir,
                 );
             }
-            self.cmd.register_command("s_play", |ctx| {
-                let event = ctx.args.join(" ");
-                if event.is_empty() {
-                    log::info!("[s_play] usage: s_play <event_path> (e.g. event:/ambient/fan)");
-                    return;
-                }
-                S_PLAY_QUEUE.lock().unwrap().push(event);
-            });
+            self.cmd
+                .register(cmd::CommandRegistration::new("s_play").execute(|ctx| {
+                    let event = ctx.args.join(" ");
+                    if event.is_empty() {
+                        log::info!("[s_play] usage: s_play <event_path> (e.g. event:/ambient/fan)");
+                        return;
+                    }
+                    S_PLAY_QUEUE.lock().unwrap().push(event);
+                }));
         }
 
         // Descriptors early; WS starts after gamelibs + `.rc` / stuffcmds (see `start_inspector`).
-        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
-            id: "assets".into(),
-            label: "Assets".into(),
-            group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
-            modes: vec![
-                deerpunk_inspector_protocol::CollectionMode::List,
-                deerpunk_inspector_protocol::CollectionMode::Get,
-            ],
-            id_field: "index".into(),
-            nested_in: None,
-        });
-        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
-            id: "systems".into(),
-            label: "Systems".into(),
-            group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
-            modes: vec![deerpunk_inspector_protocol::CollectionMode::List],
-            id_field: "name".into(),
-            nested_in: None,
-        });
+        self.inspector
+            .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+                id: "assets".into(),
+                label: "Assets".into(),
+                group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
+                modes: vec![
+                    deerpunk_inspector_protocol::CollectionMode::List,
+                    deerpunk_inspector_protocol::CollectionMode::Get,
+                ],
+                id_field: "index".into(),
+                nested_in: None,
+            });
+        self.inspector
+            .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+                id: "systems".into(),
+                label: "Systems".into(),
+                group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
+                modes: vec![deerpunk_inspector_protocol::CollectionMode::List],
+                id_field: "name".into(),
+                nested_in: None,
+            });
         #[cfg(any(feature = "client", feature = "full"))]
-        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
-            id: "fmod_events".into(),
-            label: "FMOD Events".into(),
-            group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
-            modes: vec![
-                deerpunk_inspector_protocol::CollectionMode::List,
-                deerpunk_inspector_protocol::CollectionMode::Get,
-            ],
-            id_field: "index".into(),
-            nested_in: None,
-        });
-        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
-            id: "players".into(),
-            label: "Players".into(),
-            group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
-            modes: vec![
-                deerpunk_inspector_protocol::CollectionMode::List,
-                deerpunk_inspector_protocol::CollectionMode::Get,
-            ],
-            id_field: "index".into(),
-            nested_in: None,
-        });
-        self.inspector.register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
-            id: "methoddb".into(),
-            label: "MethodDB".into(),
-            group: deerpunk_inspector_protocol::CollectionGroup::Definitions,
-            modes: vec![
-                deerpunk_inspector_protocol::CollectionMode::List,
-                deerpunk_inspector_protocol::CollectionMode::Get,
-            ],
-            id_field: "index".into(),
-            nested_in: None,
-        });
+        self.inspector
+            .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+                id: "fmod_events".into(),
+                label: "FMOD Events".into(),
+                group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
+                modes: vec![
+                    deerpunk_inspector_protocol::CollectionMode::List,
+                    deerpunk_inspector_protocol::CollectionMode::Get,
+                ],
+                id_field: "index".into(),
+                nested_in: None,
+            });
+        self.inspector
+            .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+                id: "players".into(),
+                label: "Players".into(),
+                group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
+                modes: vec![
+                    deerpunk_inspector_protocol::CollectionMode::List,
+                    deerpunk_inspector_protocol::CollectionMode::Get,
+                ],
+                id_field: "index".into(),
+                nested_in: None,
+            });
+        self.inspector
+            .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
+                id: "methoddb".into(),
+                label: "MethodDB".into(),
+                group: deerpunk_inspector_protocol::CollectionGroup::Definitions,
+                modes: vec![
+                    deerpunk_inspector_protocol::CollectionMode::List,
+                    deerpunk_inspector_protocol::CollectionMode::Get,
+                ],
+                id_field: "index".into(),
+                nested_in: None,
+            });
         stdin_cmd::start();
 
         log::info!("Engine initialized");
@@ -614,7 +633,6 @@ impl Host {
             .unwrap_or_else(|| "127.0.0.1".into());
         log::info!("[inspector] start host={host} port={port}");
         self.inspector.start(&host, port);
-        self.inspector.sync_methoddb();
     }
 
     fn register_internal_components(&mut self) {
@@ -656,7 +674,10 @@ impl Host {
                 log::info!("server DLL loaded: {}", path);
             }
             Err(e) => {
-                log::error!("server DLL load failed: {}. Running without server gamelib.", e);
+                log::error!(
+                    "server DLL load failed: {}. Running without server gamelib.",
+                    e
+                );
             }
         }
 
@@ -856,7 +877,10 @@ impl Host {
             .net
             .listen_port()
             .unwrap_or_else(|| self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16);
-        let hostname = self.cvar.get_string("hostname").unwrap_or_else(|| "DarkDemo".into());
+        let hostname = self
+            .cvar
+            .get_string("hostname")
+            .unwrap_or_else(|| "DarkDemo".into());
         let map = if self.lan_map.is_empty() {
             "?".into()
         } else {
@@ -894,7 +918,10 @@ impl Host {
                 players: st.players,
                 max_players: st.max_players,
             };
-            if !list.iter().any(|s| s.port == local.port && s.addr.ip().is_loopback()) {
+            if !list
+                .iter()
+                .any(|s| s.port == local.port && s.addr.ip().is_loopback())
+            {
                 list.insert(0, local);
             }
         }
@@ -904,73 +931,86 @@ impl Host {
     }
 
     fn register_net_commands(&mut self) {
-        self.cmd.register_command("listen", |ctx| {
-            let port = ctx
-                .args
-                .first()
-                .and_then(|s| s.parse::<u16>().ok());
-            PENDING_NET.lock().unwrap().push(PendingNetCmd::Listen(port));
-        });
-        self.cmd.register_command("connect", |ctx| {
-            let Some(addr) = ctx.args.first().copied() else {
-                println!("Usage: connect <ip[:port]>  (default port {})", net::DEFAULT_PORT);
-                return;
-            };
-            PENDING_NET
-                .lock()
-                .unwrap()
-                .push(PendingNetCmd::Connect(addr.to_string()));
-        });
-        self.cmd.register_command("net_disconnect", |_| {
-            PENDING_NET
-                .lock()
-                .unwrap()
-                .push(PendingNetCmd::NetDisconnect);
-        });
-        self.cmd.register_command("lan_refresh", |_| {
-            PENDING_NET.lock().unwrap().push(PendingNetCmd::LanRefresh);
-        });
-        self.cmd.register_command("lan_stop", |_| {
-            PENDING_NET.lock().unwrap().push(PendingNetCmd::LanStop);
-        });
+        self.cmd
+            .register(cmd::CommandRegistration::new("listen").execute(|ctx| {
+                let port = ctx.args.first().and_then(|s| s.parse::<u16>().ok());
+                PENDING_NET
+                    .lock()
+                    .unwrap()
+                    .push(PendingNetCmd::Listen(port));
+            }));
+        self.cmd
+            .register(cmd::CommandRegistration::new("connect").execute(|ctx| {
+                let Some(addr) = ctx.args.first().copied() else {
+                    println!(
+                        "Usage: connect <ip[:port]>  (default port {})",
+                        net::DEFAULT_PORT
+                    );
+                    return;
+                };
+                PENDING_NET
+                    .lock()
+                    .unwrap()
+                    .push(PendingNetCmd::Connect(addr.to_string()));
+            }));
+        self.cmd.register(
+            cmd::CommandRegistration::new("net_disconnect").execute(|_| {
+                PENDING_NET
+                    .lock()
+                    .unwrap()
+                    .push(PendingNetCmd::NetDisconnect);
+            }),
+        );
+        self.cmd
+            .register(cmd::CommandRegistration::new("lan_refresh").execute(|_| {
+                PENDING_NET.lock().unwrap().push(PendingNetCmd::LanRefresh);
+            }));
+        self.cmd
+            .register(cmd::CommandRegistration::new("lan_stop").execute(|_| {
+                PENDING_NET.lock().unwrap().push(PendingNetCmd::LanStop);
+            }));
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
     fn register_demo_commands(&mut self) {
-        self.cmd.register_command("record", |ctx| {
-            let Some(name) = ctx.args.first().copied() else {
-                println!("Usage: record <name>");
-                return;
-            };
-            PENDING_DEMO
-                .lock()
-                .unwrap()
-                .push(PendingDemoCmd::Record(name.to_string()));
-        });
-        self.cmd.register_command("playdemo", |ctx| {
-            let Some(name) = ctx.args.first().copied() else {
-                println!("Usage: playdemo <name>");
-                return;
-            };
-            PENDING_DEMO
-                .lock()
-                .unwrap()
-                .push(PendingDemoCmd::Play(name.to_string()));
-        });
+        self.cmd
+            .register(cmd::CommandRegistration::new("record").execute(|ctx| {
+                let Some(name) = ctx.args.first().copied() else {
+                    println!("Usage: record <name>");
+                    return;
+                };
+                PENDING_DEMO
+                    .lock()
+                    .unwrap()
+                    .push(PendingDemoCmd::Record(name.to_string()));
+            }));
+        self.cmd
+            .register(cmd::CommandRegistration::new("playdemo").execute(|ctx| {
+                let Some(name) = ctx.args.first().copied() else {
+                    println!("Usage: playdemo <name>");
+                    return;
+                };
+                PENDING_DEMO
+                    .lock()
+                    .unwrap()
+                    .push(PendingDemoCmd::Play(name.to_string()));
+            }));
         // GS alias
-        self.cmd.register_command("play", |ctx| {
-            let Some(name) = ctx.args.first().copied() else {
-                println!("Usage: play <name>  (demo)");
-                return;
-            };
-            PENDING_DEMO
-                .lock()
-                .unwrap()
-                .push(PendingDemoCmd::Play(name.to_string()));
-        });
-        self.cmd.register_command("stop", |_| {
-            PENDING_DEMO.lock().unwrap().push(PendingDemoCmd::Stop);
-        });
+        self.cmd
+            .register(cmd::CommandRegistration::new("play").execute(|ctx| {
+                let Some(name) = ctx.args.first().copied() else {
+                    println!("Usage: play <name>  (demo)");
+                    return;
+                };
+                PENDING_DEMO
+                    .lock()
+                    .unwrap()
+                    .push(PendingDemoCmd::Play(name.to_string()));
+            }));
+        self.cmd
+            .register(cmd::CommandRegistration::new("stop").execute(|_| {
+                PENDING_DEMO.lock().unwrap().push(PendingDemoCmd::Stop);
+            }));
     }
 
     fn drain_pending_net_cmds(&mut self) {
@@ -999,14 +1039,9 @@ impl Host {
                 PendingNetCmd::Connect(addr_s) => {
                     match net::parse_addr(&addr_s, net::DEFAULT_PORT) {
                         Ok(addr) => {
-                            let port = self
-                                .net
-                                .listen_port()
-                                .unwrap_or_else(|| {
-                                    self.cvar
-                                        .get_f32_or("sv_port", net::DEFAULT_PORT as f32)
-                                        as u16
-                                });
+                            let port = self.net.listen_port().unwrap_or_else(|| {
+                                self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16
+                            });
                             #[cfg(any(feature = "client", feature = "full"))]
                             if self.server_engine.enabled
                                 && self.net.is_hosting()
@@ -1059,7 +1094,6 @@ impl Host {
                     lan::set_servers_json(&[]);
                     #[cfg(any(feature = "client", feature = "full"))]
                     deerpunk_ui::set_lan_servers_json("[]");
-                    println!("[lan] browser stopped");
                 }
             }
         }
@@ -1113,14 +1147,19 @@ impl Host {
 
     /// Legacy hook (no-op). Albedo/lightmap upload is via material URIs in gamelib.
     #[cfg(any(feature = "client", feature = "full"))]
-    pub fn flush_pending_albedos_world(&mut self, _world: &deerpunk_engine_common::world::World) -> u32 {
+    pub fn flush_pending_albedos_world(
+        &mut self,
+        _world: &deerpunk_engine_common::world::World,
+    ) -> u32 {
         // Lightmaps and albedo atlases are uploaded via material `_Lightmap` / `_BaseMap` URIs
         // (`MaterialStore::attach_lightmaps_from_asset`, gamelib BSP loader). Kept for call sites.
         0
     }
 
     #[cfg(not(any(feature = "client", feature = "full")))]
-    fn flush_pending_albedos(&mut self) -> u32 { 0 }
+    fn flush_pending_albedos(&mut self) -> u32 {
+        0
+    }
 
     #[cfg(any(feature = "client", feature = "full"))]
     fn drain_ui_commands(&mut self) {
@@ -1161,8 +1200,9 @@ impl Host {
                 ..
             } = self;
             if let Some(client) = client_engine.as_mut() {
-                console.tick_input(cvar, cmd, &mut client.input);
+                console.tick_input(cvar, &mut client.input);
                 let cons_open = console::Console::visible(cvar);
+                client.set_console_open(cons_open);
                 binds::global().tick(&client.input, cmd, cons_open);
             }
         }
@@ -1224,27 +1264,28 @@ impl Host {
         }
         {
             let _g = system_profiler::scope("host.inspector");
-            self.inspector.sync_world(&self.server_engine.world, delta_time);
-            self.inspector.sync_assets(self.resources.list_assets());
-            self.inspector
-                .sync_systems(system_profiler::snapshot_for_inspector());
-            self.sync_inspector_players();
-            #[cfg(any(feature = "client", feature = "full"))]
-            if let Some(client) = self.client_engine.as_ref() {
-                let events = client
-                    .audio_list_events()
-                    .into_iter()
-                    .map(|e| inspector::FmodEventSnap {
-                        path: e.path,
-                        bank: e.bank,
-                        is_3d: e.is_3d,
-                        oneshot: e.oneshot,
-                        params: e.params,
-                    })
-                    .collect();
-                self.inspector.sync_fmod_events(events);
+            if self.inspector.is_running() {
+                #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
+                let ctx = inspector::InspectorRpcCtx {
+                    world: &self.server_engine.world,
+                    resources: &self.resources,
+                    time_secs: self.time_secs,
+                    players: &self.players,
+                    net: &self.net,
+                    server_rep: &self.server_rep,
+                    #[cfg(any(feature = "client", feature = "full"))]
+                    client_engine: self.client_engine.as_ref(),
+                };
+                #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
+                let ctx = inspector::InspectorRpcCtx {
+                    world: &self.server_engine.world,
+                    resources: &self.resources,
+                    time_secs: self.time_secs,
+                    players: &self.players,
+                    net: &self.net,
+                };
+                self.inspector.poll(ctx);
             }
-            self.inspector.poll(&self.server_engine.world);
         }
 
         system_profiler::end_frame();
@@ -1274,6 +1315,7 @@ impl Host {
         let Host {
             console,
             cvar,
+            cmd,
             client_engine,
             server_engine,
             client_dll,
@@ -1282,7 +1324,7 @@ impl Host {
         let Some(client) = client_engine.as_ref() else {
             return;
         };
-        console.tick_draw(cvar);
+        console.tick_draw(cvar, cmd, cvar);
         let (view_yaw, view_pitch) = view.map(|v| (v.yaw, v.pitch)).unwrap_or((0.0, 0.0));
         deerpunk_engine_client::infobox::tick(
             show_fps,
@@ -1334,12 +1376,7 @@ impl Host {
     }
 
     /// Send a registered UserMessage (`slot = None` → broadcast remotes).
-    pub fn um_send(
-        &mut self,
-        name: &str,
-        data: &[u8],
-        slot: Option<u32>,
-    ) -> Result<(), String> {
+    pub fn um_send(&mut self, name: &str, data: &[u8], slot: Option<u32>) -> Result<(), String> {
         let Some(msg_id) = self.um.id_of(name) else {
             return Err(format!("user message '{name}' not registered"));
         };
@@ -1405,10 +1442,9 @@ impl Host {
     /// Join **init** bundle for one slot (then **play** via `InitDone`).
     #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
     fn send_join_init(&mut self, slot: u32) {
-        let defs = self.server_rep.prefab_definition_packets(
-            self.fs.gamedir(),
-            &self.server_engine.world,
-        );
+        let defs = self
+            .server_rep
+            .prefab_definition_packets(self.fs.gamedir(), &self.server_engine.world);
         let snap = self.server_rep.snapshot(&self.server_engine.world);
         let def_count = defs.len();
         let snap_count = snap.len();
@@ -1513,9 +1549,7 @@ impl Host {
             let m = &p.mesh_stats;
             lines.push(format!(
                 "mesh: submitted={}  lm_arr={} albedo2d={}",
-                m.draws_submitted,
-                m.lm_array_layout_draws,
-                m.albedo_2d_layout_draws
+                m.draws_submitted, m.lm_array_layout_draws, m.albedo_2d_layout_draws
             ));
             if m.lm_array_with_gpu_id_zero > 0 {
                 lines.push(format!(
@@ -1555,43 +1589,6 @@ impl Host {
             }
         }
         lines
-    }
-
-    fn sync_inspector_players(&mut self) {
-        let remote_addrs: std::collections::HashMap<u32, String> = self
-            .net
-            .remote_slot_debug()
-            .into_iter()
-            .collect();
-        let players: Vec<serde_json::Value> = self
-            .players
-            .list()
-            .iter()
-            .map(|p| {
-                #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-                let net_id = p.entity.and_then(|e| self.server_rep.net_id_of(e));
-                #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-                let net_id: Option<u16> = None;
-                serde_json::json!({
-                    "index": p.slot,
-                    "name": p.name,
-                    "local": p.local,
-                    "entity": p.entity,
-                    "netId": net_id,
-                    "addr": remote_addrs.get(&p.slot).cloned().unwrap_or_else(|| {
-                        if p.local { "local".into() } else { "?".into() }
-                    }),
-                })
-            })
-            .collect();
-        self.inspector.sync_players(serde_json::json!({
-            "time": self.time_secs,
-            "count": players.len(),
-            "players": players,
-            "role": self.net.hud_stats().role,
-            "hosting": self.net.is_hosting(),
-            "client": self.net.is_client(),
-        }));
     }
 
     fn drain_channel(&mut self) {
@@ -1637,10 +1634,7 @@ impl Host {
                 }
                 let payload = &packet[1..];
                 let Some(ucmd) = UserCmd::decode(payload) else {
-                    log::warn!(
-                        "[sv] bad UserCmd len={} from slot={slot}",
-                        payload.len()
-                    );
+                    log::warn!("[sv] bad UserCmd len={} from slot={slot}", payload.len());
                     return;
                 };
                 self.players.set_usercmd(slot, ucmd);
@@ -1729,7 +1723,9 @@ impl Host {
     fn demo_stop(&mut self) {
         if let Some(w) = self.demo_writer.take() {
             match w.finish() {
-                Ok((path, n)) => println!("[demo] stopped recording {} ({} pkts)", path.display(), n),
+                Ok((path, n)) => {
+                    println!("[demo] stopped recording {} ({} pkts)", path.display(), n)
+                }
                 Err(e) => println!("[demo] stop record error: {e}"),
             }
         }
@@ -1770,7 +1766,8 @@ impl Host {
             let Some(ent) = self.client_rep.client_of_net(net_id) else {
                 continue;
             };
-            let ptr = client.world.get_raw(ent, t_id) as *const deerpunk_engine_common::components::TransformComponent;
+            let ptr = client.world.get_raw(ent, t_id)
+                as *const deerpunk_engine_common::components::TransformComponent;
             if ptr.is_null() {
                 continue;
             }
@@ -1837,12 +1834,9 @@ impl Host {
                     return;
                 };
                 let gamedir = self.fs.gamedir().to_path_buf();
-                let _ = self.client_rep.apply_packet(
-                    client,
-                    &gamedir,
-                    &mut self.resources,
-                    packet,
-                );
+                let _ = self
+                    .client_rep
+                    .apply_packet(client, &gamedir, &mut self.resources, packet);
             }
             SVC::UserMessage => self.dispatch_user_message_packet(packet),
             SVC::InitDone => {
@@ -1953,14 +1947,23 @@ impl Host {
         }
 
         if self.server_engine.enabled {
-            let packets = self.server_rep.tick(&self.server_engine.world);
-            self.deliver_s2c_broadcast(&packets);
+            let packets = {
+                let _g = system_profiler::scope("replicate.server_tick");
+                self.server_rep.tick(&self.server_engine.world)
+            };
+            {
+                let _g = system_profiler::scope("replicate.deliver");
+                self.deliver_s2c_broadcast(&packets);
+            }
         }
 
-        self.drain_client_channel_s2c();
+        {
+            let _g = system_profiler::scope("replicate.apply_s2c");
+            self.drain_client_channel_s2c();
+        }
 
-        let client_world =
-            &self.client_engine.as_ref().unwrap().world as *const deerpunk_engine_common::world::World;
+        let client_world = &self.client_engine.as_ref().unwrap().world
+            as *const deerpunk_engine_common::world::World;
         let s = unsafe { self.flush_pending_albedos_world(&*client_world) };
         if s != 0 {
             self.last_atlas_slot = s;
@@ -1986,8 +1989,7 @@ impl Host {
         } else {
             None
         };
-        let (s2c, c2s, need_public) =
-            self.net.update(duration, &slots, lan_reply.as_ref());
+        let (s2c, c2s, need_public) = self.net.update(duration, &slots, lan_reply.as_ref());
         if let Some(addr) = need_public {
             self.net.apply_need_public_addr(addr);
         }
@@ -2002,8 +2004,7 @@ impl Host {
 
         let udp_connects = std::mem::take(&mut self.net.pending_player_connect);
         for &slot in &udp_connects {
-            self.players
-                .connect_remote(slot, format!("player{slot}"));
+            self.players.connect_remote(slot, format!("player{slot}"));
             if let Some(ref dll) = self.server_dll {
                 unsafe {
                     dll.player_connected(slot);
@@ -2036,8 +2037,7 @@ impl Host {
                 self.apply_local_s2c(packet);
             }
             if let Some(client) = self.client_engine.as_ref() {
-                let world =
-                    &client.world as *const deerpunk_engine_common::world::World;
+                let world = &client.world as *const deerpunk_engine_common::world::World;
                 let s = unsafe { self.flush_pending_albedos_world(&*world) };
                 if s != 0 {
                     self.last_atlas_slot = s;
@@ -2187,7 +2187,9 @@ impl Host {
                 r.set_grain(
                     self.cvar.get_f32_or("r_grain", 1.0) >= 0.5,
                     self.cvar.get_f32_or("r_grain_strength", 0.025),
-                    self.cvar.get_f32_or("r_grain_downscale", 3.0).clamp(1.0, 8.0),
+                    self.cvar
+                        .get_f32_or("r_grain_downscale", 3.0)
+                        .clamp(1.0, 8.0),
                 );
             }
 
@@ -2242,7 +2244,11 @@ impl Host {
             if REQUEST_QUIT.load(Ordering::SeqCst) {
                 break;
             }
-            self.client_engine.as_mut().unwrap().input.reset_mouse_delta();
+            self.client_engine
+                .as_mut()
+                .unwrap()
+                .input
+                .reset_mouse_delta();
         }
 
         self.shutdown();

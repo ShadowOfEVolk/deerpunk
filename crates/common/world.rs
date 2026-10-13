@@ -330,6 +330,23 @@ impl World {
         unsafe { sys::ecs_has_id(self.inner, entity, comp) }
     }
 
+    /// Alive entities with `comp` — no inspector name/type string work (hot paths).
+    pub fn for_each_with_component(&self, comp: ComponentId, mut f: impl FnMut(EntityId)) {
+        unsafe {
+            let entities = sys::ecs_get_entities(self.inner);
+            let n = entities.alive_count.max(0) as usize;
+            let ids = std::slice::from_raw_parts(entities.ids, n);
+            for &entity in ids {
+                if !sys::ecs_is_alive(self.inner, entity) {
+                    continue;
+                }
+                if self.has(entity, comp) {
+                    f(entity);
+                }
+            }
+        }
+    }
+
     pub fn remove(&self, entity: EntityId, comp: ComponentId) {
         unsafe { sys::ecs_remove_id(self.inner, entity, comp) }
     }

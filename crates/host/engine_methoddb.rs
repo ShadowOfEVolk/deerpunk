@@ -105,6 +105,14 @@ impl crate::Host {
         let Some(cmd) = UserCmd::decode(data) else {
             return -1;
         };
+        let rate = self.cvar.get_f32_or("cl_cmdrate", 30.0);
+        if rate > 0.0 {
+            let min_dt = 1.0 / rate;
+            if self.time_secs - self.last_usercmd_send_secs < min_dt {
+                return 0;
+            }
+            self.last_usercmd_send_secs = self.time_secs;
+        }
         let packet = cmd.encode_clc_packet().to_vec();
         if self.net.is_client() {
             if !self.client_in_play() {

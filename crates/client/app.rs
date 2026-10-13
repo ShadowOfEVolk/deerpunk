@@ -79,6 +79,16 @@ impl App {
         }
     }
 
+    pub fn set_clipboard_text(&self, text: &str) {
+        if let Err(e) = self.video.clipboard().set_clipboard_text(text) {
+            log::warn!("[app] set_clipboard_text: {e}");
+        }
+    }
+
+    pub fn clipboard_text(&self) -> Option<String> {
+        self.video.clipboard().clipboard_text().ok()
+    }
+
     /// Capture mouse for mlook (relative deltas, cursor hidden).
     pub fn set_relative_mouse(&mut self, on: bool) {
         let mouse = self._sdl.mouse();

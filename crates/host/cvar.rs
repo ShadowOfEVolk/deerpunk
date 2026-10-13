@@ -83,6 +83,41 @@ impl CvarSystem {
         self.values.read().expect("cvars read lock").get(name).cloned()
     }
 
+    pub fn contains(&self, name: &str) -> bool {
+        self.values.read().expect("cvars read lock").contains_key(name)
+    }
+
+    fn static_def(name: &str) -> Option<&'static CvarDef> {
+        inventory::iter::<CvarDef>().find(|d| d.name == name)
+    }
+
+    /// GoldSrc / Xash console: `name` with no args prints current value (and def metadata when known).
+    pub fn print_query(&self, name: &str) -> bool {
+        let value = match self.get_string(name) {
+            Some(v) => v,
+            None => return false,
+        };
+        if let Some(def) = Self::static_def(name) {
+            if def.default.is_empty() {
+                println!("\"{}\" is \"{}\"", name, value);
+            } else {
+                println!(
+                    "\"{}\" is \"{}\" ( \"{}\" )",
+                    name,
+                    value,
+                    def.default
+                );
+            }
+            if !def.desc.is_empty() {
+                println!("{}", def.desc);
+            }
+        } else {
+            println!("\"{}\" is \"{}\"", name, value);
+        }
+        log::info!(target: "console", "cvar query: {name} = {value}");
+        true
+    }
+
     pub fn get_f32(&self, name: &str) -> Option<f32> {
         self.values
             .read()

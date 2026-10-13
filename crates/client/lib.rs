@@ -15,6 +15,7 @@ pub mod common {
 pub use camera::{Camera, CameraMode, FreecamController, CAMERA_SMOOTH_SPEED, FOLLOW_VIEW_SIZE, tank_in_camera_view};
 pub mod app;
 pub mod client_engine;
+pub mod imgui_console_input;
 pub mod infobox;
 pub mod mesh_lifecycle;
 pub mod render_extractor;

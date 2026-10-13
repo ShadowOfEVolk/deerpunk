@@ -1,6 +1,6 @@
-use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
+use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{stderr, stdout, IsTerminal, Write};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +9,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const LOG_LINE_CAP: usize = 256;
 /// Ring slots — 512 × 256 ≈ 128 KiB, no heap growth.
 pub const LOG_RING_CAP: usize = 512;
+
+/// Console ANSI colors. `DEERPUNK_LOG_COLOR=auto|always|never` (default: auto = TTY).
+mod ansi {
+    pub const RESET: &str = "\x1b[0m";
+    pub const DIM: &str = "\x1b[2m";
+    pub const BRIGHT: &str = "\x1b[1m";
+    pub const RED: &str = "\x1b[31m";
+    pub const YELLOW: &str = "\x1b[33m";
+    pub const GREEN: &str = "\x1b[32m";
+    pub const CYAN: &str = "\x1b[36m";
+    pub const BLUE: &str = "\x1b[34m";
+    pub const GRAY: &str = "\x1b[90m";
+}
 
 struct LogRing {
     lines: [[u8; LOG_LINE_CAP]; LOG_RING_CAP],
@@ -82,6 +95,7 @@ pub fn push_line_bytes(bytes: &[u8]) {
 struct Logger {
     console_level: LevelFilter,
     file: Mutex<File>,
+    color_console: bool,
 }
 
 impl Log for Logger {
@@ -95,31 +109,37 @@ impl Log for Logger {
         }
 
         let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
         let secs = now.as_secs();
         let millis = now.subsec_millis();
 
         let t = time_from_epoch(secs);
-        let level = record.level();
-        let target = record.metadata().target();
-        let args = record.args();
-
-        let line = format!(
-            "[{:02}:{:02}:{:02}.{:03}] [{:<5}] [{}] {}\n",
-            t.hour, t.min, t.sec, millis, level, target, args
+        let timestamp = format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            t.hour, t.min, t.sec, millis
         );
+        let level = record.level();
+        let scope = scope_from_target(record.metadata().target());
+        let message = record.args().to_string();
 
-        push_line_bytes(line.as_bytes());
+        let plain = format_line_plain(&timestamp, level, &scope, &message);
+        let console = if self.color_console {
+            format_line_colored(&timestamp, level, &scope, &message)
+        } else {
+            plain.clone()
+        };
+
+        push_line_bytes(plain.as_bytes());
 
         if record.level() <= LevelFilter::Warn {
-            eprint!("{}", line);
+            let _ = stderr().write_all(console.as_bytes());
         } else {
-            print!("{}", line);
+            let _ = stdout().write_all(console.as_bytes());
         }
 
         if let Ok(mut file) = self.file.lock() {
-            let _ = file.write_all(line.as_bytes());
+            let _ = file.write_all(plain.as_bytes());
         }
     }
 
@@ -127,6 +147,126 @@ impl Log for Logger {
         if let Ok(mut file) = self.file.lock() {
             let _ = file.flush();
         }
+    }
+}
+
+/// `[HH:MM:SS.mmm LEVEL] scope: message`
+fn format_line_plain(timestamp: &str, level: Level, scope: &str, message: &str) -> String {
+    format!("[{} {}] {}: {}\n", timestamp, level.as_str(), scope, message)
+}
+
+fn format_line_colored(timestamp: &str, level: Level, scope: &str, message: &str) -> String {
+    use ansi::*;
+    let lvl_style = level_style(level);
+    format!(
+        "{DIM}[{RESET}{GRAY}{ts}{RESET}{DIM} {RESET}{ls}{lvl}{RESET}{DIM}]{RESET} {CYAN}{scope}{RESET}{DIM}:{RESET} {msg}\n",
+        DIM = DIM,
+        RESET = RESET,
+        GRAY = GRAY,
+        ts = timestamp,
+        ls = lvl_style,
+        lvl = level.as_str(),
+        CYAN = CYAN,
+        scope = scope,
+        msg = message,
+    )
+}
+
+fn level_style(level: Level) -> &'static str {
+    match level {
+        Level::Error => "\x1b[1m\x1b[31m",
+        Level::Warn => "\x1b[1m\x1b[33m",
+        Level::Info => "\x1b[1m\x1b[32m",
+        Level::Debug => "\x1b[2m\x1b[34m",
+        Level::Trace => "\x1b[2m\x1b[90m",
+    }
+}
+
+/// Parsed [`format_line_plain`] output for the in-game console.
+pub struct ParsedLogLine {
+    pub timestamp: String,
+    pub level: Level,
+    pub scope: String,
+    pub message: String,
+}
+
+/// Parse `[HH:MM:SS.mmm LEVEL] scope: message` (no trailing newline).
+pub fn parse_plain_log_line(line: &str) -> Option<ParsedLogLine> {
+    let line = line.trim_end_matches(['\n', '\r']);
+    if !line.starts_with('[') {
+        return None;
+    }
+    let close = line.find("] ")?;
+    let header = &line[1..close];
+    let rest = &line[close + 2..];
+    let (scope, message) = rest.split_once(": ")?;
+    let sp = header.rfind(' ')?;
+    let timestamp = header[..sp].to_string();
+    let level = level_from_str(&header[sp + 1..])?;
+    Some(ParsedLogLine {
+        timestamp,
+        level,
+        scope: scope.to_string(),
+        message: message.to_string(),
+    })
+}
+
+fn level_from_str(s: &str) -> Option<Level> {
+    match s {
+        "ERROR" => Some(Level::Error),
+        "WARN" => Some(Level::Warn),
+        "INFO" => Some(Level::Info),
+        "DEBUG" => Some(Level::Debug),
+        "TRACE" => Some(Level::Trace),
+        _ => None,
+    }
+}
+
+/// ImGui `ImVec4` RGBA for log level (in-game console).
+pub fn level_imgui_color(level: Level) -> [f32; 4] {
+    match level {
+        Level::Error => [1.0, 0.35, 0.35, 1.0],
+        Level::Warn => [1.0, 0.85, 0.35, 1.0],
+        Level::Info => [0.55, 0.95, 0.55, 1.0],
+        Level::Debug => [0.55, 0.75, 1.0, 1.0],
+        Level::Trace => [0.55, 0.55, 0.55, 1.0],
+    }
+}
+
+pub fn console_timestamp_imgui_color() -> [f32; 4] {
+    [0.55, 0.55, 0.55, 1.0]
+}
+
+pub fn console_scope_imgui_color() -> [f32; 4] {
+    [0.45, 0.85, 0.95, 1.0]
+}
+
+pub fn console_message_imgui_color() -> [f32; 4] {
+    [0.92, 0.92, 0.92, 1.0]
+}
+
+pub fn console_legacy_imgui_color() -> [f32; 4] {
+    [0.75, 0.75, 0.75, 1.0]
+}
+
+/// Shorten Rust `log` targets (`deerpunk_ui::runtime` → `ui::runtime`).
+fn scope_from_target(target: &str) -> String {
+    let t = target
+        .strip_prefix("deerpunk_engine_")
+        .or_else(|| target.strip_prefix("deerpunk_"))
+        .unwrap_or(target);
+    t.to_string()
+}
+
+fn console_color_enabled() -> bool {
+    match std::env::var("DEERPUNK_LOG_COLOR")
+        .unwrap_or_else(|_| "auto".into())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "never" | "off" | "false" => false,
+        "1" | "always" | "on" | "true" => true,
+        _ => stderr().is_terminal() || stdout().is_terminal(),
     }
 }
 
@@ -168,6 +308,7 @@ pub fn init(
     let logger = Logger {
         console_level,
         file: Mutex::new(file),
+        color_console: console_color_enabled(),
     };
 
     log::set_boxed_logger(Box::new(logger))?;

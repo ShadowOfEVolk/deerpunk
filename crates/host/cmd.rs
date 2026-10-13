@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
 
+use crate::cmd_completion::{
+    filter_name_prefix, suggest_cvar_assignment, suggest_cvar_names_at_arg, split_for_completion,
+    MAX_COMPLETIONS,
+};
 use crate::cvar::CvarSystem;
 use crate::fs::FileSystem;
 
@@ -16,6 +20,64 @@ pub struct CommandExecutionContext<'a> {
 }
 
 type CommandCallback = Box<dyn Fn(CommandExecutionContext) + Send + Sync>;
+
+/// Brigadier-style: given the full console input line, return full-line tab candidates.
+pub type CommandSuggestFn =
+    Box<dyn for<'a> Fn(&str, &'a SuggestContext<'a>) -> Vec<String> + Send + Sync>;
+
+pub struct SuggestContext<'a> {
+    pub cvar: &'a CvarSystem,
+    pub names: &'a [String],
+}
+
+struct CommandEntry {
+    execute: CommandCallback,
+    suggest: CommandSuggestFn,
+}
+
+/// Console command registration (`execute` required, `suggest` optional).
+pub struct CommandRegistration {
+    name: String,
+    execute: Option<CommandCallback>,
+    suggest: Option<CommandSuggestFn>,
+}
+
+impl CommandRegistration {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            execute: None,
+            suggest: None,
+        }
+    }
+
+    pub fn execute<F>(mut self, f: F) -> Self
+    where
+        F: Fn(CommandExecutionContext) + Send + Sync + 'static,
+    {
+        self.execute = Some(Box::new(f));
+        self
+    }
+
+    pub fn suggest<S>(mut self, f: S) -> Self
+    where
+        S: for<'a> Fn(&str, &'a SuggestContext<'a>) -> Vec<String> + Send + Sync + 'static,
+    {
+        self.suggest = Some(Box::new(f));
+        self
+    }
+
+    fn into_entry(self) -> (String, CommandEntry) {
+        let name = self.name;
+        let execute = self
+            .execute
+            .expect("CommandRegistration: call .execute() before register");
+        let suggest = self
+            .suggest
+            .unwrap_or_else(|| Box::new(|_, _| Vec::new()));
+        (name, CommandEntry { execute, suggest })
+    }
+}
 
 /// Gamelib console callback (`v1:cmd:register`).
 pub type CmdCallback =
@@ -57,7 +119,7 @@ impl CmdBuffer {
 pub struct CmdSystem {
     initialized: bool,
     buffer: RefCell<CmdBuffer>,
-    commands: HashMap<String, CommandCallback>,
+    commands: HashMap<String, CommandEntry>,
     cvar: *const CvarSystem,
     fs: *const FileSystem,
     /// Process argv (`+map foo` …), consumed once by `stuffcmds`.
@@ -117,9 +179,11 @@ impl CmdSystem {
     /// Quake/Xash: apply `+command args` from the process command line.
     /// Intended at the end of `.rc` / after configs; runs at most once.
     fn register_stuffcmds_command(&mut self) {
-        self.register_command("stuffcmds", |ctx| {
-            ctx.cmd.exec_stuffcmds();
-        });
+        self.register(
+            CommandRegistration::new("stuffcmds").execute(|ctx| {
+                ctx.cmd.exec_stuffcmds();
+            }),
+        );
     }
 
     pub fn exec_stuffcmds(&self) {
@@ -139,9 +203,8 @@ impl CmdSystem {
     }
 
     fn register_echo_command(&mut self) {
-        self.register_command(
-            "echo",
-            Box::new(move |ctx: CommandExecutionContext<'_>| {
+        self.register(
+            CommandRegistration::new("echo").execute(|ctx: CommandExecutionContext<'_>| {
                 if ctx.args.is_empty() {
                     println!();
                     log::info!("[echo]");
@@ -156,32 +219,32 @@ impl CmdSystem {
 
     /// Flip a cvar between 0 and 1: `toggle <cvar>`.
     fn register_toggle_command(&mut self) {
-        self.register_command(
-            "toggle",
-            Box::new(move |ctx: CommandExecutionContext<'_>| {
-                let Some(name) = ctx.args.first().copied() else {
-                    println!("Usage: toggle <cvar>");
-                    return;
-                };
-                let name = strip_cfg_quotes(name);
-                if name.is_empty() {
-                    println!("Usage: toggle <cvar>");
-                    return;
-                }
-                let on = ctx.cmd.cvar().get_bool_or(name, false);
-                let next = if on { "0" } else { "1" };
-                ctx.cmd.cvar().set_or_create(name, next);
+        self.register(
+            CommandRegistration::new("toggle")
+                .execute(|ctx: CommandExecutionContext<'_>| {
+                    let Some(name) = ctx.args.first().copied() else {
+                        println!("Usage: toggle <cvar>");
+                        return;
+                    };
+                    let name = strip_cfg_quotes(name);
+                    if name.is_empty() {
+                        println!("Usage: toggle <cvar>");
+                        return;
+                    }
+                    let on = ctx.cmd.cvar().get_bool_or(name, false);
+                    let next = if on { "0" } else { "1" };
+                    ctx.cmd.cvar().set_or_create(name, next);
                 println!("toggle {name} = {next}");
-            }),
+            })
+                .suggest(|line, ctx| suggest_cvar_names_at_arg(line, "toggle", 0, ctx.cvar)),
         );
     }
 
     /// Cycle integer cvar in `[min, max]`: `toggle_smart <min> <max> <cvar>`.
     /// Out of range / missing → `min`. Otherwise `cur+1`, wrap to `min` after `max`.
     fn register_toggle_smart_command(&mut self) {
-        self.register_command(
-            "toggle_smart",
-            Box::new(move |ctx: CommandExecutionContext<'_>| {
+        self.register(
+            CommandRegistration::new("toggle_smart").execute(|ctx: CommandExecutionContext<'_>| {
                 if ctx.args.len() < 3 {
                     println!("Usage: toggle_smart <min> <max> <cvar>");
                     return;
@@ -214,24 +277,27 @@ impl CmdSystem {
                 let next_s = next.to_string();
                 ctx.cmd.cvar().set_or_create(name, &next_s);
                 println!("toggle_smart {name} = {next_s} (range {lo}..{hi})");
-            }),
+            })
+            .suggest(|line, ctx| suggest_cvar_names_at_arg(line, "toggle_smart", 2, ctx.cvar)),
         );
     }
 
     fn register_exec_command(&mut self) {
-        let exec_handler: CommandCallback = Box::new(move |ctx| {
-            if ctx.args.is_empty() {
-                println!("Usage: exec <filename>");
-                return;
-            }
-            let filename = &ctx.args[0];
-            ctx.cmd.exec_file(filename);
-        });
-        self.commands.insert("exec".to_string(), exec_handler);
+        self.register(
+            CommandRegistration::new("exec").execute(|ctx| {
+                if ctx.args.is_empty() {
+                    println!("Usage: exec <filename>");
+                    return;
+                }
+                let filename = &ctx.args[0];
+                ctx.cmd.exec_file(filename);
+            }),
+        );
     }
 
     fn exec_file(&self, filename: &str) {
-        println!("Executing file: {}", filename);
+        println!("execing {}", filename);
+        log::info!(target: "console", "execing {}", filename);
         self.exec_script_file(filename);
     }
 
@@ -245,7 +311,8 @@ impl CmdSystem {
         let content = match std::fs::read_to_string(&resolved) {
             Ok(c) => c,
             Err(err) => {
-                eprintln!("[cfg] can't read {}: {err}", resolved.display());
+                println!("couldn't exec {}: {err}", resolved.display());
+                log::warn!("[cmd] couldn't exec {}: {err}", resolved.display());
                 return;
             }
         };
@@ -259,11 +326,46 @@ impl CmdSystem {
         self.process_buffer();
     }
 
-    pub fn register_command<F>(&mut self, name: &str, callback: F)
-    where
-        F: Fn(CommandExecutionContext) + Send + Sync + 'static,
-    {
-        self.commands.insert(name.to_string(), Box::new(callback));
+    pub fn register(&mut self, reg: CommandRegistration) {
+        let (name, entry) = reg.into_entry();
+        self.commands.insert(name, entry);
+    }
+
+    /// Tab-completion for the in-game console (full input lines).
+    pub fn autocomplete(&self, line: &str, name_pool: &[String]) -> Vec<String> {
+        let (completed, partial, _ends_ws) = split_for_completion(line);
+        if completed.is_empty() {
+            return filter_name_prefix(name_pool, &partial, MAX_COMPLETIONS);
+        }
+
+        let ctx = SuggestContext {
+            cvar: self.cvar(),
+            names: name_pool,
+        };
+
+        let cmd_name = &completed[0];
+        if let Some(entry) = self.commands.get(cmd_name) {
+            let from_cmd = (entry.suggest)(line, &ctx);
+            if !from_cmd.is_empty() {
+                return from_cmd;
+            }
+        }
+
+        if completed.len() == 1 && self.cvar().contains(cmd_name) {
+            let from_cvar = suggest_cvar_assignment(line, self.cvar());
+            if !from_cvar.is_empty() {
+                return from_cvar;
+            }
+        }
+
+        Vec::new()
+    }
+
+    /// Sorted console command names (for in-game console autocomplete).
+    pub fn command_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.commands.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     pub fn shutdown(&mut self) {
@@ -327,10 +429,12 @@ impl CmdSystem {
         }
         let dll = DllCmd { callback, user };
         let name_owned = name.to_string();
-        self.register_command(&name_owned, move |ctx: CommandExecutionContext<'_>| {
-            invoke_dll_cmd(&dll, &ctx.args);
-        });
         log::info!("[cmd] registered gamelib command '{name_owned}'");
+        self.register(
+            CommandRegistration::new(name_owned).execute(move |ctx: CommandExecutionContext<'_>| {
+                invoke_dll_cmd(&dll, &ctx.args);
+            }),
+        );
         0
     }
 
@@ -343,16 +447,18 @@ impl CmdSystem {
         let command_name = tokens[0].as_str();
         let args: Vec<&str> = tokens[1..].iter().map(|s| s.as_str()).collect();
 
-        if let Some(callback) = self.commands.get(command_name) {
-            callback(CommandExecutionContext {
+        if let Some(entry) = self.commands.get(command_name) {
+            (entry.execute)(CommandExecutionContext {
                 cmd: self,
                 args: args.to_vec(),
             });
-        } else if !args.is_empty() {
-            self.cvar().set_or_create(command_name, &args.join(" "));
-            log::info!("Setting cvar: {} = {}", command_name, args.join(" "));
+        } else if args.is_empty() {
+            if !self.cvar().print_query(command_name) {
+                log::info!("Unknown command: {}", command_name);
+            }
         } else {
-            log::info!("Unknown command: {}", command_name);
+            // GoldSrc / Xash: `name value` sets silently (no echo).
+            self.cvar().set_or_create(command_name, &args.join(" "));
         }
     }
 

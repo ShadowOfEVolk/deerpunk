@@ -22,7 +22,9 @@ pub struct ServerPrefabReplication {
     /// last encoded hot snapshot per net_id
     last_hot: HashMap<u16, Vec<(FieldPathId, FieldValue)>>,
     /// worldspawn entities already baseline-spawned (no net_id)
-    worldspawn_sent: Vec<EntityId>,
+    worldspawn_sent: HashSet<EntityId>,
+    /// No pending worldspawns; skip scanning the world each tick.
+    worldspawn_idle: bool,
     /// `net_id` → stream generation (bumps on each `stream.in`).
     generation: HashMap<u16, u8>,
 }
@@ -69,19 +71,16 @@ impl ServerPrefabReplication {
     fn collect_prefab_names(&self, world: &World) -> Vec<String> {
         let mut set = HashSet::new();
         let ne_id = world.component_init::<NetworkEntity>();
-        for e in world.inspect_entities() {
-            if !world.has(e.id, ne_id) {
-                continue;
-            }
-            let ptr = world.get_raw(e.id, ne_id) as *const NetworkEntity;
+        world.for_each_with_component(ne_id, |entity| {
+            let ptr = world.get_raw(entity, ne_id) as *const NetworkEntity;
             if ptr.is_null() {
-                continue;
+                return;
             }
             let prefab = unsafe { &*ptr }.prefab_str();
             if !prefab.is_empty() {
                 set.insert(prefab.to_string());
             }
-        }
+        });
         let mut names: Vec<String> = set.into_iter().collect();
         names.sort();
         names
@@ -91,29 +90,26 @@ impl ServerPrefabReplication {
     pub fn snapshot(&self, world: &World) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
         let ne_id = world.component_init::<NetworkEntity>();
-        for e in world.inspect_entities() {
-            if !world.has(e.id, ne_id) {
-                continue;
-            }
-            let Some(&net_id) = self.entity_to_net.get(&e.id) else {
-                continue;
+        world.for_each_with_component(ne_id, |entity| {
+            let Some(&net_id) = self.entity_to_net.get(&entity) else {
+                return;
             };
-            let ptr = world.get_raw(e.id, ne_id) as *const NetworkEntity;
+            let ptr = world.get_raw(entity, ne_id) as *const NetworkEntity;
             if ptr.is_null() {
-                continue;
+                return;
             }
             let net = unsafe { &*ptr };
             let prefab = net.prefab_str();
             if prefab.is_empty() {
-                continue;
+                return;
             }
             let cold: Vec<(FieldPathId, FieldValue)> = net
                 .cold_paths()
-                .map(|p| (p, cold_field_value(world, e.id, p)))
+                .map(|p| (p, cold_field_value(world, entity, p)))
                 .collect();
             let hot: Vec<(FieldPathId, FieldValue)> = net
                 .hot_paths()
-                .filter_map(|p| read_field(world, e.id, p).map(|v| (p, v)))
+                .filter_map(|p| read_field(world, entity, p).map(|v| (p, v)))
                 .collect();
             let generation = self.generation.get(&net_id).copied().unwrap_or(0);
             packets.push(
@@ -126,7 +122,7 @@ impl ServerPrefabReplication {
                 }
                 .to_packet(),
             );
-        }
+        });
         packets
     }
 
@@ -150,31 +146,30 @@ impl ServerPrefabReplication {
     }
 
     fn emit_worldspawns(&mut self, world: &World) -> Vec<Vec<u8>> {
+        if self.worldspawn_idle {
+            return Vec::new();
+        }
         let ws_id = world.component_init::<Worldspawn>();
         let mut out = Vec::new();
-        for e in world.inspect_entities() {
-            if !world.has(e.id, ws_id) {
-                continue;
+        world.for_each_with_component(ws_id, |entity| {
+            if self.worldspawn_sent.contains(&entity) {
+                return;
             }
-            if self.worldspawn_sent.contains(&e.id) {
-                continue;
-            }
-            let map = match read_field(world, e.id, FieldPathId::WorldspawnMap) {
+            let map = match read_field(world, entity, FieldPathId::WorldspawnMap) {
                 Some(FieldValue::Str(s)) => s,
-                _ => continue,
+                _ => return,
             };
             let mut cold = vec![
                 (FieldPathId::Worldspawn, FieldValue::PrefabDefault),
                 (FieldPathId::Material, FieldValue::PrefabDefault),
                 (
                     FieldPathId::TransformPosition,
-                    read_field(world, e.id, FieldPathId::TransformPosition)
+                    read_field(world, entity, FieldPathId::TransformPosition)
                         .unwrap_or(FieldValue::Vec3([0.0, 0.0, 0.0])),
                 ),
                 (FieldPathId::WorldspawnMap, FieldValue::Str(map)),
             ];
-            // Transform scale if present
-            if let Some(s) = read_field(world, e.id, FieldPathId::TransformScale) {
+            if let Some(s) = read_field(world, entity, FieldPathId::TransformScale) {
                 cold.push((FieldPathId::TransformScale, s));
             }
             let rpc = StreamInRpc {
@@ -185,7 +180,10 @@ impl ServerPrefabReplication {
                 hot: Vec::new(),
             };
             out.push(rpc.to_packet());
-            self.worldspawn_sent.push(e.id);
+            self.worldspawn_sent.insert(entity);
+        });
+        if out.is_empty() {
+            self.worldspawn_idle = true;
         }
         out
     }
@@ -193,20 +191,17 @@ impl ServerPrefabReplication {
     fn emit_network_spawns(&mut self, world: &World, force_all: bool) -> Vec<Vec<u8>> {
         let ne_id = world.component_init::<NetworkEntity>();
         let mut out = Vec::new();
-        for e in world.inspect_entities() {
-            if !world.has(e.id, ne_id) {
-                continue;
+        world.for_each_with_component(ne_id, |entity| {
+            if !force_all && self.entity_to_net.contains_key(&entity) {
+                return;
             }
-            if !force_all && self.entity_to_net.contains_key(&e.id) {
-                continue;
-            }
-            if force_all && self.entity_to_net.contains_key(&e.id) {
-                continue;
+            if force_all && self.entity_to_net.contains_key(&entity) {
+                return;
             }
 
-            let ptr = world.get_raw(e.id, ne_id) as *mut NetworkEntity;
+            let ptr = world.get_raw(entity, ne_id) as *mut NetworkEntity;
             if ptr.is_null() {
-                continue;
+                return;
             }
             let net = unsafe { &mut *ptr };
             let prefab = {
@@ -214,9 +209,9 @@ impl ServerPrefabReplication {
                 if s.is_empty() {
                     log::warn!(
                         "[prefab_rep] NetworkEntity {:#x} has empty prefab name — skip",
-                        e.id
+                        entity
                     );
-                    continue;
+                    return;
                 }
                 s.to_string()
             };
@@ -230,16 +225,16 @@ impl ServerPrefabReplication {
 
             let cold: Vec<(FieldPathId, FieldValue)> = net
                 .cold_paths()
-                .map(|p| (p, cold_field_value(world, e.id, p)))
+                .map(|p| (p, cold_field_value(world, entity, p)))
                 .collect();
 
             let hot: Vec<(FieldPathId, FieldValue)> = net
                 .hot_paths()
-                .filter_map(|p| read_field(world, e.id, p).map(|v| (p, v)))
+                .filter_map(|p| read_field(world, entity, p).map(|v| (p, v)))
                 .collect();
 
-            self.entity_to_net.insert(e.id, net_id);
-            self.net_to_entity.insert(net_id, e.id);
+            self.entity_to_net.insert(entity, net_id);
+            self.net_to_entity.insert(net_id, entity);
             self.last_hot.insert(net_id, hot.clone());
             let generation = self
                 .generation
@@ -255,7 +250,7 @@ impl ServerPrefabReplication {
                 hot,
             };
             out.push(rpc.to_packet());
-        }
+        });
         out
     }
 
@@ -272,13 +267,18 @@ impl ServerPrefabReplication {
                 continue;
             }
             let net = unsafe { &*ptr };
+            if net.is_dormant() {
+                continue;
+            }
             let mut changed = Vec::new();
-            let prev = self.last_hot.get(&net_id).cloned().unwrap_or_default();
+            let prev = self.last_hot.get(&net_id);
             for path in net.hot_paths() {
                 let Some(val) = read_field(world, entity, path) else {
                     continue;
                 };
-                let old = prev.iter().find(|(p, _)| *p == path).map(|(_, v)| v);
+                let old = prev
+                    .and_then(|snap| snap.iter().find(|(p, _)| *p == path))
+                    .map(|(_, v)| v);
                 if old.map(|o| field_eq(o, &val)).unwrap_or(false) {
                     continue;
                 }

@@ -210,8 +210,16 @@ pub fn apply_component(
                     cold.push(path);
                 }
             }
+            let dormant = value
+                .get("dormant")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let id = world.component_init::<NetworkEntity>();
-            world.set(entity, id, NetworkEntity::from_paths(&hot, &cold));
+            world.set(
+                entity,
+                id,
+                NetworkEntity::from_prefab_paths(&hot, &cold, dormant),
+            );
             Ok(())
         }
         other => Err(format!("unknown component in prefab/scene: {other}")),

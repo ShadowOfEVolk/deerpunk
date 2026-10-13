@@ -41,7 +41,7 @@ impl UiDirAssets {
                 base
             }
         };
-        log::info!("[deerpunk-ui] asset base = {}", base.display());
+        log::info!(target: "ui", "asset base = {}", base.display());
         set_ui_base_path(base.clone());
         Self { base }
     }

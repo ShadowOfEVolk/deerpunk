@@ -100,8 +100,10 @@ fn build_snapshot(state: &ProfilerState) -> Value {
             } else {
                 0.0
             };
+            let avg_ms = (avg_us as f64) / 1000.0;
             json!({
                 "name": name,
+                "time_ms_avg": (avg_ms * 100.0).round() / 100.0,
                 "time_us_avg": avg_us,
                 "percent": (percent * 10.0).round() / 10.0,
             })
@@ -109,10 +111,11 @@ fn build_snapshot(state: &ProfilerState) -> Value {
         .collect();
 
     systems.sort_by(|a, b| {
-        b.get("time_us_avg")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            .cmp(&a.get("time_us_avg").and_then(|v| v.as_u64()).unwrap_or(0))
+        b.get("time_ms_avg")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .partial_cmp(&a.get("time_ms_avg").and_then(|v| v.as_f64()).unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     json!({

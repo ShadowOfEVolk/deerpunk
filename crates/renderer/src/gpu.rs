@@ -448,6 +448,8 @@ pub struct Renderer {
     /// Mouse fed into ImGui IO each frame (set by client from `Input`).
     imgui_mouse_pos: [f32; 2],
     imgui_mouse_down: [bool; 5],
+    imgui_mouse_wheel: f32,
+    imgui_mouse_wheel_h: f32,
 
     // Mesh slab allocator + cache (Arc ptr → O(1); content hash fallback)
     mesh_allocator: crate::mesh_allocator::MeshAllocator,
@@ -1541,6 +1543,8 @@ impl Renderer {
             imgui_wgpu: None,
             imgui_mouse_pos: [-1.0e6, -1.0e6],
             imgui_mouse_down: [false; 5],
+            imgui_mouse_wheel: 0.0,
+            imgui_mouse_wheel_h: 0.0,
 
             mesh_allocator,
             mesh_gpu: crate::mesh_gpu_pool::MeshGpuPool::default(),
@@ -2004,9 +2008,11 @@ impl Renderer {
     }
 
     /// Feed OS mouse into ImGui IO (call once per frame before render).
-    pub fn set_imgui_input(&mut self, pos: [f32; 2], down: [bool; 5]) {
+    pub fn set_imgui_input(&mut self, pos: [f32; 2], down: [bool; 5], wheel_y: f32, wheel_h: f32) {
         self.imgui_mouse_pos = pos;
         self.imgui_mouse_down = down;
+        self.imgui_mouse_wheel = wheel_y;
+        self.imgui_mouse_wheel_h = wheel_h;
     }
 
     pub fn imgui_begin_frame(&mut self, width: f32, height: f32) {
@@ -2014,9 +2020,13 @@ impl Renderer {
             ctx.io_mut().display_size = [width, height];
             ctx.io_mut().mouse_pos = self.imgui_mouse_pos;
             ctx.io_mut().mouse_down = self.imgui_mouse_down;
+            ctx.io_mut().mouse_wheel = self.imgui_mouse_wheel;
+            ctx.io_mut().mouse_wheel_h = self.imgui_mouse_wheel_h;
             unsafe {
                 imgui::sys::igNewFrame();
             }
+            self.imgui_mouse_wheel = 0.0;
+            self.imgui_mouse_wheel_h = 0.0;
         }
     }
 
