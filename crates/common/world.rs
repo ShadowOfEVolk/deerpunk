@@ -14,19 +14,10 @@ use crate::resource::ResourceManager;
 use crate::util::short_type_name;
 
 pub static SEPARATOR: &CStr = c".";
-pub type EntityId = u64;
-pub type SystemId = u64;
-pub type ComponentId = u64;
-pub type QueryId = usize;
+pub use deerpunk_engine_ffi::{ComponentId, EntityId, PrefabComponentApplyFn};
 
-/// Gamelib prefab apply: CBOR blob is the component JSON object from `.prefab`.
-pub type PrefabComponentApplyFn = extern "C" fn(
-    user: *mut c_void,
-    entity: EntityId,
-    component_id: ComponentId,
-    cbor_ptr: *const u8,
-    cbor_len: usize,
-) -> i32;
+pub type SystemId = u64;
+pub type QueryId = usize;
 
 pub struct ComponentDescriptor {
     pub name: String,
@@ -347,6 +338,14 @@ impl World {
         unsafe { sys::ecs_delete(self.inner, entity) }
     }
 
+    /// Flecs entity name (`ecs_get_name` / inspector). Not replicated; gameplay ids use components.
+    pub fn set_entity_name(&self, entity: EntityId, name: &str) {
+        let c_name = CString::new(name).expect("entity name contains null byte");
+        unsafe {
+            sys::ecs_set_name(self.inner, entity, c_name.as_ptr());
+        }
+    }
+
     // ── System ─────────────────────────────────────────────────
 
     pub fn system_init(&self, desc: &SystemDescriptor) -> SystemId {
@@ -551,7 +550,6 @@ fn is_game_component_token(token: &str) -> bool {
             | "TerrainCollider"
             | "TerrainRenderer"
             | "PendingAlbedoAtlas"
-            | "PendingBspAtlas"
             | "PendingLightmap"
             | "LightmapId"
             | "LightstyleTable"

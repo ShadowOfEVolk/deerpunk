@@ -37,6 +37,7 @@ static PENDING_DEMO: std::sync::Mutex<Vec<PendingDemoCmd>> = std::sync::Mutex::n
 pub mod binds;
 #[cfg(any(feature = "client", feature = "full"))]
 pub mod phys_debug;
+pub mod entity_debug;
 pub mod config_io;
 pub mod cmd;
 mod engine_methoddb;
@@ -67,7 +68,7 @@ pub use deerpunk_engine_common::world;
 
 use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
-use deerpunk_engine_common::components::{LightstyleTable, MAX_LIGHTSTYLES};
+use deerpunk_engine_common::{LightstyleTable, MAX_LIGHTSTYLES};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::UserCmd;
 use connection::{ClientSessionPhase, SlotPlayGate};
@@ -182,6 +183,14 @@ inventory::submit! {
         name: "r_phys_debug",
         default: "0",
         desc: "Wireframe world collider part under crosshair (0=off, 1=on).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
+        name: "r_drawentities",
+        default: "0",
+        desc: "Draw client entities (0=off, 1=bbox, 2=eye lines, 3=both, 4=mesh AABB).",
         flags: cvar::RENDERINFO,
     }
 }
@@ -602,7 +611,6 @@ impl Host {
             w.component_init::<Worldspawn>();
             w.component_init::<PendingLightmap>();
             w.component_init::<LightmapId>();
-            w.component_init::<LightstyleTable>();
             w.component_init::<MapKv>();
             w.component_init::<Collider>();
         };
@@ -1114,7 +1122,7 @@ impl Host {
                     let tex = client
                         .renderer_mut()
                         .upload_texture(&img.pixels, img.width, img.height);
-                    log::info!(
+                    log::debug!(
                         "[host] albedo atlas ent={ent:#x} {}x{} -> slot={}",
                         img.width,
                         img.height,
@@ -1154,7 +1162,7 @@ impl Host {
                             &atlas.layers[3].pixels,
                         ],
                     );
-                    log::info!(
+                    log::debug!(
                         "[host] lightmap layers ent={ent:#x} {}x{} -> id={}",
                         atlas.width,
                         atlas.height,
@@ -1788,7 +1796,13 @@ impl Host {
             SVC::Bad => log::warn!("[cl] SVC::Bad"),
             SVC::SoundPlay => self.apply_sound_play_packet(packet),
             SVC::SoundStop => self.apply_sound_stop_packet(packet),
-            SVC::SpawnPrefab | SVC::NetDelta | SVC::NetDestroy | SVC::PrefabDef => {
+            SVC::SpawnPrefab
+            | SVC::StreamIn
+            | SVC::NetDelta
+            | SVC::StreamUpdate
+            | SVC::NetDestroy
+            | SVC::StreamOut
+            | SVC::PrefabDef => {
                 let Some(client) = self.client_engine.as_mut() else {
                     return;
                 };
@@ -2168,6 +2182,7 @@ impl Host {
                         self.server_engine.physics.as_ref(),
                         &mut draw,
                     );
+                    entity_debug::tick(&self.cvar, &client.world, &mut draw);
                 }
                 if let Some(client) = self.client_engine.as_mut() {
                     *client.debug_draw() = draw;

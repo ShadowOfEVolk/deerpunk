@@ -6,6 +6,7 @@ pub mod input;
 pub mod ipc;
 pub mod logger;
 pub mod network;
+pub mod goldsrc_lightstyle;
 pub mod component_inspect;
 pub mod prefab;
 pub mod scene;
@@ -23,13 +24,14 @@ pub mod transform;
 pub mod ui_draw;
 
 pub use components::{
-    CameraComponent, LightmapId, LightstyleTable, MapKv, MeshRenderer, MeshTexture,
-    NetReplicatedComponent, NetworkEntity, PendingAlbedoAtlas, PendingBspAtlas, PendingLightmap,
+    CameraComponent, LightmapId, MapKv, MeshRenderer, MeshTexture,
+    NetReplicatedComponent, NetworkEntity, PendingAlbedoAtlas, PendingLightmap,
     PointLight,
     SimpleEntity, Terrain, TerrainCollider, TerrainNeedRebuild, TerrainRenderer,
-    TerrainSplatMaterial, TransformComponent, UiDocumentComponent, Worldspawn, MAX_LIGHTSTYLES,
+    TerrainSplatMaterial, TransformComponent, UiDocumentComponent, Worldspawn,
     NET_FIELDS_MAX, NET_PREFAB_MAX,
 };
+pub use goldsrc_lightstyle::{LightstyleTable, MAX_LIGHTSTYLES};
 pub use network::replication::{NetworkComponent, NetworkField};
 
 pub use lightmap_atlas::{LightmapAtlasLayers, LM_STYLE_SLOTS};

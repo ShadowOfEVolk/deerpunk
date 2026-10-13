@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use crate::components::{
-    CameraComponent, FallRescue, LuaScript, Material, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
-    PlayerUse, PointLight, SimpleEntity, SoundEmitter, TransformComponent, UiDocumentComponent,
+    CameraComponent, LuaScript, Material, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
+    PointLight, SimpleEntity, SoundEmitter, TransformComponent, UiDocumentComponent,
 };
 use crate::network::field_path::FieldPathId;
 use crate::physics::CharacterController;
@@ -137,38 +137,6 @@ fn apply_character_controller(
     Ok(())
 }
 
-fn apply_player_use(
-    world: &World,
-    _gamedir: &Path,
-    _resources: &mut ResourceManager,
-    entity: EntityId,
-    comp: ComponentId,
-    value: &Value,
-) -> Result<(), String> {
-    let mut pu = PlayerUse::default();
-    if let Some(c) = value.get("cooldown_until").and_then(|v| v.as_f64()) {
-        pu.cooldown_until = c as f32;
-    }
-    world.set(entity, comp, pu);
-    Ok(())
-}
-
-fn apply_fall_rescue(
-    world: &World,
-    _gamedir: &Path,
-    _resources: &mut ResourceManager,
-    entity: EntityId,
-    comp: ComponentId,
-    value: &Value,
-) -> Result<(), String> {
-    let mut fr = FallRescue::default();
-    if let Some(z) = value.get("min_z").and_then(|v| v.as_f64()) {
-        fr.min_z = z as f32;
-    }
-    world.set(entity, comp, fr);
-    Ok(())
-}
-
 fn apply_sound_emitter(
     world: &World,
     _gamedir: &Path,
@@ -242,7 +210,7 @@ fn apply_material(
     Ok(())
 }
 
-fn apply_mesh3d(
+pub(crate) fn apply_mesh3d(
     world: &World,
     gamedir: &Path,
     resources: &mut ResourceManager,
@@ -368,8 +336,6 @@ pub fn register_engine_prefab_appliers(world: &World) {
     attach::<TransformComponent>(world, "TransformComponent", apply_transform);
     attach::<CameraComponent>(world, "CameraComponent", apply_camera);
     attach::<CharacterController>(world, "CharacterController", apply_character_controller);
-    attach::<PlayerUse>(world, "PlayerUse", apply_player_use);
-    attach::<FallRescue>(world, "FallRescue", apply_fall_rescue);
     attach::<SoundEmitter>(world, "SoundEmitter", apply_sound_emitter);
     attach::<LuaScript>(world, "lua", apply_lua_script);
     attach::<Material>(world, "Material", apply_material);

@@ -25,6 +25,12 @@ pub enum SVC {
     InitDone = 8,
     /// Stop a playing/looping sound by server [`super::sound_event::SoundStopRpc::sound_id`].
     SoundStop = 9,
+    /// Stream entity into client interest (`StreamInRpc`).
+    StreamIn = 10,
+    /// Stream entity out of client interest (`StreamOutRpc`).
+    StreamOut = 11,
+    /// Batched hot-field updates (`StreamUpdateBatchRpc`).
+    StreamUpdate = 12,
 }
 
 impl SVC {
@@ -40,6 +46,9 @@ impl SVC {
             7 => Some(Self::PrefabDef),
             8 => Some(Self::InitDone),
             9 => Some(Self::SoundStop),
+            10 => Some(Self::StreamIn),
+            11 => Some(Self::StreamOut),
+            12 => Some(Self::StreamUpdate),
             _ => None,
         }
     }

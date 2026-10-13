@@ -121,6 +121,8 @@ fn spawn_prefab(
     world.set(entity, kv_id, MapKv::new(desc.kv.clone()));
     apply_point_light_from_mapkv(world, entity);
 
+    world.set_entity_name(entity, &desc.classname);
+
     entity
 }
 

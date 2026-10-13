@@ -424,6 +424,11 @@ impl ClientEngine {
         self.ui_controller.hide(id)
     }
 
+    pub fn ui_lua_eval(&mut self, code: &str) -> Result<(), String> {
+        deerpunk_ui::lua_eval(code);
+        Ok(())
+    }
+
     pub fn tick(
         &mut self,
         scene: Option<&RenderScene>,

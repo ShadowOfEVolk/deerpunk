@@ -18,6 +18,7 @@ pub struct UiApi {
     unload_fn: StrFn,
     show_fn: StrFn,
     hide_fn: StrFn,
+    lua_eval_fn: StrFn,
 }
 
 unsafe impl Send for UiApi {}
@@ -31,6 +32,7 @@ impl UiApi {
             unload_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:unload")) },
             show_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:show")) },
             hide_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:hide")) },
+            lua_eval_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:lua_eval")) },
         }
     }
 
@@ -59,5 +61,10 @@ impl UiApi {
 
     pub fn hide(&self, id: &str) -> Result<(), String> {
         Self::call(self.hide_fn, self.ctx, id)
+    }
+
+    /// Execute Lua in the RmlUi interpreter (content-owned HUD / menus).
+    pub fn lua_eval(&self, code: &str) -> Result<(), String> {
+        Self::call(self.lua_eval_fn, self.ctx, code)
     }
 }

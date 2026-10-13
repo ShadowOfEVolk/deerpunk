@@ -9,14 +9,7 @@ use serde_json::Value;
 use crate::prefab::{value_from_cbor, value_to_cbor};
 use crate::world::{ComponentId, EntityId, World};
 
-/// Gamelib: write CBOR object of field values into `out`; return byte count or `-1`.
-pub type ComponentInspectDumpFn = extern "C" fn(
-    user: *mut c_void,
-    entity: EntityId,
-    component_id: ComponentId,
-    out_ptr: *mut u8,
-    out_cap: usize,
-) -> i32;
+pub use deerpunk_engine_ffi::ComponentInspectDumpFn;
 
 pub type NativeInspectDumpFn =
     fn(&World, EntityId, ComponentId) -> Result<Value, String>;

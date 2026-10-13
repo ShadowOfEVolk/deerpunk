@@ -16,6 +16,8 @@ pub enum FieldPathId {
     Mesh3D = 15,
     /// Cold override: Worldspawn.map string.
     WorldspawnMap = 16,
+    /// Cold/hot: `Mesh3D.mesh` URI string (`file://…#brush:N`, etc.).
+    Mesh3DMesh = 18,
 }
 
 impl FieldPathId {
@@ -31,6 +33,7 @@ impl FieldPathId {
             14 => Self::Worldspawn,
             15 => Self::Mesh3D,
             16 => Self::WorldspawnMap,
+            18 => Self::Mesh3DMesh,
             _ => return None,
         })
     }
@@ -52,6 +55,7 @@ impl FieldPathId {
             "Worldspawn" => Some(Self::Worldspawn),
             "Mesh3D" => Some(Self::Mesh3D),
             "Worldspawn.map" => Some(Self::WorldspawnMap),
+            "Mesh3D.mesh" => Some(Self::Mesh3DMesh),
             _ => None,
         }
     }
@@ -67,7 +71,7 @@ impl FieldPathId {
             Self::SoundEmitter => Some("SoundEmitter"),
             Self::Material => Some("Material"),
             Self::Worldspawn | Self::WorldspawnMap => Some("Worldspawn"),
-            Self::Mesh3D => Some("Mesh3D"),
+            Self::Mesh3D | Self::Mesh3DMesh => Some("Mesh3D"),
         }
     }
 
@@ -88,6 +92,8 @@ pub enum FieldValue {
     Str(String),
     /// Marker: apply whole component from local prefab (no payload).
     PrefabDefault,
+    /// `BspModel.index` and similar scalar hot fields.
+    U32(u32),
 }
 
 impl FieldValue {
@@ -110,6 +116,7 @@ impl FieldValue {
                 out.extend_from_slice(&b[..n]);
             }
             Self::PrefabDefault => {}
+            Self::U32(v) => out.extend_from_slice(&v.to_le_bytes()),
         }
     }
 
@@ -122,6 +129,7 @@ impl FieldValue {
                 Some(Self::Quat([data.f32()?, data.f32()?, data.f32()?, data.f32()?]))
             }
             FieldPathId::WorldspawnMap => Some(Self::Str(data.string()?)),
+            FieldPathId::Mesh3DMesh => Some(Self::Str(data.string()?)),
             FieldPathId::CameraComponent
             | FieldPathId::CharacterController
             | FieldPathId::SoundEmitter

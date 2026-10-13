@@ -47,6 +47,17 @@ pub fn set_lan_servers_json(json: impl Into<String>) {
     }
 }
 
+/// Run Lua in the RmlUi interpreter (gamelib / content scripts).
+pub fn lua_eval(code: &str) {
+    if code.is_empty() {
+        return;
+    }
+    let c = CString::new(code).expect("ui lua_eval: code contains null byte");
+    unsafe {
+        ffi::rmlui_lua_do_string(c.as_ptr());
+    }
+}
+
 /// Drain console commands queued by RmlUi Lua `cmd(...)`.
 pub fn drain_commands() -> Vec<String> {
     let Ok(mut q) = UI_CMD_QUEUE.lock() else {

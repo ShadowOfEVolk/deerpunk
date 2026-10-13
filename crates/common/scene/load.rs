@@ -203,6 +203,7 @@ fn patch_transform(components: &mut HashMap<String, Value>, key: &str, v: &[f32;
 }
 
 fn stamp_network_prefab_name(world: &World, entity: EntityId, name: &str) {
+    world.set_entity_name(entity, name);
     let id = world.component_init::<NetworkEntity>();
     if !world.has(entity, id) {
         return;

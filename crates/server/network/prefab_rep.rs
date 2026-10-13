@@ -4,9 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use deerpunk_engine_common::components::{NetworkEntity, Worldspawn};
-use deerpunk_engine_common::network::field_apply::read_field;
+use deerpunk_engine_common::network::field_apply::{cold_field_value, read_field};
 use deerpunk_engine_common::network::field_path::{FieldPathId, FieldValue};
-use deerpunk_engine_common::network::{NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, SpawnPrefabRpc};
+use deerpunk_engine_common::network::{
+    PrefabDefRpc, StreamEntityUpdate, StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc,
+};
 use deerpunk_engine_common::scene::PrefabManager;
 use deerpunk_engine_common::world::{EntityId, World};
 
@@ -21,6 +23,8 @@ pub struct ServerPrefabReplication {
     last_hot: HashMap<u16, Vec<(FieldPathId, FieldValue)>>,
     /// worldspawn entities already baseline-spawned (no net_id)
     worldspawn_sent: Vec<EntityId>,
+    /// `net_id` → stream generation (bumps on each `stream.in`).
+    generation: HashMap<u16, u8>,
 }
 
 impl ServerPrefabReplication {
@@ -105,15 +109,17 @@ impl ServerPrefabReplication {
             }
             let cold: Vec<(FieldPathId, FieldValue)> = net
                 .cold_paths()
-                .map(|p| (p, FieldValue::PrefabDefault))
+                .map(|p| (p, cold_field_value(world, e.id, p)))
                 .collect();
             let hot: Vec<(FieldPathId, FieldValue)> = net
                 .hot_paths()
                 .filter_map(|p| read_field(world, e.id, p).map(|v| (p, v)))
                 .collect();
+            let generation = self.generation.get(&net_id).copied().unwrap_or(0);
             packets.push(
-                SpawnPrefabRpc {
+                StreamInRpc {
                     net_id,
+                    generation,
                     prefab: prefab.to_string(),
                     cold,
                     hot,
@@ -171,8 +177,9 @@ impl ServerPrefabReplication {
             if let Some(s) = read_field(world, e.id, FieldPathId::TransformScale) {
                 cold.push((FieldPathId::TransformScale, s));
             }
-            let rpc = SpawnPrefabRpc {
+            let rpc = StreamInRpc {
                 net_id: 0,
+                generation: 0,
                 prefab: "worldspawn".into(),
                 cold,
                 hot: Vec::new(),
@@ -223,7 +230,7 @@ impl ServerPrefabReplication {
 
             let cold: Vec<(FieldPathId, FieldValue)> = net
                 .cold_paths()
-                .map(|p| (p, FieldValue::PrefabDefault))
+                .map(|p| (p, cold_field_value(world, e.id, p)))
                 .collect();
 
             let hot: Vec<(FieldPathId, FieldValue)> = net
@@ -234,9 +241,15 @@ impl ServerPrefabReplication {
             self.entity_to_net.insert(e.id, net_id);
             self.net_to_entity.insert(net_id, e.id);
             self.last_hot.insert(net_id, hot.clone());
+            let generation = self
+                .generation
+                .entry(net_id)
+                .and_modify(|g| *g = g.wrapping_add(1))
+                .or_insert(0);
 
-            let rpc = SpawnPrefabRpc {
+            let rpc = StreamInRpc {
                 net_id,
+                generation: *generation,
                 prefab,
                 cold,
                 hot,
@@ -248,7 +261,7 @@ impl ServerPrefabReplication {
 
     fn emit_hot_deltas(&mut self, world: &World) -> Vec<Vec<u8>> {
         let ne_id = world.component_init::<NetworkEntity>();
-        let mut out = Vec::new();
+        let mut batch = Vec::new();
         let tracked: Vec<(EntityId, u16)> = self.entity_to_net.iter().map(|(&e, &n)| (e, n)).collect();
         for (entity, net_id) in tracked {
             if !world.has(entity, ne_id) {
@@ -283,15 +296,16 @@ impl ServerPrefabReplication {
                     snap.push((*path, val.clone()));
                 }
             }
-            out.push(
-                NetDeltaRpc {
-                    net_id,
-                    fields: changed,
-                }
-                .to_packet(),
-            );
+            batch.push(StreamEntityUpdate {
+                net_id,
+                fields: changed,
+            });
         }
-        out
+        if batch.is_empty() {
+            Vec::new()
+        } else {
+            vec![StreamUpdateBatchRpc { updates: batch }.to_packet()]
+        }
     }
 
     fn emit_destroys(&mut self, world: &World) -> Vec<Vec<u8>> {
@@ -307,7 +321,8 @@ impl ServerPrefabReplication {
             self.entity_to_net.remove(&entity);
             self.net_to_entity.remove(&net_id);
             self.last_hot.remove(&net_id);
-            out.push(NetDestroyRpc { net_id }.to_packet());
+            self.generation.remove(&net_id);
+            out.push(StreamOutRpc { net_id }.to_packet());
         }
         out
     }
@@ -319,6 +334,7 @@ fn field_eq(a: &FieldValue, b: &FieldValue) -> bool {
         (FieldValue::Quat(x), FieldValue::Quat(y)) => x == y,
         (FieldValue::Str(x), FieldValue::Str(y)) => x == y,
         (FieldValue::PrefabDefault, FieldValue::PrefabDefault) => true,
+        (FieldValue::U32(x), FieldValue::U32(y)) => x == y,
         _ => false,
     }
 }

@@ -9,6 +9,7 @@ path = "lib.rs"
 [dependencies]
 deerpunk-engine-common = { path = "../common" }
 deerpunk-engine-api = { path = "../engine-api" }
+deerpunk-engine-ffi = { path = "../engine-ffi" }
 deerpunk-engine-server = { path = "../server", optional = true }
 deerpunk-engine-client = { path = "../client", optional = true }
 deerpunk-engine-client-fmod = { path = "../client-fmod", optional = true }

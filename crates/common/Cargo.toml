@@ -7,6 +7,7 @@ edition = "2021"
 path = "lib.rs"
 
 [dependencies]
+deerpunk-engine-ffi = { path = "../engine-ffi" }
 log = { workspace = true }
 fern = { workspace = true }
 glam = { version = "0.33", features = ["serde"] }

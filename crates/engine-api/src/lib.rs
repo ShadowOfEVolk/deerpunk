@@ -17,19 +17,13 @@ pub mod world;
 pub mod client_world;
 pub mod spawn_prefab;
 
-pub type EntityId = u64;
-pub type ComponentId = u64;
+pub use deerpunk_engine_ffi::{
+    ClientInitData, ComponentId, EntityId, GAMELIB_API_VERSION, GamelibInitData, ResolverFn,
+    ServerInitData,
+};
 
-pub type Resolver = extern "C" fn(*const u8, usize) -> *const ();
-
-// ── ServerInitData (mirrors host's repr(C) struct) ──────────
-
-#[repr(C)]
-pub struct ServerInitData {
-    pub version: u32,
-    pub ctx: *mut u8,
-    pub resolver: Resolver,
-}
+/// Alias for [`ResolverFn`] (methoddb resolver).
+pub type Resolver = ResolverFn;
 
 // ── EngineApi (top-level) ──────────────────────────────────────
 

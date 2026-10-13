@@ -35,7 +35,7 @@ pub struct PrefabDefRpc {
     pub def: EntityDef,
 }
 
-fn encode_fields(out: &mut Vec<u8>, fields: &[(FieldPathId, FieldValue)]) {
+pub(crate) fn encode_fields(out: &mut Vec<u8>, fields: &[(FieldPathId, FieldValue)]) {
     out.push(fields.len().min(255) as u8);
     for (path, value) in fields.iter().take(255) {
         out.push(path.as_u8());
@@ -43,7 +43,7 @@ fn encode_fields(out: &mut Vec<u8>, fields: &[(FieldPathId, FieldValue)]) {
     }
 }
 
-fn decode_fields(c: &mut Cursor<'_>) -> Option<Vec<(FieldPathId, FieldValue)>> {
+pub(crate) fn decode_fields(c: &mut Cursor<'_>) -> Option<Vec<(FieldPathId, FieldValue)>> {
     let count = c.u8()? as usize;
     let mut fields = Vec::with_capacity(count.min(32));
     for _ in 0..count {

@@ -171,7 +171,7 @@ pub fn resolve_map_kd(obj_path: &Path, map_kd: &str) -> Option<PathBuf> {
     None
 }
 
-/// Load first diffuse from OBJ's MTL into RGBA8 (for [`PendingBspAtlas`]).
+/// Load first diffuse from OBJ's MTL into RGBA8 (for [`PendingAlbedoAtlas`]).
 pub fn load_obj_diffuse_albedo(obj_path: &Path) -> Option<RgbaImage> {
     let obj_data = std::fs::read_to_string(obj_path).ok()?;
     let mtllib = find_mtllib(&obj_data)?;

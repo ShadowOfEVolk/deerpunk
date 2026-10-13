@@ -254,6 +254,11 @@ impl crate::Host {
     pub fn api_ui_hide(&mut self, id: &str) -> i32 {
         ui_client_op(self, |c| c.ui_hide(id))
     }
+
+    #[methoddb::bind(name = "lua_eval")]
+    pub fn api_ui_lua_eval(&mut self, code: &str) -> i32 {
+        ui_client_op(self, |c| c.ui_lua_eval(code))
+    }
 }
 
 #[cfg(not(any(feature = "client", feature = "full")))]
@@ -276,6 +281,11 @@ impl crate::Host {
 
     #[methoddb::bind(name = "hide")]
     pub fn api_ui_hide(&mut self, _id: &str) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "lua_eval")]
+    pub fn api_ui_lua_eval(&mut self, _code: &str) -> i32 {
         -1
     }
 }
@@ -630,6 +640,26 @@ impl crate::Host {
         #[cfg(any(feature = "client", feature = "full"))]
         {
             self.flush_pending_albedos();
+            0
+        }
+        #[cfg(not(any(feature = "client", feature = "full")))]
+        {
+            -1
+        }
+    }
+
+    #[methoddb::bind(name = "refresh_stream_meshes")]
+    pub fn api_host_refresh_stream_meshes(&mut self) -> i32 {
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            if let Some(ce) = self.client_engine.as_ref() {
+                let gamedir = self.fs.gamedir().to_path_buf();
+                self.client_rep.refresh_mesh_uri_overrides(
+                    &ce.world,
+                    &gamedir,
+                    &mut self.resources,
+                );
+            }
             0
         }
         #[cfg(not(any(feature = "client", feature = "full")))]

@@ -5,6 +5,7 @@ pub mod entity_state;
 pub mod field_apply;
 pub mod field_path;
 pub mod prefab_rep;
+pub mod stream_rep;
 pub mod sound_event;
 pub mod user_message;
 pub mod usercmd;
@@ -13,6 +14,7 @@ pub use component_types::ComponentType;
 pub use entity_state::EntityState;
 pub use field_path::{FieldPathId, FieldValue};
 pub use prefab_rep::{NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, SpawnPrefabRpc};
+pub use stream_rep::{StreamEntityUpdate, StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc};
 pub use sound_event::{SoundPlayRpc, SoundStopRpc, SND_FLAG_2D, SND_FLAG_LOOP, SND_FLAG_NET_ENTITY};
 pub use user_message::{
     decode_light_style, decode_map_name, decode_set_view, encode_light_style, encode_map_name,

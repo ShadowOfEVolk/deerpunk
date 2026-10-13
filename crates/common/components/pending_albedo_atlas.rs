@@ -12,5 +12,3 @@ impl PendingAlbedoAtlas {
     }
 }
 
-/// @deprecated use [`PendingAlbedoAtlas`]
-pub type PendingBspAtlas = PendingAlbedoAtlas;

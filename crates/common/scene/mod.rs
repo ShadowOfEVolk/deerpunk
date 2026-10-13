@@ -10,11 +10,13 @@ mod format;
 mod load;
 mod map_light;
 mod map_spawn;
+mod mesh_uri;
 mod prefab_manager;
 mod spawner;
 
 pub use apply::{apply_component, apply_prefab_component_value};
 pub use map_spawn::{apply_map_spawn_tail, MapSpawnOpts};
+pub use mesh_uri::apply_mesh3d_uri;
 pub use engine_inspect::register_engine_component_inspect;
 pub use prefab_appliers::register_engine_prefab_appliers;
 pub use entity_def::EntityDef;

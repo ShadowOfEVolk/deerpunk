@@ -657,7 +657,7 @@ fn generate_tramp(
                 let ptr = format_ident!("__arg{}", arg_idx);
                 let desc_ref = format_ident!("__desc{}", arg_idx);
                 ffi_params.push(quote! {
-                    #ptr: *const deerpunk_engine_api::components::ComponentRegisterDesc
+                    #ptr: *const deerpunk_engine_ffi::ComponentRegisterDesc
                 });
                 pre_call.push(quote! {
                     if #ptr.is_null() {

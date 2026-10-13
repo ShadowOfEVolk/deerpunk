@@ -13,6 +13,7 @@ pub struct HostAccessApi {
     ctx: *mut u8,
     flush_albedos_fn: extern "C" fn(*mut u8) -> i32,
     client_track_static_fn: extern "C" fn(*mut u8, u64) -> i32,
+    refresh_stream_meshes_fn: extern "C" fn(*mut u8) -> i32,
 }
 
 unsafe impl Send for HostAccessApi {}
@@ -28,6 +29,9 @@ impl HostAccessApi {
             client_track_static_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:host:client_track_static"))
             },
+            refresh_stream_meshes_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:host:refresh_stream_meshes"))
+            },
         }
     }
 
@@ -37,5 +41,9 @@ impl HostAccessApi {
 
     pub fn client_track_static_entity(&self, entity: u64) {
         (self.client_track_static_fn)(self.ctx, entity);
+    }
+
+    pub fn refresh_stream_mesh_overrides(&self) {
+        (self.refresh_stream_meshes_fn)(self.ctx);
     }
 }

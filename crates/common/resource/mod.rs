@@ -173,7 +173,7 @@ impl ResourceManager {
 
         let state = Arc::new(Mutex::new(ResourceState::Pending));
         let (protocol, path, query) = parse_uri(uri);
-        let loader_id = self.resolve_loader_id(&opts, &protocol, &path);
+        let loader_id = self.resolve_loader_id(&opts, &protocol, &path, &query);
 
         let mut type_name = "unknown".to_string();
         let mut size = 0u64;
@@ -277,9 +277,21 @@ impl ResourceManager {
         out
     }
 
-    fn resolve_loader_id(&self, opts: &LoadOpts, protocol: &str, path: &str) -> String {
+    fn resolve_loader_id(
+        &self,
+        opts: &LoadOpts,
+        protocol: &str,
+        path: &str,
+        query: &str,
+    ) -> String {
         if let Some(id) = opts.loader {
             return id.to_string();
+        }
+        // `file://…/map.bsp#brush:12` → query `brush:12`; gamelib registers loader id `brush`.
+        if let Some(kind) = query.split(':').next() {
+            if !kind.is_empty() && self.loaders.contains_key(kind) {
+                return kind.to_string();
+            }
         }
         if let Some(ext) = file_extension(path) {
             if let Some(id) = self.extensions.get(&ext) {
@@ -320,11 +332,20 @@ fn parse_uri(uri: &str) -> (String, String, String) {
         Some((p, r)) => (p.to_string(), r),
         None => ("file".to_string(), uri),
     };
-    let (path, query) = match rest.split_once('?') {
+    let (path_and_query, fragment) = match rest.split_once('#') {
+        Some((pq, frag)) => (pq, Some(frag)),
+        None => (rest, None),
+    };
+    let (path, query) = match path_and_query.split_once('?') {
         Some((p, q)) => (p.to_string(), q.to_string()),
-        None => (rest.to_string(), String::new()),
+        None => (path_and_query.to_string(), String::new()),
     };
     let path = path.trim_end_matches('/').to_string();
+    let query = match fragment {
+        Some(f) if query.is_empty() => f.to_string(),
+        Some(f) => format!("{query}&{f}"),
+        None => query,
+    };
     (protocol, path, query)
 }
 

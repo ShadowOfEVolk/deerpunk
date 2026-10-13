@@ -1,15 +1,6 @@
 //! Client gamelib DLL (`client_init` / `client_frame` / `client_imgui_frame` / `client_shutdown`).
 
-pub type ResolverFn = extern "C" fn(*const u8, usize) -> *const ();
-
-#[repr(C)]
-pub struct ClientInitData {
-    pub version: u32,
-    pub ctx: *mut u8,
-    pub resolver: ResolverFn,
-}
-
-const CLIENT_API_VERSION: u32 = 1;
+pub use deerpunk_engine_ffi::{GAMELIB_API_VERSION, ResolverFn, ClientInitData};
 
 type ClientInitFn = unsafe extern "C" fn(ClientInitData);
 type ClientFrameFn = unsafe extern "C" fn(f32);
@@ -55,7 +46,7 @@ impl ClientDll {
 
     pub unsafe fn init(&self, ctx: *mut u8, resolver: ResolverFn) {
         let data = ClientInitData {
-            version: CLIENT_API_VERSION,
+            version: GAMELIB_API_VERSION,
             ctx,
             resolver,
         };

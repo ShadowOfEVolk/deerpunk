@@ -9,9 +9,11 @@ members = [
     "crates/sdk-common",
     "crates/sdk-client",
     "crates/engine-api",
+    "crates/engine-ffi",
     "crates/ui",
     "crates/inspector-protocol",
     "crates/deerpunk-macro",
+    "crates/sdk-macro",
 ]
 resolver = "2"
 

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::component_inspect::NativeInspectDumpFn;
 use crate::components::{
-    CameraComponent, LuaScript, NetworkEntity, PlayerUse, PointLight, SoundEmitter,
+    CameraComponent, LuaScript, NetworkEntity, PointLight, SoundEmitter,
     TransformComponent, UiDocumentComponent,
 };
 use crate::physics::CharacterController;
@@ -113,16 +113,6 @@ fn dump_network_entity(world: &World, entity: EntityId, comp: ComponentId) -> Re
     }))
 }
 
-fn dump_player_use(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
-    let u = world
-        .get::<PlayerUse>(entity, comp)
-        .ok_or("PlayerUse missing")?;
-    Ok(json!({
-        "e_was_down": u.e_was_down,
-        "cooldown_until": u.cooldown_until,
-    }))
-}
-
 /// Call after [`register_engine_prefab_appliers`]: same component ids, inspector metadata.
 pub fn register_engine_component_inspect(world: &World) {
     let id = world.component_init::<TransformComponent>();
@@ -194,6 +184,4 @@ pub fn register_engine_component_inspect(world: &World) {
     let id = world.component_init::<NetworkEntity>();
     reg(world, "NetworkEntity", id, json!({ "type": "object" }), dump_network_entity);
 
-    let id = world.component_init::<PlayerUse>();
-    reg(world, "PlayerUse", id, json!({ "type": "object" }), dump_player_use);
 }

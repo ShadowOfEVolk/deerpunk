@@ -1,0 +1,8 @@
+[package]
+name = "deerpunk-engine-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI types shared by deerpunk host and gamelib DLLs"
+
+[lib]
+path = "lib.rs"

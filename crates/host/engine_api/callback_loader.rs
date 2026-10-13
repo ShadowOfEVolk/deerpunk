@@ -1,6 +1,7 @@
 //! Gamelib-registered loaders (`v1:resources:register`).
 
 use deerpunk_engine_common::resource::loader::{LoadedAsset, Loader};
+use deerpunk_engine_common::resource::mesh::Mesh;
 
 pub type LoadFn = extern "C" fn(
     user: *mut std::ffi::c_void,
@@ -87,6 +88,14 @@ impl Loader for CallbackLoader {
         );
         if ptr.is_null() {
             return Err(format!("loader '{}' failed: {path}", self.id));
+        }
+        if self.type_name == "mesh" {
+            let mesh = unsafe { *Box::from_raw(ptr as *mut Mesh) };
+            return Ok(LoadedAsset {
+                data: Box::new(mesh),
+                size: 0,
+                type_name: "mesh",
+            });
         }
         Ok(LoadedAsset {
             data: Box::new(ExternAsset {

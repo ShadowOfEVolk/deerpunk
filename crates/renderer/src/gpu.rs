@@ -3410,7 +3410,6 @@ impl Renderer {
         self.lightmap_views.insert(slot, view);
         // Invalidate any BG cached earlier with the white fallback for this id.
         self.mesh_array_bgs.retain(|(_, lm), _| *lm != slot);
-        eprintln!("[gpu] lightmap #{slot} uploaded {}x{} (BGs invalidated)", w, h);
         slot
     }
 

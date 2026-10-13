@@ -1,13 +1,12 @@
 use std::path::Path;
 
 use crate::components::{
-    CameraComponent, FallRescue, LuaScript, Material, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
-    PlayerUse, PointLight, SoundEmitter, TransformComponent, UiDocumentComponent,
+    CameraComponent, LuaScript, Material, NetworkEntity, PointLight, SoundEmitter,
+    TransformComponent, UiDocumentComponent,
 };
 use crate::network::field_path::FieldPathId;
 use crate::physics::CharacterController;
-use crate::resource::mesh::Mesh;
-use crate::resource::{path_to_file_uri, LoadOpts, ResourceManager};
+use crate::resource::ResourceManager;
 use crate::world::{EntityId, World};
 use glam::{Quat, Vec3};
 use serde_json::Value;
@@ -102,24 +101,6 @@ pub fn apply_component(
             world.set(entity, id, cc);
             Ok(())
         }
-        "PlayerUse" => {
-            let mut pu = PlayerUse::default();
-            if let Some(c) = value.get("cooldown_until").and_then(|v| v.as_f64()) {
-                pu.cooldown_until = c as f32;
-            }
-            let id = world.component_init::<PlayerUse>();
-            world.set(entity, id, pu);
-            Ok(())
-        }
-        "FallRescue" => {
-            let mut fr = FallRescue::default();
-            if let Some(z) = value.get("min_z").and_then(|v| v.as_f64()) {
-                fr.min_z = z as f32;
-            }
-            let id = world.component_init::<FallRescue>();
-            world.set(entity, id, fr);
-            Ok(())
-        }
         "SoundEmitter" => {
             let event = value
                 .get("event")
@@ -178,53 +159,7 @@ pub fn apply_component(
         }
         "Mesh3D" => {
             let kind = value.get("mesh").and_then(|v| v.as_str()).unwrap_or("cube");
-            let half = read_vec3(value.get("half_extents")).unwrap_or(Vec3::ONE);
-            let center = read_vec3(value.get("center")).unwrap_or(Vec3::ZERO);
-            let mut obj_fs_path: Option<std::path::PathBuf> = None;
-            let mesh = match kind {
-                "cube" | "" => Mesh::cube_sized(half, center),
-                other if other.ends_with(".fbx")
-                    || other.ends_with(".obj")
-                    || other.contains(".obj?")
-                    || other.starts_with("file://")
-                    || other.contains('/')
-                    || other.contains('\\') =>
-                {
-                    // Relative to gamedir, or absolute / file:// URI.
-                    let uri = if other.starts_with("file://") {
-                        other.to_string()
-                    } else {
-                        let p = gamedir.join(other.replace('\\', "/"));
-                        path_to_file_uri(&p)
-                    };
-                    if other.contains(".obj") {
-                        // Strip query (`?scale=…`) for MTL/texture side-car lookup.
-                        let path_part = other.split('?').next().unwrap_or(other);
-                        let p = if path_part.starts_with("file://") {
-                            std::path::PathBuf::from(path_part.trim_start_matches("file://"))
-                        } else {
-                            gamedir.join(path_part.replace('\\', "/"))
-                        };
-                        obj_fs_path = Some(p);
-                    }
-                    let handle = resources.load::<Mesh>(&uri);
-                    handle.try_get().ok_or_else(|| {
-                        format!("Mesh3D load failed: {uri} (asset={:?})", handle.id())
-                    })?
-                }
-                other => {
-                    return Err(format!("Mesh3D.mesh unsupported: {other}"));
-                }
-            };
-            let id = world.component_init::<Mesh3D>();
-            world.set(entity, id, Mesh3D::with_mesh(mesh));
-            if let Some(obj_path) = obj_fs_path {
-                if let Some(img) = crate::resource::obj::load_obj_diffuse_albedo(&obj_path) {
-                    let pending_id = world.component_init::<PendingAlbedoAtlas>();
-                    world.set(entity, pending_id, PendingAlbedoAtlas::new(img));
-                }
-            }
-            Ok(())
+            crate::scene::apply_mesh3d_uri(world, gamedir, resources, entity, kind)
         }
         "PointLight" => {
             let mut light = PointLight::default();

@@ -1,15 +1,6 @@
 use std::ffi::c_void;
 
-pub type ResolverFn = extern "C" fn(*const u8, usize) -> *const ();
-
-#[repr(C)]
-pub struct ServerInitData {
-    pub version: u32,
-    pub ctx: *mut u8,
-    pub resolver: ResolverFn,
-}
-
-const SERVER_API_VERSION: u32 = 1;
+pub use deerpunk_engine_ffi::{GAMELIB_API_VERSION, ResolverFn, ServerInitData};
 
 type ServerInitFn = unsafe extern "C" fn(ServerInitData);
 type ServerFrameFn = unsafe extern "C" fn(f32);
@@ -63,7 +54,7 @@ impl ServerDll {
 
     pub unsafe fn init(&self, ctx: *mut u8, resolver: ResolverFn) {
         let data = ServerInitData {
-            version: SERVER_API_VERSION,
+            version: GAMELIB_API_VERSION,
             ctx,
             resolver,
         };
