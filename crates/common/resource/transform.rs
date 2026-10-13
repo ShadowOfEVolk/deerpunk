@@ -159,6 +159,7 @@ mod tests {
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
             indices: vec![0],
+            content_id: 0,
         };
         apply_mesh_transform(&mut m, &MeshTransform {
             scale: 2.0,
@@ -179,6 +180,7 @@ mod tests {
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
             indices: vec![0],
+            content_id: 0,
         };
         apply_mesh_transform(&mut m, &MeshTransform {
             scale: 1.0,

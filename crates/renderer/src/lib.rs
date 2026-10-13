@@ -5,8 +5,10 @@ pub mod gpu;
 pub mod material_allocator;
 pub mod material_store;
 pub mod mesh_allocator;
+pub mod mesh_gpu_pool;
 pub mod postfx;
 pub mod render_graph;
+pub mod render_profile;
 pub mod shader_registry;
 pub mod snapshot;
 pub mod text_util;
@@ -14,8 +16,12 @@ pub mod ui_pass;
 
 pub use asset_inventory::{AssetEntry, AssetKind};
 pub use gpu::{FrameError, Renderer, ShaderSources};
+pub use render_profile::{
+    GraphNodeTiming, MeshEncodeStats, MeshShaderBin, PassTiming, RenderFrameProfile,
+};
 pub use material_allocator::{MaterialAllocator, MaterialGpuEntry, MATERIAL_WHITE_ID};
 pub use mesh_allocator::{MeshAllocator, MeshHandle, MESH_INDEX_SIZE, MESH_VERTEX_SIZE};
+pub use mesh_gpu_pool::MeshGpuPool;
 pub use render_graph::{GraphError, Node, NodeContext, RenderGraph, ResId, Resource, TexturePool};
 pub use snapshot::{
     CameraDefinition, CameraRenderGraph, CameraRenderSnapshot, Instance, MeshTexture, PointLightDraw,

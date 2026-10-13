@@ -18,6 +18,8 @@ pub type ShaderId = deerpunk_engine_common::material::ShaderId;
 #[derive(Clone)]
 pub struct ShaderDef {
     pub id: ShaderId,
+    /// Load path key (`file://shaders/brush.wgsl`, etc.).
+    pub path: String,
     pub meta: ShaderMeta,
     /// Clean WGSL (no `#@`, `#define` applied) — ready for wgpu::ShaderSource.
     pub wgsl: String,
@@ -39,6 +41,7 @@ pub enum BindingKind {
     Uniform,
     Storage,
     Texture2d,
+    Texture2dArray,
     TextureCube,
     Sampler,
 }
@@ -93,6 +96,7 @@ impl ShaderRegistry {
         let id = self.defs.len() as ShaderId + 1; // 0 = none
         let def = ShaderDef {
             id,
+            path: path.to_string(),
             meta: preprocessed.meta,
             wgsl: preprocessed.wgsl,
             bindings,
@@ -122,6 +126,27 @@ impl ShaderRegistry {
     /// Number of loaded shader variants.
     pub fn len(&self) -> usize {
         self.defs.len()
+    }
+
+    /// Human-readable shader path for HUD (`r_speeds 3`).
+    pub fn path_for_id(&self, id: ShaderId) -> Option<&str> {
+        self.get(id).map(|d| d.path.as_str())
+    }
+}
+
+impl ShaderDef {
+    /// Group 1 binds a 2D albedo + `texture_2d_array` lightmap (shader-defined layout).
+    pub fn group1_uses_lightmap_array(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|b| b.group == 1 && b.kind == BindingKind::Texture2dArray)
+    }
+
+    /// BSP / brush shaders use extended vertex inputs (`atlas_rect`, `lm_uv`, …).
+    pub fn uses_extended_mesh_vertex(&self) -> bool {
+        self.group1_uses_lightmap_array()
+            || self.wgsl.contains("atlas_rect")
+            || self.wgsl.contains("lm_uv")
     }
 }
 
@@ -181,9 +206,10 @@ fn reflect_bindings(wgsl: &str) -> Result<Vec<BindingEntry>, String> {
 fn classify_binding(module: &naga::Module, var: &naga::GlobalVariable) -> BindingKind {
     match &module.types[var.ty].inner {
         naga::TypeInner::Struct { .. } => BindingKind::Uniform,
-        naga::TypeInner::Image { dim, .. } => match dim {
-            naga::ImageDimension::D2 => BindingKind::Texture2d,
-            naga::ImageDimension::Cube => BindingKind::TextureCube,
+        naga::TypeInner::Image { dim, arrayed, .. } => match (dim, arrayed) {
+            (naga::ImageDimension::D2, true) => BindingKind::Texture2dArray,
+            (naga::ImageDimension::D2, false) => BindingKind::Texture2d,
+            (naga::ImageDimension::Cube, _) => BindingKind::TextureCube,
             _ => BindingKind::Texture2d,
         },
         naga::TypeInner::Sampler { .. } => BindingKind::Sampler,

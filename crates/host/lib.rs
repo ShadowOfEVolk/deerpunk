@@ -180,6 +180,14 @@ inventory::submit! {
 }
 inventory::submit! {
     cvar::CvarDef {
+        name: "r_speeds",
+        default: "0",
+        desc: "Render HUD (0=off, 1=encode passes, 2=+draw counts, 3=+shader/layout diag).",
+        flags: cvar::RENDERINFO,
+    }
+}
+inventory::submit! {
+    cvar::CvarDef {
         name: "r_phys_debug",
         default: "0",
         desc: "Wireframe world collider part under crosshair (0=off, 1=on).",
@@ -714,6 +722,19 @@ impl Host {
         matches!(self.client_session_phase, ClientSessionPhase::Play)
     }
 
+    /// Full client ECS + stream + render resource flush (disconnect / closehost / reconnect).
+    #[cfg(any(feature = "client", feature = "full"))]
+    fn flush_client_scene(&mut self) {
+        if let Some(client) = self.client_engine.as_mut() {
+            client.flush_client_scene(&mut self.client_rep);
+        }
+        if let Some(ref dll) = self.client_dll {
+            unsafe {
+                dll.scene_flushed();
+            }
+        }
+    }
+
     /// Сервер готов — host подключает клиента как `connect localhost`, но через Channel.
     pub fn on_server_activated(&mut self) {
         log::info!("[host] server activated");
@@ -734,9 +755,7 @@ impl Host {
         }
         self.client_session_phase = ClientSessionPhase::Init;
         deerpunk_ui::set_client_in_game(false);
-        if let Some(client) = self.client_engine.as_mut() {
-            self.client_rep.clear(&client.world);
-        }
+        self.flush_client_scene();
         self.server_rep.clear();
         self.connect_local_client();
         let Some(slot) = self.players.local_slot() else {
@@ -775,7 +794,10 @@ impl Host {
             self.slots_play.clear();
             self.client_session_phase = ClientSessionPhase::Idle;
             #[cfg(any(feature = "client", feature = "full"))]
-            deerpunk_ui::set_client_in_game(false);
+            {
+                deerpunk_ui::set_client_in_game(false);
+                self.flush_client_scene();
+            }
         }
         if on {
             if was {
@@ -998,11 +1020,7 @@ impl Host {
                                 self.set_server_enabled(false);
                             }
                             #[cfg(any(feature = "client", feature = "full"))]
-                            {
-                                if let Some(client) = self.client_engine.as_mut() {
-                                    self.client_rep.clear(&client.world);
-                                }
-                            }
+                            self.flush_client_scene();
                             self.client_session_phase = ClientSessionPhase::Idle;
                             match self.net.connect(addr) {
                                 Ok(()) => {
@@ -1021,9 +1039,7 @@ impl Host {
                     self.lan_advertiser = None;
                     #[cfg(any(feature = "client", feature = "full"))]
                     {
-                        if let Some(client) = self.client_engine.as_mut() {
-                            self.client_rep.clear(&client.world);
-                        }
+                        self.flush_client_scene();
                         deerpunk_ui::set_client_in_game(false);
                     }
                     println!("[net] net_disconnect");
@@ -1083,130 +1099,24 @@ impl Host {
         deerpunk_ui::set_client_in_game(false);
     }
 
-    /// Upload pending albedo atlases on the server world (legacy path / dedicated tools).
-    /// Returns the albedo atlas slot (0 if none).
-    ///
-    /// The client world's `PendingAlbedoAtlas` is flushed internally by
-    /// `sync_client_world` / demo / net paths — those uploads happen on the
-    /// host tick and the slot is stored in `last_atlas_slot`. This method
-    /// returns that stored slot so the gamelib can patch a `DrawMaterial`'s
-    /// `_BaseMap`. Also flushes the server world (legacy / dedicated tools).
+    /// Legacy FFI — kept for ABI compatibility. The albedo atlas is now
+    /// uploaded by the gamelib via `renderer.upload_texture_raw`; this just
+    /// flushes lightmaps on the server world (dedicated tools) and returns
+    /// the last gamelib-uploaded slot (always 0 in the new path).
     #[cfg(any(feature = "client", feature = "full"))]
     fn flush_pending_albedos(&mut self) -> u32 {
-        // Flush server world too (legacy / dedicated tools path). For listen
-        // servers this is usually a no-op (PendingAlbedoAtlas is on the client
-        // world), but keep it for completeness.
         let world = &self.server_engine.world as *const deerpunk_engine_common::world::World;
         // SAFETY: server world is owned by self; client_engine borrow is separate.
-        let server_slot = unsafe { self.flush_pending_albedos_world(&*world) };
-        if server_slot != 0 {
-            self.last_atlas_slot = server_slot;
-        }
+        let _ = unsafe { self.flush_pending_albedos_world(&*world) };
         self.last_atlas_slot
     }
 
-    /// Upload [`PendingAlbedoAtlas`] / [`PendingLightmap`] from `world` into the client renderer.
-    ///
-    /// Returns the albedo atlas texture slot (0 if none uploaded this call).
-    /// The slot is valid in the renderer's shared texture array — use it to
-    /// build a `DrawMaterial` that references the atlas as `_BaseMap`.
+    /// Legacy hook (no-op). Albedo/lightmap upload is via material URIs in gamelib.
     #[cfg(any(feature = "client", feature = "full"))]
-    pub fn flush_pending_albedos_world(&mut self, world: &deerpunk_engine_common::world::World) -> u32 {
-        use deerpunk_engine_common::components::{
-            LightmapId, Material, PendingAlbedoAtlas, PendingLightmap,
-        };
-
-        let Some(client) = self.client_engine.as_mut() else {
-            return 0;
-        };
-        let pending_id = world.component_init::<PendingAlbedoAtlas>();
-        let pending_lm_id = world.component_init::<PendingLightmap>();
-        let lm_id_comp = world.component_init::<LightmapId>();
-        let mat_id = world.component_init::<Material>();
-
-        let ents: Vec<u64> = world
-            .inspect_entities()
-            .into_iter()
-            .filter(|e| {
-                e.components.iter().any(|c| {
-                    c.contains("PendingAlbedoAtlas") || c.contains("PendingLightmap")
-                })
-            })
-            .map(|e| e.id)
-            .collect();
-
-        let mut last_atlas_slot = 0u32;
-
-        for ent in ents {
-            let mut uploaded_atlas = false;
-            let ptr = world.get_raw(ent, pending_id) as *mut PendingAlbedoAtlas;
-            if !ptr.is_null() {
-                let pending = unsafe { std::ptr::read(ptr) };
-                unsafe {
-                    std::ptr::write(ptr, PendingAlbedoAtlas::default());
-                }
-                if let Some(img) = pending.image {
-                    let tex = client
-                        .renderer_mut()
-                        .upload_texture(&img.pixels, img.width, img.height);
-                    log::debug!(
-                        "[host] albedo atlas ent={ent:#x} {}x{} -> slot={}",
-                        img.width,
-                        img.height,
-                        tex.0
-                    );
-                    last_atlas_slot = tex.0;
-                    let mat_ptr = world.get_raw(ent, mat_id) as *mut Material;
-                    if !mat_ptr.is_null() {
-                        unsafe {
-                            (*mat_ptr).albedo = tex;
-                        }
-                    } else {
-                        let mut mat = Material::default();
-                        mat.color = [1.0, 1.0, 1.0, 1.0];
-                        mat.roughness = 0.9;
-                        mat.albedo = tex;
-                        world.set(ent, mat_id, mat);
-                    }
-                    uploaded_atlas = true;
-                }
-                world.remove(ent, pending_id);
-            }
-
-            let lm_ptr = world.get_raw(ent, pending_lm_id) as *mut PendingLightmap;
-            if !lm_ptr.is_null() {
-                let pending_lm = unsafe { std::ptr::read(lm_ptr) };
-                unsafe {
-                    std::ptr::write(lm_ptr, PendingLightmap::default());
-                }
-                if let Some(atlas) = pending_lm.atlas {
-                    let id = client.renderer_mut().upload_lightmap_layers(
-                        atlas.width,
-                        atlas.height,
-                        [
-                            &atlas.layers[0].pixels,
-                            &atlas.layers[1].pixels,
-                            &atlas.layers[2].pixels,
-                            &atlas.layers[3].pixels,
-                        ],
-                    );
-                    log::debug!(
-                        "[host] lightmap layers ent={ent:#x} {}x{} -> id={}",
-                        atlas.width,
-                        atlas.height,
-                        id
-                    );
-                    world.set(ent, lm_id_comp, LightmapId::new(id));
-                } else if uploaded_atlas {
-                    world.set(ent, lm_id_comp, LightmapId::new(0));
-                }
-                world.remove(ent, pending_lm_id);
-            } else if uploaded_atlas && !world.has(ent, lm_id_comp) {
-                world.set(ent, lm_id_comp, LightmapId::new(0));
-            }
-        }
-
-        last_atlas_slot
+    pub fn flush_pending_albedos_world(&mut self, _world: &deerpunk_engine_common::world::World) -> u32 {
+        // Lightmaps and albedo atlases are uploaded via material `_Lightmap` / `_BaseMap` URIs
+        // (`MaterialStore::attach_lightmaps_from_asset`, gamelib BSP loader). Kept for call sites.
+        0
     }
 
     #[cfg(not(any(feature = "client", feature = "full")))]
@@ -1354,6 +1264,12 @@ impl Host {
         } else {
             None
         };
+        let r_speeds = self.cvar.get_usize_or("r_speeds", 0) as i32;
+        let render_hud = if r_speeds > 0 {
+            Some(self.render_hud_info(r_speeds))
+        } else {
+            None
+        };
 
         let Host {
             console,
@@ -1376,6 +1292,7 @@ impl Host {
             view_yaw,
             view_pitch,
             net_hud.as_ref(),
+            render_hud.as_deref(),
         );
 
         // Client gamelib ImGui overlays (host-owned `imgui::Context`).
@@ -1553,6 +1470,93 @@ impl Host {
         deerpunk_engine_client::infobox::NetHudInfo { lines }
     }
 
+    #[cfg(any(feature = "client", feature = "full"))]
+    fn render_hud_info(&self, level: i32) -> Vec<String> {
+        let Some(client) = self.client_engine.as_ref() else {
+            return Vec::new();
+        };
+        let p = client.renderer().frame_profile();
+        let registry = &client.shader_registry;
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "render: {:.2} ms (extract {:.2} + encode {:.2})",
+            p.extract_ms + p.total_encode_ms,
+            p.extract_ms,
+            p.total_encode_ms
+        ));
+        for pass in &p.passes {
+            lines.push(format!("  {:<22} {:.2} ms", pass.name, pass.ms));
+        }
+        if !p.graph_nodes.is_empty() {
+            lines.push("graph:".into());
+            for node in &p.graph_nodes {
+                lines.push(format!("  {:<22} {:.2} ms", node.name, node.ms));
+            }
+        }
+        if level >= 2 {
+            lines.push(format!(
+                "  {}x{}  mesh {} tris~{}  spr {} hud {} terr {} lights {}",
+                p.width,
+                p.height,
+                p.mesh_draws,
+                p.mesh_index_count,
+                p.sprite_instances,
+                p.hud_instances,
+                p.terrain_draws,
+                p.point_lights
+            ));
+            if p.debug_verts > 0 {
+                lines.push(format!("  debug verts {}", p.debug_verts));
+            }
+        }
+        if level >= 3 {
+            let m = &p.mesh_stats;
+            lines.push(format!(
+                "mesh: submitted={}  lm_arr={} albedo2d={}",
+                m.draws_submitted,
+                m.lm_array_layout_draws,
+                m.albedo_2d_layout_draws
+            ));
+            if m.lm_array_with_gpu_id_zero > 0 {
+                lines.push(format!(
+                    "  WARN lm_arr layout but lightmap_gpu=0: {} draws",
+                    m.lm_array_with_gpu_id_zero
+                ));
+            }
+            if m.albedo_white_slot_draws > 0 {
+                lines.push(format!(
+                    "  albedo white slot: {} draws",
+                    m.albedo_white_slot_draws
+                ));
+            }
+            lines.push(format!(
+                "  sample: id={} lm_arr={} alb={} lm={} mat={} bsp={}",
+                m.sample_shader_id,
+                if m.sample_lm_array { 1 } else { 0 },
+                m.sample_albedo_slot,
+                m.sample_lightmap_gpu,
+                m.sample_material_id,
+                if m.sample_has_bsp_mesh { 1 } else { 0 }
+            ));
+            lines.push(format!("    {}", m.sample_shader_path));
+            for bin in &m.shader_bins {
+                let path = registry
+                    .path_for_id(bin.shader_id)
+                    .unwrap_or("?")
+                    .to_string();
+                lines.push(format!(
+                    "  id={} lm_arr={} draws={} tris~{}  {}",
+                    bin.shader_id,
+                    if bin.lm_array_layout { 1 } else { 0 },
+                    bin.draws,
+                    bin.tris,
+                    path
+                ));
+            }
+        }
+        lines
+    }
+
     fn sync_inspector_players(&mut self) {
         let remote_addrs: std::collections::HashMap<u32, String> = self
             .net
@@ -1709,9 +1713,7 @@ impl Host {
                 if self.net.is_hosting() || self.net.is_client() {
                     self.net.disconnect();
                 }
-                if let Some(client) = self.client_engine.as_mut() {
-                    self.client_rep.clear(&client.world);
-                }
+                self.flush_client_scene();
                 self.client_lightstyles = LightstyleTable::hl_defaults();
                 let n = player.records.len();
                 println!("[demo] playing {} ({} records)", path.display(), n);
@@ -1733,9 +1735,7 @@ impl Host {
         }
         if self.demo_player.take().is_some() {
             println!("[demo] stopped playback");
-            if let Some(client) = self.client_engine.as_mut() {
-                self.client_rep.clear(&client.world);
-            }
+            self.flush_client_scene();
             let _ = self.cvar.set("cl_demoplaying", "0");
             if !self.server_engine.enabled && !self.net.is_client() {
                 deerpunk_ui::set_client_in_game(false);
@@ -1838,7 +1838,7 @@ impl Host {
                 };
                 let gamedir = self.fs.gamedir().to_path_buf();
                 let _ = self.client_rep.apply_packet(
-                    &client.world,
+                    client,
                     &gamedir,
                     &mut self.resources,
                     packet,
@@ -2197,11 +2197,18 @@ impl Host {
             }
             self.sync_server_sound_origins();
             let view_ent = self.client_rep.view_entity();
+            let extract_start = std::time::Instant::now();
             let scene = self
                 .client_engine
                 .as_mut()
                 .unwrap()
                 .extract_scene_view(view_ent);
+            let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;
+            self.client_engine
+                .as_mut()
+                .unwrap()
+                .renderer_mut()
+                .note_extract_ms(extract_ms);
 
             // Physics collider wireframe → RenderSnapshot.debug_draw (before GPU).
             {

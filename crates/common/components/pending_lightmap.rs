@@ -1,7 +1,7 @@
 use crate::lightmap_atlas::LightmapAtlasLayers;
 use crate::wad::RgbaImage;
 
-/// CPU lightmap atlas (4 style layers) awaiting GPU upload.
+/// Legacy CPU lightmap upload path (superseded by material `_Lightmap` URIs).
 #[derive(Clone, Default)]
 pub struct PendingLightmap {
     pub atlas: Option<LightmapAtlasLayers>,
@@ -26,7 +26,7 @@ impl PendingLightmap {
     }
 }
 
-/// GPU lightmap atlas id (from renderer `upload_lightmap_layers`).
+/// Legacy per-entity GPU lightmap id (superseded by material `lightmap_id` on brush materials).
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct LightmapId {

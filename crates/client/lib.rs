@@ -16,6 +16,7 @@ pub use camera::{Camera, CameraMode, FreecamController, CAMERA_SMOOTH_SPEED, FOL
 pub mod app;
 pub mod client_engine;
 pub mod infobox;
+pub mod mesh_lifecycle;
 pub mod render_extractor;
 pub mod ui_controller;
 

@@ -1,13 +1,10 @@
 use std::sync::Arc;
 
-use deerpunk_engine_common::components::material::Material;
 use deerpunk_engine_common::components::mesh3d::Mesh3D;
-use deerpunk_engine_common::components::pending_lightmap::LightmapId;
 use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::{CameraComponent, PointLight, TransformComponent};
 use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::physics::CharacterController;
-use deerpunk_engine_common::resource::mesh::Mesh;
 use deerpunk_engine_common::world::{ComponentId, QueryId, World};
 use deerpunk_engine_common::MeshTexture;
 use deerpunk_engine_renderer::material_allocator::MaterialAllocator;
@@ -18,13 +15,10 @@ use deerpunk_engine_renderer::snapshot::{
 
 pub struct RenderExtractor {
     q_cameras: QueryId,
-    q_meshes: QueryId,
     q_draw_materials: QueryId,
     q_terrain_splat: QueryId,
     q_lights: QueryId,
-    lightmap_id: ComponentId,
     char_id: ComponentId,
-    draw_material_id: ComponentId,
 }
 
 impl RenderExtractor {
@@ -32,23 +26,17 @@ impl RenderExtractor {
         let _ = world.component_init::<TransformComponent>();
         let _ = world.component_init::<CameraComponent>();
         let _ = world.component_init::<Mesh3D>();
-        let _ = world.component_init::<Material>();
         let _ = world.component_init::<DrawMaterial>();
         let _ = world.component_init::<TerrainSplatMaterial>();
         let _ = world.component_init::<PointLight>();
-        let lightmap_id = world.component_init::<LightmapId>();
         let char_id = world.component_init::<CharacterController>();
-        let draw_material_id = world.component_init::<DrawMaterial>();
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
-            q_meshes: world.query_prepare("TransformComponent, Mesh3D, Material, !DrawMaterial"),
             q_draw_materials: world.query_prepare("TransformComponent, Mesh3D, DrawMaterial"),
             q_terrain_splat: world
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
-            lightmap_id,
             char_id,
-            draw_material_id,
         }
     }
 
@@ -65,6 +53,7 @@ impl RenderExtractor {
         material_allocator: &mut MaterialAllocator,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        fallback_mesh: &Arc<deerpunk_engine_common::resource::mesh::Mesh>,
     ) -> RenderScene {
         let mut scene = RenderScene::new();
 
@@ -115,65 +104,6 @@ impl RenderExtractor {
             }
         }
 
-        if let Some(batches) = world.query_batches(self.q_meshes) {
-            for batch in batches {
-                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let transforms = unsafe {
-                    std::slice::from_raw_parts(
-                        batch.columns[0] as *const TransformComponent,
-                        batch.count,
-                    )
-                };
-                let meshes = unsafe {
-                    std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
-                };
-                let materials = unsafe {
-                    std::slice::from_raw_parts(batch.columns[2] as *const Material, batch.count)
-                };
-                for i in 0..batch.count {
-                    let t = &transforms[i];
-                    let m = &meshes[i];
-                    let mat = &materials[i];
-                    let ent = entities[i];
-                    let model_mat = glam::Mat4::from_scale_rotation_translation(
-                        t.scale, t.rotation, t.position,
-                    )
-                    .to_cols_array_2d();
-                    let mesh = m
-                        .mesh
-                        .clone()
-                        .unwrap_or_else(|| Arc::new(Mesh::cube()));
-
-                    // LightmapId → BSP atlas + LM pipeline (id 0 = white LM fallback).
-                    let lightmap = {
-                        let ptr = world.get_raw(ent, self.lightmap_id) as *const LightmapId;
-                        if ptr.is_null() {
-                            None
-                        } else {
-                            Some(unsafe { (*ptr).id })
-                        }
-                    };
-
-                    scene.geometry.mesh_draws.push(MeshDraw {
-                        mesh,
-                        model_mat,
-                        material_id: 0,
-                        texture: mat.albedo,
-                        normal: mat.normal,
-                        orm: mat.ao_roughness_metallic,
-                        sun_dir: mat.sun_dir,
-                        ambient: mat.ambient,
-                        material: Some(mat.clone()),
-                        lightmap,
-                        first_index: 0,
-                        index_count: 0,
-                    });
-                }
-            }
-        }
-
-        // DrawMaterial path — entities with MaterialHandle (new system).
-        // Resolves handle → GPU index via MaterialStore; emits MeshDraw with material: None.
         if let Some(batches) = world.query_batches(self.q_draw_materials) {
             for batch in batches {
                 let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
@@ -190,10 +120,10 @@ impl RenderExtractor {
                     std::slice::from_raw_parts(batch.columns[2] as *const DrawMaterial, batch.count)
                 };
                 for i in 0..batch.count {
+                    let ent = entities[i];
                     let t = &transforms[i];
                     let m = &meshes[i];
                     let dm = &draw_mats[i];
-                    let ent = entities[i];
 
                     let model_mat = glam::Mat4::from_scale_rotation_translation(
                         t.scale, t.rotation, t.position,
@@ -202,10 +132,8 @@ impl RenderExtractor {
                     let mesh = m
                         .mesh
                         .clone()
-                        .unwrap_or_else(|| Arc::new(Mesh::cube()));
+                        .unwrap_or_else(|| fallback_mesh.clone());
 
-                    // Resolve handle → GPU material index + texture slots.
-                    // Split borrows: get texture slots first (immutable), then resolve_gpu (mutable).
                     let (texture, normal, orm) = match material_store.get(dm.handle) {
                         Some(e) => (e.albedo, e.normal, e.orm),
                         None => (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE),
@@ -217,15 +145,16 @@ impl RenderExtractor {
                         queue,
                     );
 
-                    // LightmapId → BSP atlas + LM pipeline (id 0 = white LM fallback).
-                    let lightmap = {
-                        let ptr = world.get_raw(ent, self.lightmap_id) as *const LightmapId;
-                        if ptr.is_null() {
-                            None
-                        } else {
-                            Some(unsafe { (*ptr).id })
-                        }
-                    };
+                    let (shader_id, lightmap_gpu) = material_store
+                        .get(dm.handle)
+                        .map(|e| (e.shader, e.lightmap_id))
+                        .unwrap_or((0, 0));
+
+                    assert!(
+                        shader_id != 0,
+                        "DrawMaterial entity {ent:#x} handle {:?}: shader not loaded (shader_id=0)",
+                        dm.handle
+                    );
 
                     scene.geometry.mesh_draws.push(MeshDraw {
                         mesh,
@@ -236,8 +165,8 @@ impl RenderExtractor {
                         orm,
                         sun_dir: [0.0, 0.0, 1.0, 0.0],
                         ambient: [0.0; 4],
-                        material: None, // DrawMaterial path: use material_id, not fat Material
-                        lightmap,
+                        shader_id,
+                        lightmap_gpu,
                         first_index: 0,
                         index_count: 0,
                     });
@@ -269,7 +198,7 @@ impl RenderExtractor {
                     let mesh = m
                         .mesh
                         .clone()
-                        .unwrap_or_else(|| Arc::new(Mesh::cube()));
+                        .unwrap_or_else(|| fallback_mesh.clone());
                     scene.geometry.terrain_splat_draws.push(TerrainSplatDraw {
                         mesh,
                         model_mat: model_mat.to_cols_array_2d(),

@@ -671,7 +671,10 @@ impl crate::Host {
     pub fn api_host_client_track_static(&mut self, entity: u64) -> i32 {
         #[cfg(any(feature = "client", feature = "full"))]
         {
-            self.client_rep.track_static_entity(entity);
+            if let Some(client) = self.client_engine.as_mut() {
+                client.mesh_adopt_entity(entity);
+                self.client_rep.track_static_entity(entity);
+            }
             0
         }
         #[cfg(not(any(feature = "client", feature = "full")))]
@@ -920,12 +923,28 @@ impl crate::Host {
             .unwrap_or(false)
     }
 
+    #[methoddb::bind(name = "is_alive")]
+    pub fn api_client_world_is_alive(&self, entity: u64) -> bool {
+        self.client_engine
+            .as_ref()
+            .map(|c| c.world.is_alive(entity))
+            .unwrap_or(false)
+    }
+
     #[methoddb::bind(name = "spawn")]
     pub fn api_client_world_spawn(&self) -> u64 {
         self.client_engine
             .as_ref()
             .map(|c| c.world.spawn())
             .unwrap_or(0)
+    }
+
+    #[methoddb::bind(name = "destroy")]
+    pub fn api_client_world_destroy(&mut self, entity: u64) {
+        if let Some(ce) = self.client_engine.as_mut() {
+            ce.mesh_release_entity(entity);
+            ce.world.destroy(entity);
+        }
     }
 
     #[methoddb::bind(name = "component_register")]

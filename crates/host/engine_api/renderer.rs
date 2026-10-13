@@ -18,6 +18,34 @@ impl crate::Host {
         ce.renderer_mut().upload_texture(pixels, w, h).0
     }
 
+    /// Load a lightmap atlas via [`ResourceManager`] and upload to the GPU.
+    /// URI example: `file://maps/foo.bsp#lightmap:world` (gamelib BSP loader).
+    #[methoddb::bind(name = "upload_lightmap_uri")]
+    pub fn api_renderer_upload_lightmap_uri(&mut self, uri: &str) -> u32 {
+        use deerpunk_engine_common::lightmap_atlas::LightmapAtlasLayers;
+        let handle = self.resources.load::<LightmapAtlasLayers>(uri);
+        let atlas = match handle.try_get() {
+            Some(a) => a,
+            None => {
+                log::error!("[renderer] upload_lightmap_uri '{uri}': not loaded");
+                return 0;
+            }
+        };
+        let Some(ce) = self.client_engine.as_mut() else {
+            return 0;
+        };
+        ce.renderer_mut().upload_lightmap_layers(
+            atlas.width,
+            atlas.height,
+            [
+                &atlas.layers[0].pixels,
+                &atlas.layers[1].pixels,
+                &atlas.layers[2].pixels,
+                &atlas.layers[3].pixels,
+            ],
+        )
+    }
+
     /// Upload a 4-layer lightmap atlas (RGBA8 each). Returns lightmap id (0 = failed).
     #[methoddb::bind(name = "upload_lightmap_raw")]
     pub fn api_renderer_upload_lightmap_raw(
@@ -95,6 +123,11 @@ impl crate::Host {
 impl crate::Host {
     #[methoddb::bind(name = "upload_texture_raw")]
     pub fn api_renderer_upload_texture_raw(&mut self, _pixels: &[u8], _w: u32, _h: u32) -> u32 {
+        0
+    }
+
+    #[methoddb::bind(name = "upload_lightmap_uri")]
+    pub fn api_renderer_upload_lightmap_uri(&mut self, _uri: &str) -> u32 {
         0
     }
 

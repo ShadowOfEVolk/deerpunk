@@ -261,6 +261,26 @@ impl RenderGraph {
     pub fn pool_mut(&mut self) -> &mut TexturePool {
         &mut self.texture_pool
     }
+
+    /// Node names in compilation order (for HUD / inspector).
+    pub fn node_names_ordered(&self) -> Result<Vec<&'static str>, GraphError> {
+        let order = self.compile()?;
+        Ok(order.iter().map(|&i| self.nodes[i].name).collect())
+    }
+
+    /// Static graph structure: `name -> (inputs, outputs)` resource ids.
+    pub fn describe_nodes(&self) -> Vec<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
+        self.nodes
+            .iter()
+            .map(|n| {
+                (
+                    n.name,
+                    n.inputs.iter().map(|r| r.0).collect(),
+                    n.outputs.iter().map(|r| r.0).collect(),
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug)]

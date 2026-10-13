@@ -79,7 +79,7 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
         }
     }
 
-    Ok(Mesh {
+    let mut mesh = Mesh {
         positions: out_positions,
         normals: out_normals,
         uvs: out_uvs,
@@ -87,7 +87,10 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
         lightmap_styles: Vec::new(),
         atlas_rects: Vec::new(),
         indices,
-    })
+        content_id: 0,
+    };
+    mesh.ensure_content_id();
+    Ok(mesh)
 }
 
 /// First `mtllib` name in an OBJ (basename or relative path).

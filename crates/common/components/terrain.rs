@@ -98,7 +98,7 @@ impl Terrain {
             }
         }
 
-        Mesh {
+        let mut mesh = Mesh {
             positions,
             normals,
             uvs,
@@ -106,6 +106,9 @@ impl Terrain {
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
             indices,
-        }
+            content_id: 0,
+        };
+        mesh.ensure_content_id();
+        mesh
     }
 }

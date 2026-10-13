@@ -14,6 +14,8 @@ pub struct Mesh3D {
 
 impl Mesh3D {
     pub fn new(mesh: Mesh) -> Self {
+        let mut mesh = mesh;
+        mesh.ensure_content_id();
         Self {
             mesh: Some(Arc::new(mesh)),
         }

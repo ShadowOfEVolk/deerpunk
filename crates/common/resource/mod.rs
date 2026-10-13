@@ -1,5 +1,6 @@
 pub mod loader;
 pub mod mesh;
+pub mod mesh_content;
 pub mod obj;
 pub mod fbx;
 pub mod transform;
@@ -287,7 +288,11 @@ impl ResourceManager {
         if let Some(id) = opts.loader {
             return id.to_string();
         }
-        // `file://…/map.bsp#brush:12` → query `brush:12`; gamelib registers loader id `brush`.
+        // All BSP sub-resources (`#brush:N`, `#material`, `#atlas:albedo`, …) go through
+        // the gamelib `bsp` loader; the fragment is passed as `query`.
+        if file_extension(path).as_deref() == Some("bsp") && self.loaders.contains_key("bsp") {
+            return "bsp".to_string();
+        }
         if let Some(kind) = query.split(':').next() {
             if !kind.is_empty() && self.loaders.contains_key(kind) {
                 return kind.to_string();

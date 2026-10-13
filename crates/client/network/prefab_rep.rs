@@ -16,6 +16,8 @@ use deerpunk_engine_common::scene::spawn_prefab_filtered_with_overrides_cached;
 use deerpunk_engine_common::resource::ResourceManager;
 use deerpunk_engine_common::world::{EntityId, World};
 
+use crate::client_engine::ClientEngine;
+
 #[derive(Default)]
 pub struct ClientPrefabReplication {
     network_prefabs: PrefabManager,
@@ -32,18 +34,13 @@ impl ClientPrefabReplication {
         Self::default()
     }
 
-    pub fn clear(&mut self, world: &World) {
-        for (_, (ent, _)) in self.map.drain() {
-            world.destroy(ent);
-        }
-        for &id in &self.static_entities {
-            world.destroy(id);
-        }
+    /// Clear stream/net bookkeeping after the client ECS was flushed (no entity destroy).
+    pub fn reset_stream_state(&mut self) {
+        self.map.clear();
         self.static_entities.clear();
         self.view_net_id = None;
         self.mesh_uri_by_net.clear();
         self.network_prefabs.clear_cache();
-        world.simulate(0.0);
     }
 
     /// Re-apply stored `Mesh3D.mesh` URIs (e.g. after BSP submodel cache is ready).
@@ -86,18 +83,19 @@ impl ClientPrefabReplication {
 
     pub fn apply_packet(
         &mut self,
-        world: &World,
+        client: &mut ClientEngine,
         gamedir: &Path,
         resources: &mut ResourceManager,
         packet: &[u8],
     ) -> bool {
+        let world = &client.world;
         let Some((&cmd, payload)) = packet.split_first() else {
             return false;
         };
         if cmd == SVC::StreamIn as u8 {
             match StreamInRpc::decode(payload) {
                 Some(rpc) => {
-                    if let Err(e) = self.apply_stream_in(world, gamedir, resources, rpc) {
+                    if let Err(e) = self.apply_stream_in(client, gamedir, resources, rpc) {
                         log::error!("[stream] in: {e}");
                     }
                     true
@@ -118,7 +116,7 @@ impl ClientPrefabReplication {
                         cold: spawn.cold,
                         hot: spawn.hot,
                     };
-                    if let Err(e) = self.apply_stream_in(world, gamedir, resources, rpc) {
+                    if let Err(e) = self.apply_stream_in(client, gamedir, resources, rpc) {
                         log::error!("[stream] legacy spawn: {e}");
                     }
                     true
@@ -135,7 +133,7 @@ impl ClientPrefabReplication {
                 NetDestroyRpc::decode(payload).map(|r| r.net_id)
             };
             if let Some(net_id) = net_id {
-                self.apply_stream_out(world, net_id);
+                self.apply_stream_out(client, net_id);
             }
             true
         } else if cmd == SVC::StreamUpdate as u8 {
@@ -181,7 +179,7 @@ impl ClientPrefabReplication {
 
     fn apply_stream_in(
         &mut self,
-        world: &World,
+        client: &mut ClientEngine,
         gamedir: &Path,
         resources: &mut ResourceManager,
         rpc: StreamInRpc,
@@ -191,7 +189,7 @@ impl ClientPrefabReplication {
                 if gen == &rpc.generation {
                     return Ok(());
                 }
-                world.destroy(*old);
+                Self::destroy_client_entity(client, *old);
             }
         }
 
@@ -216,7 +214,7 @@ impl ClientPrefabReplication {
 
         let allow: Vec<&str> = allow_keys;
         let entity = spawn_prefab_filtered_with_overrides_cached(
-            world,
+            &client.world,
             gamedir,
             resources,
             &rpc.prefab,
@@ -227,9 +225,9 @@ impl ClientPrefabReplication {
         .map_err(|e| e.message)?;
 
         if rpc.net_id != 0 {
-            let ne_id = world.component_init::<NetworkEntity>();
-            if world.has(entity, ne_id) {
-                let ptr = world.get_raw(entity, ne_id) as *mut NetworkEntity;
+            let ne_id = client.world.component_init::<NetworkEntity>();
+            if client.world.has(entity, ne_id) {
+                let ptr = client.world.get_raw(entity, ne_id) as *mut NetworkEntity;
                 if !ptr.is_null() {
                     unsafe {
                         (*ptr).net_id = rpc.net_id;
@@ -242,8 +240,8 @@ impl ClientPrefabReplication {
             self.static_entities.push(entity);
         }
 
-        self.apply_overrides(world, gamedir, resources, entity, &rpc.hot);
-        self.apply_overrides(world, gamedir, resources, entity, &rpc.cold);
+        self.apply_overrides(&client.world, gamedir, resources, entity, &rpc.hot);
+        self.apply_overrides(&client.world, gamedir, resources, entity, &rpc.cold);
 
         if rpc.net_id != 0 {
             if let Some(uri) = rpc
@@ -260,7 +258,8 @@ impl ClientPrefabReplication {
             }
         }
 
-        world.simulate(0.0);
+        client.mesh_adopt_entity(entity);
+        client.world.simulate(0.0);
         log::info!(
             "[stream] in prefab='{}' net_id={} gen={} ent={:#x}",
             rpc.prefab,
@@ -271,10 +270,15 @@ impl ClientPrefabReplication {
         Ok(())
     }
 
-    fn apply_stream_out(&mut self, world: &World, net_id: u16) {
+    fn destroy_client_entity(client: &mut ClientEngine, entity: EntityId) {
+        client.mesh_release_entity(entity);
+        client.world.destroy(entity);
+    }
+
+    fn apply_stream_out(&mut self, client: &mut ClientEngine, net_id: u16) {
         if let Some((entity, _)) = self.map.remove(&net_id) {
-            world.destroy(entity);
-            world.simulate(0.0);
+            Self::destroy_client_entity(client, entity);
+            client.world.simulate(0.0);
             log::info!("[stream] out net_id={}", net_id);
         }
     }

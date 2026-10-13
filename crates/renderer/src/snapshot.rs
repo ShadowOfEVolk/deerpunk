@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use tiny_skia::Pixmap;
 
+pub use deerpunk_engine_common::material::ShaderId;
 pub use deerpunk_engine_common::MeshTexture;
 
 /// Один draw-вызов меша в3D.
@@ -22,9 +23,10 @@ pub struct MeshDraw {
     pub orm: MeshTexture,
     pub sun_dir: [f32; 4],
     pub ambient: [f32; 4],
-    pub material: Option<deerpunk_engine_common::components::material::Material>,
-    /// If set, use atlas+lightmap pipeline (`texture` = 2D albedo, this = LM id; `0` = white).
-    pub lightmap: Option<u32>,
+    /// Shader from [`ShaderRegistry`] (`0` = invalid — draw skipped).
+    pub shader_id: ShaderId,
+    /// GPU lightmap pool id when the material shader binds `texture_2d_array` (`0` = white).
+    pub lightmap_gpu: u32,
     /// Submesh index range into `mesh.indices`. `index_count == 0` → full mesh.
     pub first_index: u32,
     pub index_count: u32,
@@ -273,6 +275,8 @@ impl RenderSnapshot {
         model_mat: [[f32; 4]; 4],
         material_id: u32,
         texture: MeshTexture,
+        shader_id: ShaderId,
+        lightmap_gpu: u32,
     ) {
         self.mesh_draws.push(MeshDraw {
             mesh: Arc::new(mesh),
@@ -283,8 +287,8 @@ impl RenderSnapshot {
             orm: MeshTexture::WHITE,
             sun_dir: [0.0, 0.0, 1.0, 0.0],
             ambient: [1.0, 1.0, 1.0, 0.0],
-            material: None,
-            lightmap: None,
+            shader_id,
+            lightmap_gpu,
             first_index: 0,
             index_count: 0,
         });
@@ -296,6 +300,8 @@ impl RenderSnapshot {
         model_mat: [[f32; 4]; 4],
         material_id: u32,
         texture: MeshTexture,
+        shader_id: ShaderId,
+        lightmap_gpu: u32,
         sun_dir: [f32; 4],
         ambient: [f32; 4],
     ) {
@@ -308,8 +314,8 @@ impl RenderSnapshot {
             orm: MeshTexture::WHITE,
             sun_dir,
             ambient,
-            material: None,
-            lightmap: None,
+            shader_id,
+            lightmap_gpu,
             first_index: 0,
             index_count: 0,
         });

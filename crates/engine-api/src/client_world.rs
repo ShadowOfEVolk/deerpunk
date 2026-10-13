@@ -18,6 +18,8 @@ pub struct ClientWorldApi {
     set_fn: extern "C" fn(*mut u8, u64, u64, *const std::ffi::c_void, usize),
     has_fn: extern "C" fn(*mut u8, u64, u64) -> bool,
     spawn_fn: extern "C" fn(*mut u8) -> u64,
+    destroy_fn: extern "C" fn(*mut u8, u64),
+    is_alive_fn: extern "C" fn(*mut u8, u64) -> bool,
     component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
     query_fn: extern "C" fn(
         *mut u8,
@@ -41,6 +43,8 @@ impl ClientWorldApi {
             set_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:set")) },
             has_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:has")) },
             spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:spawn")) },
+            destroy_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:destroy")) },
+            is_alive_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:is_alive")) },
             component_register_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client_world:component_register"))
             },
@@ -50,6 +54,14 @@ impl ClientWorldApi {
 
     pub fn spawn(&self) -> EntityId {
         (self.spawn_fn)(self.ctx)
+    }
+
+    pub fn destroy(&self, entity: EntityId) {
+        (self.destroy_fn)(self.ctx, entity);
+    }
+
+    pub fn is_alive(&self, entity: EntityId) -> bool {
+        (self.is_alive_fn)(self.ctx, entity)
     }
 
     pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {

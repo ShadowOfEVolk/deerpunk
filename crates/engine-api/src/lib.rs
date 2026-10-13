@@ -8,6 +8,7 @@ pub mod physics;
 pub mod renderer;
 pub mod host_access;
 pub mod components;
+pub mod dynamic_load;
 pub mod resources;
 pub mod schedule;
 pub mod ui;
@@ -18,6 +19,7 @@ pub mod client_world;
 pub mod spawn_prefab;
 pub mod materials;
 
+pub use dynamic_load::{drop_dynamic, pack as pack_dynamic_load, DynamicLoad};
 pub use deerpunk_engine_ffi::{
     ClientInitData, ComponentId, EntityId, GAMELIB_API_VERSION, GamelibInitData, ResolverFn,
     ServerInitData,

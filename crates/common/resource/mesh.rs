@@ -1,5 +1,7 @@
 use glam::Vec3;
 
+use super::mesh_content::{allocate_mesh_content_id, MESH_CONTENT_INVALID};
+
 #[derive(Clone, Debug)]
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
@@ -12,6 +14,8 @@ pub struct Mesh {
     /// Per-vertex albedo atlas rect `[min_u, min_v, size_u, size_v]` (empty → full [0,0,1,1]).
     pub atlas_rects: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
+    /// Unique content id for GPU cache + refcount (`0` = invalid until assigned).
+    pub content_id: u64,
 }
 
 impl Mesh {
@@ -24,6 +28,18 @@ impl Mesh {
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
             indices: Vec::new(),
+            content_id: allocate_mesh_content_id(),
+        }
+    }
+
+    pub fn content_id(&self) -> u64 {
+        self.content_id
+    }
+
+    /// Assign an id when building via struct literal (`content_id: 0`).
+    pub fn ensure_content_id(&mut self) {
+        if self.content_id == MESH_CONTENT_INVALID {
+            self.content_id = allocate_mesh_content_id();
         }
     }
 
@@ -72,6 +88,7 @@ impl Mesh {
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
             indices: i,
+            content_id: allocate_mesh_content_id(),
         }
     }
 }

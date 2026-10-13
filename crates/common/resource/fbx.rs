@@ -120,7 +120,7 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         i += 1;
     }
 
-    Ok(Mesh {
+    let mut mesh = Mesh {
         positions: verts,
         normals,
         uvs,
@@ -128,7 +128,10 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         lightmap_styles: Vec::new(),
         atlas_rects: Vec::new(),
         indices,
-    })
+        content_id: 0,
+    };
+    mesh.ensure_content_id();
+    Ok(mesh)
 }
 
 fn read_f64_array(data: &[u8], prop_start: usize, np: usize) -> Option<Vec<f64>> {

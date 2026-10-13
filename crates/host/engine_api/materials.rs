@@ -6,38 +6,55 @@ use deerpunk_macro as methoddb;
 
 use deerpunk_engine_common::material::{MaterialAsset, MaterialHandle, PropertyValueSer};
 use deerpunk_engine_common::MeshTexture;
-use deerpunk_engine_client::renderer::material_store::{SlotTextureResolver, WhiteTextureResolver};
+use deerpunk_engine_client::renderer::material_store::SlotTextureResolver;
 
-/// Load a `.mat` asset by path into the client `MaterialStore`.
-/// Returns MaterialHandle (0 = failed).
+/// Load a material into the client `MaterialStore`.
+///
+/// `path` may be a gamedir-relative `.mat` file or a resource URI
+/// (e.g. `file://maps/foo.bsp#material` from the gamelib BSP loader).
 fn materials_load(host: &mut crate::Host, path: &str) -> u32 {
-    // Resolve path relative to gamedir.
-    let resolved = host.fs.resolve_path(path);
-    let source = match std::fs::read_to_string(&resolved) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("[materials] load '{path}': {e}");
-            return 0;
-        }
-    };
-
     let Some(ce) = host.client_engine.as_mut() else {
         log::error!("[materials] load '{path}': no client engine");
         return 0;
     };
 
-    let mut resolver = WhiteTextureResolver;
-    match ce
-        .material_store
-        .load(path, &source, &ce.shader_registry, &mut resolver)
-    {
-        Ok(handle) => {
-            log::info!("[materials] loaded '{path}' -> handle {}", handle.0);
-            handle.0
+    if path.contains('#') || path.contains("://") {
+        let handle = host.resources.load::<MaterialAsset>(path);
+        let asset = match handle.try_get() {
+            Some(a) => a,
+            None => {
+                log::error!("[materials] load '{path}': resource not ready");
+                return 0;
+            }
+        };
+        match ce.load_material_from_asset(path, &asset, &mut host.resources) {
+            Ok(h) => {
+                log::info!("[materials] loaded uri '{path}' -> handle {}", h.0);
+                h.0
+            }
+            Err(e) => {
+                log::error!("[materials] load uri '{path}': {e}");
+                0
+            }
         }
-        Err(e) => {
-            log::error!("[materials] load '{path}': {e}");
-            0
+    } else {
+        let resolved = host.fs.resolve_path(path);
+        let source = match std::fs::read_to_string(&resolved) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("[materials] load '{path}': {e}");
+                return 0;
+            }
+        };
+        match ce.load_material_resolved(path, &source, &mut host.resources) {
+            Ok(handle) => {
+                log::info!("[materials] loaded '{path}' -> handle {}", handle.0);
+                handle.0
+            }
+            Err(e) => {
+                log::error!("[materials] load '{path}': {e}");
+                0
+            }
         }
     }
 }

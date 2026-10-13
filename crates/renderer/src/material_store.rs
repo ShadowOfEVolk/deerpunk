@@ -7,8 +7,9 @@
 
 use std::collections::HashMap;
 
+use deerpunk_engine_common::lightmap_atlas::LightmapAtlasLayers;
 use deerpunk_engine_common::material::{
-    MaterialAsset, MaterialHandle, PropertyValueSer, ShaderId, ShaderMeta,
+    MaterialAsset, MaterialHandle, PropertyValueSer, RenderPass, ShaderId, ShaderMeta,
 };
 use deerpunk_engine_common::MeshTexture;
 
@@ -44,6 +45,10 @@ pub struct MaterialEntry {
     pub metallic: f32,
     pub roughness: f32,
     pub emission: [f32; 4],
+    /// GPU lightmap atlas id (`upload_lightmap_layers`), from `_Lightmap` URI at load.
+    pub lightmap_id: u32,
+    /// From shader `#@shader pass=...` (opaque vs transparent queue, etc.).
+    pub render_pass: RenderPass,
 }
 
 impl MaterialEntry {
@@ -61,6 +66,8 @@ impl MaterialEntry {
             metallic: 0.0,
             roughness: 0.5,
             emission: [0.0; 4],
+            lightmap_id: 0,
+            render_pass: RenderPass::MeshOpaque,
         }
     }
 }
@@ -84,6 +91,13 @@ impl MaterialStore {
             by_path: HashMap::new(),
             by_hash: HashMap::new(),
         }
+    }
+
+    /// Drop all loaded materials (client disconnect / map teardown). Reload on next `load`.
+    pub fn reset(&mut self) {
+        self.entries.clear();
+        self.by_path.clear();
+        self.by_hash.clear();
     }
 
     /// Get or load a material by path. Dedup by path.
@@ -136,6 +150,7 @@ impl MaterialStore {
         let handle = MaterialHandle(self.entries.len() as u32 + 1);
         let mut entry = MaterialEntry::white();
         entry.shader = shader_id;
+        entry.render_pass = shader_meta.pass.unwrap_or(RenderPass::MeshOpaque);
         entry.props = props;
         fill_draw_fields(&mut entry, &shader_meta);
 
@@ -231,6 +246,54 @@ impl MaterialStore {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Upload `_Lightmap` BSP URIs (`#lightmap:…`) after [`create_from_asset`].
+    pub fn attach_lightmaps_from_asset(
+        &mut self,
+        handle: MaterialHandle,
+        asset: &MaterialAsset,
+        resources: &mut deerpunk_engine_common::resource::ResourceManager,
+        renderer: &mut crate::gpu::Renderer,
+    ) {
+        let Some(entry) = self.entries.get_mut(handle.0 as usize - 1) else {
+            return;
+        };
+        for (name, value) in &asset.properties {
+            if name != "_Lightmap" {
+                continue;
+            }
+            if let PropertyValueSer::Texture(uri) = value {
+                if let Ok(id) = upload_lightmap_uri(resources, renderer, uri) {
+                    entry.lightmap_id = id;
+                }
+            }
+        }
+    }
+}
+
+/// Load `file://…#lightmap:…` and upload to the GPU lightmap pool.
+pub fn upload_lightmap_uri(
+    resources: &mut deerpunk_engine_common::resource::ResourceManager,
+    renderer: &mut crate::gpu::Renderer,
+    uri: &str,
+) -> Result<u32, String> {
+    if !uri.contains("#lightmap:") {
+        return Ok(0);
+    }
+    let handle = resources.load::<LightmapAtlasLayers>(uri);
+    let atlas = handle
+        .try_get()
+        .ok_or_else(|| format!("lightmap resource not loaded: '{uri}'"))?;
+    Ok(renderer.upload_lightmap_layers(
+        atlas.width,
+        atlas.height,
+        [
+            &atlas.layers[0].pixels,
+            &atlas.layers[1].pixels,
+            &atlas.layers[2].pixels,
+            &atlas.layers[3].pixels,
+        ],
+    ))
 }
 
 /// Resolve material asset properties against shader schema.
@@ -388,6 +451,48 @@ impl TextureResolver for SlotTextureResolver {
         }
         Ok(MeshTexture::WHITE)
     }
+    fn resolve_fallback(&mut self, _name: &str) -> MeshTexture {
+        MeshTexture::WHITE
+    }
+}
+
+/// Resolver that loads texture URIs via the host `ResourceManager` and uploads
+/// RGBA images to the GPU. Gamelib registers loaders (e.g. BSP `#atlas:albedo`);
+/// the engine only calls `load::<RgbaImage>(path)`.
+///
+/// `slot:N` paths pass through. Anything else falls back to `MeshTexture::WHITE`.
+pub struct UriTextureResolver<'a> {
+    pub resources: &'a mut deerpunk_engine_common::resource::ResourceManager,
+    pub renderer: &'a mut crate::gpu::Renderer,
+}
+
+impl<'a> TextureResolver for UriTextureResolver<'a> {
+    fn resolve(&mut self, path: &str) -> Result<MeshTexture, String> {
+        // Pass-through for pre-uploaded slots.
+        if let Some(rest) = path.strip_prefix("slot:") {
+            let n: u32 = rest
+                .parse()
+                .map_err(|_| format!("bad slot path '{path}'"))?;
+            return Ok(MeshTexture(n));
+        }
+        if path.contains("#lightmap:") {
+            return Ok(MeshTexture::WHITE);
+        }
+        if path.starts_with("file://") {
+            use deerpunk_engine_common::wad::RgbaImage;
+            let handle = self.resources.load::<RgbaImage>(path);
+            match handle.try_get() {
+                Some(img) => {
+                    let slot = self.renderer.upload_texture(&img.pixels, img.width, img.height);
+                    Ok(slot)
+                }
+                None => Err(format!("atlas not loaded: '{path}'")),
+            }
+        } else {
+            Ok(MeshTexture::WHITE)
+        }
+    }
+
     fn resolve_fallback(&mut self, _name: &str) -> MeshTexture {
         MeshTexture::WHITE
     }

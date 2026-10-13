@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 
 use deerpunk_engine_common::material::ShaderPreprocessor;
@@ -6,6 +7,7 @@ use deerpunk_engine_common::network::sound_event::SoundPlayRpc;
 use std::collections::HashMap;
 use deerpunk_engine_common::components::{SoundEmitter, TransformComponent};
 use deerpunk_engine_common::input::Input;
+use deerpunk_engine_common::resource::mesh::Mesh;
 use deerpunk_engine_common::resource::{path_to_file_uri, ResourceManager};
 use deerpunk_engine_common::world::{QueryId, World};
 use deerpunk_engine_renderer::debug_draw::DebugDraw;
@@ -19,6 +21,7 @@ pub use deerpunk_engine_renderer::{DebugColor, DebugDraw as DebugDrawBuf, DebugP
 
 use crate::app::App;
 use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
+use crate::mesh_lifecycle::MeshGpuLifecycle;
 use crate::render_extractor::RenderExtractor;
 use crate::ui_controller::UiController;
 
@@ -60,6 +63,9 @@ pub struct ClientEngine {
     pub shader_registry: ShaderRegistry,
     /// Material store — loaded .mat assets, dedup by path/hash, GPU SSBO.
     pub material_store: MaterialStore,
+    mesh_lifecycle: MeshGpuLifecycle,
+    /// Shared fallback mesh (stable `content_id`, retained on GPU).
+    fallback_mesh: Arc<Mesh>,
 }
 
 impl ClientEngine {
@@ -76,6 +82,9 @@ impl ClientEngine {
 
         let shader_registry = ShaderRegistry::new();
         let material_store = MaterialStore::new();
+        let fallback_mesh = Arc::new(Mesh::cube());
+        renderer.mesh_retain(fallback_mesh.content_id());
+        let mesh_lifecycle = MeshGpuLifecycle::new();
 
         Self {
             app,
@@ -96,7 +105,69 @@ impl ClientEngine {
             pending_debug_draw: DebugDraw::new(),
             shader_registry,
             material_store,
+            mesh_lifecycle,
+            fallback_mesh,
         }
+    }
+
+    pub fn mesh_adopt_entity(&mut self, entity: u64) {
+        self.mesh_lifecycle
+            .adopt_entity(&self.world, &mut self.renderer, entity);
+    }
+
+    pub fn mesh_release_entity(&mut self, entity: u64) {
+        self.mesh_lifecycle
+            .release_entity(&self.world, &mut self.renderer, entity);
+    }
+
+    pub fn mesh_lifecycle_reset(&mut self) {
+        self.mesh_lifecycle.reset(&mut self.renderer);
+        self.renderer
+            .mesh_retain(self.fallback_mesh.content_id());
+    }
+
+    /// Client-side prediction/render state (materials, mesh GPU refs). ECS cleared separately.
+    pub fn reset_render_resources(&mut self) {
+        self.material_store.reset();
+        self.mesh_lifecycle_reset();
+    }
+
+    /// Full client scene teardown: all ECS entities, stream state, mesh/material GPU caches.
+    pub fn flush_client_scene(&mut self, stream: &mut crate::network::ClientPrefabReplication) {
+        let ids: Vec<u64> = self
+            .world
+            .inspect_entities()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        log::info!("[client] flush scene — destroying {} entities", ids.len());
+        for &id in &ids {
+            self.mesh_release_entity(id);
+        }
+        for id in ids {
+            self.world.destroy(id);
+        }
+        self.world.simulate(0.0);
+        stream.reset_stream_state();
+        self.mesh_lifecycle.reset_tracking();
+        self.reset_render_resources();
+        self.pending_debug_draw = DebugDraw::new();
+        self.audio_started.clear();
+        self.server_sound_loops.clear();
+        self.audio_scene_entity = None;
+        self.audio_query = None;
+        if self.extractor.is_some() {
+            self.init_extractor();
+        }
+    }
+
+    pub fn sync_mesh_gpu_owners(&mut self) {
+        self.mesh_lifecycle
+            .sync_from_world(&mut self.world, &mut self.renderer);
+    }
+
+    pub fn fallback_mesh(&self) -> &Arc<Mesh> {
+        &self.fallback_mesh
     }
 
     /// Mutable debug line buffer for the next surface render.
@@ -402,6 +473,8 @@ impl ClientEngine {
 
     /// Extract with optional view entity (server `SetView` net pawn).
     pub fn extract_scene_view(&mut self, view_entity: Option<u64>) -> RenderScene {
+        self.sync_mesh_gpu_owners();
+        let fallback = self.fallback_mesh.clone();
         let mut scene = self
             .extractor
             .as_ref()
@@ -413,6 +486,7 @@ impl ClientEngine {
                     &mut self.renderer.material_allocator,
                     &self.renderer.device,
                     &self.renderer.queue,
+                    &fallback,
                 )
             })
             .unwrap_or_else(RenderScene::new);
@@ -559,9 +633,12 @@ impl ClientEngine {
                     &snapshot,
                     game_frame_fn,
                     game_frame_ctx,
+                    &self.shader_registry,
                 );
             } else {
-                let _ = self.renderer.render_to_surface(&snapshot);
+                let _ = self
+                    .renderer
+                    .render_to_surface(&snapshot, &self.shader_registry);
             }
             first = false;
             rendered_surface = true;
@@ -573,9 +650,12 @@ impl ClientEngine {
                     &snapshot,
                     game_frame_fn,
                     game_frame_ctx,
+                    &self.shader_registry,
                 );
             } else {
-                let _ = self.renderer.render_to_surface(&snapshot);
+                let _ = self
+                    .renderer
+                    .render_to_surface(&snapshot, &self.shader_registry);
             }
         }
         true
@@ -595,6 +675,54 @@ impl ClientEngine {
 
     pub fn renderer_mut(&mut self) -> &mut Renderer {
         &mut self.renderer
+    }
+
+    /// Load a `.mat` file or URI-backed material into the material store.
+    pub fn load_material_resolved(
+        &mut self,
+        path: &str,
+        source: &str,
+        resources: &mut ResourceManager,
+    ) -> Result<deerpunk_engine_common::material::MaterialHandle, String> {
+        let renderer = &mut self.renderer;
+        let material_store = &mut self.material_store;
+        let shader_registry = &self.shader_registry;
+        let mut resolver =
+            deerpunk_engine_renderer::material_store::UriTextureResolver { resources, renderer };
+        let handle =
+            material_store.load(path, source, shader_registry, &mut resolver)?;
+        if let Ok(asset) = deerpunk_engine_common::material::MaterialAsset::from_json(source) {
+            material_store.attach_lightmaps_from_asset(
+                handle,
+                &asset,
+                resources,
+                renderer,
+            );
+        }
+        Ok(handle)
+    }
+
+    /// Create a GPU material from an in-memory [`MaterialAsset`] (e.g. from RM).
+    pub fn load_material_from_asset(
+        &mut self,
+        path: &str,
+        asset: &deerpunk_engine_common::material::MaterialAsset,
+        resources: &mut ResourceManager,
+    ) -> Result<deerpunk_engine_common::material::MaterialHandle, String> {
+        let renderer = &mut self.renderer;
+        let material_store = &mut self.material_store;
+        let shader_registry = &self.shader_registry;
+        let mut resolver =
+            deerpunk_engine_renderer::material_store::UriTextureResolver { resources, renderer };
+        let handle =
+            material_store.create_from_asset(path, asset, shader_registry, &mut resolver)?;
+        material_store.attach_lightmaps_from_asset(
+            handle,
+            asset,
+            resources,
+            renderer,
+        );
+        Ok(handle)
     }
 }
 
@@ -643,8 +771,6 @@ fn load_shader_sources(rm: &mut ResourceManager) -> ShaderSources {
 
     ShaderSources {
         sprite: load_wgsl_required(rm, shader_dir, "sprite"),
-        mesh: load_wgsl_required(rm, shader_dir, "mesh"),
-        mesh_array: load_wgsl_required(rm, shader_dir, "mesh_array"),
         terrain_splat: load_wgsl_required(rm, shader_dir, "terrain_splat"),
         sky: load_wgsl_required(rm, shader_dir, "sky"),
         cloud: load_wgsl_required(rm, shader_dir, "cloud"),

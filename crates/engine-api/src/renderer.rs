@@ -6,6 +6,7 @@ pub struct RendererApiResolved {
     ctx: *mut u8,
     load_texture_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> u32,
     upload_texture_raw_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, u32, u32) -> u32,
+    upload_lightmap_uri_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> u32,
     upload_lightmap_raw_fn: unsafe extern "C" fn(
         *mut u8,
         *const u8, usize,
@@ -29,6 +30,9 @@ impl RendererApiResolved {
             upload_texture_raw_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_texture_raw"))
             },
+            upload_lightmap_uri_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_lightmap_uri"))
+            },
             upload_lightmap_raw_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_lightmap_raw"))
             },
@@ -50,6 +54,14 @@ impl RendererApiResolved {
     pub fn upload_texture_raw(&self, pixels: &[u8], w: u32, h: u32) -> u32 {
         unsafe {
             (self.upload_texture_raw_fn)(self.ctx, pixels.as_ptr(), pixels.len(), w, h)
+        }
+    }
+
+    /// Load `file://…#lightmap:…` via ResourceManager and upload. Returns GPU lightmap id.
+    pub fn upload_lightmap_uri(&self, uri: &str) -> u32 {
+        let bytes = uri.as_bytes();
+        unsafe {
+            (self.upload_lightmap_uri_fn)(self.ctx, bytes.as_ptr(), bytes.len())
         }
     }
 

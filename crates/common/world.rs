@@ -338,6 +338,10 @@ impl World {
         unsafe { sys::ecs_delete(self.inner, entity) }
     }
 
+    pub fn is_alive(&self, entity: EntityId) -> bool {
+        unsafe { sys::ecs_is_alive(self.inner, entity) }
+    }
+
     /// Flecs entity name (`ecs_get_name` / inspector). Not replicated; gameplay ids use components.
     pub fn set_entity_name(&self, entity: EntityId, name: &str) {
         let c_name = CString::new(name).expect("entity name contains null byte");

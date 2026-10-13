@@ -22,9 +22,11 @@ pub fn tick(
     view_yaw: f32,
     view_pitch: f32,
     net: Option<&NetHudInfo>,
+    render: Option<&[String]>,
 ) {
     let net_lines = net.map(|n| n.lines.as_slice()).unwrap_or(&[]);
-    if !show_fps && show_pos <= 0 && net_lines.is_empty() {
+    let render_lines = render.unwrap_or(&[]);
+    if !show_fps && show_pos <= 0 && net_lines.is_empty() && render_lines.is_empty() {
         return;
     }
 
@@ -68,7 +70,7 @@ pub fn tick(
         }
     }
 
-    if fps_lines.is_empty() && pos_lines.is_empty() && net_lines.is_empty() {
+    if fps_lines.is_empty() && pos_lines.is_empty() && net_lines.is_empty() && render_lines.is_empty() {
         return;
     }
 
@@ -85,10 +87,16 @@ pub fn tick(
     for line in &pos_lines {
         text(line);
     }
-    if !pos_lines.is_empty() && !net_lines.is_empty() {
+    if !pos_lines.is_empty() && (!net_lines.is_empty() || !render_lines.is_empty()) {
         separator();
     }
     for line in net_lines {
+        text(line);
+    }
+    if !net_lines.is_empty() && !render_lines.is_empty() {
+        separator();
+    }
+    for line in render_lines {
         text(line);
     }
     end_window();

@@ -8,6 +8,7 @@ type ClientFrameFn = unsafe extern "C" fn(f32);
 type ClientImguiFrameFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type ClientShutdownFn = unsafe extern "C" fn();
 type ClientAudioWorldSceneFn = unsafe extern "C" fn(u64);
+type ClientSceneFlushedFn = unsafe extern "C" fn();
 
 pub struct ClientDll {
     _lib: libloading::Library,
@@ -15,6 +16,7 @@ pub struct ClientDll {
     frame_fn: ClientFrameFn,
     imgui_frame_fn: Option<ClientImguiFrameFn>,
     audio_world_scene_fn: Option<ClientAudioWorldSceneFn>,
+    scene_flushed_fn: Option<ClientSceneFlushedFn>,
     shutdown_fn: ClientShutdownFn,
 }
 
@@ -33,6 +35,11 @@ impl ClientDll {
                 .ok()
                 .map(|s| *s)
         };
+        let scene_flushed_fn = unsafe {
+            lib.get::<ClientSceneFlushedFn>(b"client_scene_flushed")
+                .ok()
+                .map(|s| *s)
+        };
         let shutdown_fn = unsafe { *lib.get::<ClientShutdownFn>(b"client_shutdown")? };
         Ok(Self {
             _lib: lib,
@@ -40,6 +47,7 @@ impl ClientDll {
             frame_fn,
             imgui_frame_fn,
             audio_world_scene_fn,
+            scene_flushed_fn,
             shutdown_fn,
         })
     }
@@ -66,6 +74,13 @@ impl ClientDll {
 
     pub fn audio_world_scene_fn(&self) -> Option<ClientAudioWorldSceneFn> {
         self.audio_world_scene_fn
+    }
+
+    /// Gamelib clears map-local caches after host `flush_client_scene`.
+    pub unsafe fn scene_flushed(&self) {
+        if let Some(f) = self.scene_flushed_fn {
+            f();
+        }
     }
 
     pub unsafe fn shutdown(&self) {

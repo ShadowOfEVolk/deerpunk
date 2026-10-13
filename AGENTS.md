@@ -43,7 +43,15 @@ The project is under active prototyping. These rules aim to preserve development
 
 ### Comments and documentation language
 
-All Rust documentation, comments, identifiers, and diagnostic messages written as part of the codebase should be in English. Match the established language of user-facing strings if the project already has a localization convention.
+**This repository (deerpunk) is English-only** for anything that ships with the engine:
+
+- Rust doc comments (`///`, `//!`), module docs, and `AGENTS.md` / in-repo technical markdown under `crates/`
+- Inline `//` comments and `// SAFETY:` notes
+- Identifiers, log messages, and user-visible engine diagnostics (unless a localization layer already owns that string)
+
+Game-specific repositories (e.g. darkdemo) may use another language for *their* docs and comments; do **not** add Russian (or other non-English) comments or Rustdoc inside deerpunk when implementing a game feature—keep game-only wording in the game repo.
+
+Match the established language of user-facing strings if the project already has a localization convention.
 
 Comments should explain **why**, invariants, trade-offs, assumptions, or non-obvious behavior. Do not narrate what the next line plainly does.
 
