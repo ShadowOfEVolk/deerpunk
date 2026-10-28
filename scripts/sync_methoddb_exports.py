@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ensure every MethodDB entry from git HEAD has #[deerpunk_macro::export] on its tramp."""
+"""Ensure every MethodDB entry from git HEAD has #[deerpunk_engine_macro::export] on its tramp."""
 
 import re
 import subprocess
@@ -62,7 +62,7 @@ def git_entries(path: Path) -> list[tuple[str, str]]:
 
 
 def export_attr(name: str, stem: str) -> str:
-    return f'#[deerpunk_macro::export(name = "{name}", {scope_for(name, stem)})]\n'
+    return f'#[deerpunk_engine_macro::export(name = "{name}", {scope_for(name, stem)})]\n'
 
 
 def has_export_above(text: str, pos: int) -> bool:
@@ -70,7 +70,7 @@ def has_export_above(text: str, pos: int) -> bool:
         s = line.strip()
         if not s or s.startswith("//"):
             continue
-        return "deerpunk_macro::export" in s
+        return "deerpunk_engine_macro::export" in s
     return False
 
 

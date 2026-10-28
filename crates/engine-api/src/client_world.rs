@@ -94,7 +94,7 @@ impl ClientWorldApi {
         let ptr = &value as *const T as *const std::ffi::c_void;
         let size = std::mem::size_of::<T>();
         self.set_raw(entity, comp, ptr, size);
-        std::mem::forget(value);
+        // Host `v1:client_world:set` clones `Arc` fields for heap-owning components; stack `value` drops here.
     }
 
     pub fn component_register(&self, desc: &ComponentRegisterDesc) -> Result<ComponentId, String> {

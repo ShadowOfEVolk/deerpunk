@@ -1,4 +1,12 @@
 use crate::Resolver;
+use deerpunk_engine_common::network::{UserCmd, USERCMD_SIZE};
+
+/// Result of [`NetApi::send_usercmd`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsercmdSend {
+    Sent,
+    Throttled,
+}
 
 fn resolve(r: Resolver, name: &str) -> *const () {
     let bytes = name.as_bytes();
@@ -36,6 +44,15 @@ type PlayerNetIdFn = extern "C" fn(*mut u8, u32) -> u32;
 type ClientSetViewNetIdFn = extern "C" fn(*mut u8, u16) -> i32;
 type ClientSetLightstyleFn =
     extern "C" fn(*mut u8, u8, *const u8, usize) -> i32;
+type UsercmdAckFn = extern "C" fn(*mut u8) -> u32;
+type UsercmdOutgoingFn = extern "C" fn(*mut u8) -> u32;
+type UsercmdLookupFn = extern "C" fn(*mut u8, u32, *mut u8, usize) -> i32;
+type SetSimorgFn = extern "C" fn(*mut u8, f32, f32, f32) -> i32;
+type ClearSimorgFn = extern "C" fn(*mut u8) -> i32;
+type UsercmdSentTimeFn = extern "C" fn(*mut u8, u32) -> f32;
+type ServerFeetFn = extern "C" fn(*mut u8, *mut f32) -> i32;
+type PredictionCorrectionFn =
+    extern "C" fn(*mut u8, f32, f32, f32, f32, f32, f32) -> i32;
 pub struct NetApi {
     ctx: *mut u8,
     client_cmd_fn: ClientCmdFn,
@@ -55,6 +72,14 @@ pub struct NetApi {
     player_net_id_fn: PlayerNetIdFn,
     client_set_view_net_id_fn: ClientSetViewNetIdFn,
     client_set_lightstyle_fn: ClientSetLightstyleFn,
+    usercmd_ack_fn: UsercmdAckFn,
+    usercmd_outgoing_fn: UsercmdOutgoingFn,
+    usercmd_lookup_fn: UsercmdLookupFn,
+    set_simorg_fn: SetSimorgFn,
+    clear_simorg_fn: ClearSimorgFn,
+    usercmd_sent_time_fn: UsercmdSentTimeFn,
+    server_feet_fn: ServerFeetFn,
+    prediction_correction_fn: PredictionCorrectionFn,
 }
 
 unsafe impl Send for NetApi {}
@@ -97,6 +122,30 @@ impl NetApi {
             client_set_lightstyle_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client:set_lightstyle"))
             },
+            usercmd_ack_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:usercmd_ack"))
+            },
+            usercmd_outgoing_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:usercmd_outgoing"))
+            },
+            usercmd_lookup_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:usercmd_lookup"))
+            },
+            set_simorg_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:set_simorg"))
+            },
+            clear_simorg_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:clear_simorg"))
+            },
+            usercmd_sent_time_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:usercmd_sent_time"))
+            },
+            server_feet_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:server_feet"))
+            },
+            prediction_correction_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:players:prediction_correction"))
+            },
         }
     }
 
@@ -135,13 +184,71 @@ impl NetApi {
     }
 
     /// Send a 64-byte UserCmd payload to the server (CLC::UserCmd).
-    pub fn send_usercmd(&self, payload: &[u8; 64]) -> Result<(), String> {
+    ///
+    /// `Throttled` when `cl_cmdrate` drops the send (not an error).
+    pub fn send_usercmd(&self, payload: &[u8; 64]) -> Result<UsercmdSend, String> {
         let rc = (self.send_usercmd_fn)(self.ctx, payload.as_ptr(), payload.len());
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err("net.send_usercmd failed".into())
+        match rc {
+            0 => Ok(UsercmdSend::Sent),
+            1 => Ok(UsercmdSend::Throttled),
+            _ => Err("net.send_usercmd failed".into()),
         }
+    }
+
+    pub fn usercmd_ack(&self) -> u32 {
+        (self.usercmd_ack_fn)(self.ctx)
+    }
+
+    pub fn usercmd_outgoing(&self) -> u32 {
+        (self.usercmd_outgoing_fn)(self.ctx)
+    }
+
+    pub fn usercmd_lookup(&self, sequence: u32) -> Option<UserCmd> {
+        let mut buf = [0u8; USERCMD_SIZE];
+        let rc = (self.usercmd_lookup_fn)(self.ctx, sequence, buf.as_mut_ptr(), buf.len());
+        if rc != 0 {
+            return None;
+        }
+        UserCmd::decode(&buf)
+    }
+
+    pub fn set_simorg(&self, feet: [f32; 3]) {
+        (self.set_simorg_fn)(self.ctx, feet[0], feet[1], feet[2]);
+    }
+
+    pub fn clear_simorg(&self) {
+        (self.clear_simorg_fn)(self.ctx);
+    }
+
+    pub fn usercmd_sent_time(&self, sequence: u32) -> Option<f32> {
+        let t = (self.usercmd_sent_time_fn)(self.ctx, sequence);
+        if t >= 0.0 {
+            Some(t)
+        } else {
+            None
+        }
+    }
+
+    pub fn server_feet(&self) -> Option<[f32; 3]> {
+        let mut out = [0.0f32; 3];
+        let rc = (self.server_feet_fn)(self.ctx, out.as_mut_ptr());
+        if rc == 0 {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    pub fn prediction_correction(&self, predicted: [f32; 3], authoritative: [f32; 3]) {
+        (self.prediction_correction_fn)(
+            self.ctx,
+            predicted[0],
+            predicted[1],
+            predicted[2],
+            authoritative[0],
+            authoritative[1],
+            authoritative[2],
+        );
     }
 
     /// Read latest UserCmd for a player slot into a 64-byte buffer.

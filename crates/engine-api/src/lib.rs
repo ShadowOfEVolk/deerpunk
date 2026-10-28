@@ -15,9 +15,13 @@ pub mod ui;
 pub mod version;
 pub mod methoddb;
 pub mod world;
+pub mod client;
 pub mod client_world;
 pub mod spawn_prefab;
 pub mod materials;
+pub mod bone_buffer;
+pub mod mesh;
+pub mod log;
 
 pub use dynamic_load::{drop_dynamic, pack as pack_dynamic_load, DynamicLoad};
 pub use deerpunk_engine_ffi::{
@@ -33,6 +37,7 @@ pub type Resolver = ResolverFn;
 pub struct EngineApi {
     pub ctx: *mut u8,
     pub world: world::WorldApiResolved,
+    pub client: client::ClientApi,
     pub client_world: client_world::ClientWorldApi,
     pub schedule: schedule::ScheduleApi,
     pub input: input::InputApi,
@@ -46,6 +51,9 @@ pub struct EngineApi {
     pub resources: resources::ResourcesApi,
     pub audio: audio::AudioApi,
     pub materials: materials::MaterialsApi,
+    pub bone_buffer: bone_buffer::BoneBufferApi,
+    pub mesh: mesh::MeshApi,
+    pub log: log::LogApi,
 
     pub frame: extern "C" fn(*mut u8, f32) -> i32,
     pub shutdown: extern "C" fn(*mut u8),
@@ -68,6 +76,7 @@ impl EngineApi {
         Self {
             ctx,
             world: world::WorldApiResolved::new(ctx, resolver),
+            client: client::ClientApi::new(ctx, resolver),
             client_world: client_world::ClientWorldApi::new(ctx, resolver),
             schedule: schedule::ScheduleApi::new(ctx, resolver),
             input: input::InputApi::new(ctx, resolver),
@@ -81,6 +90,9 @@ impl EngineApi {
             resources: resources::ResourcesApi::new(ctx, resolver),
             audio: audio::AudioApi::new(ctx, resolver),
             materials: materials::MaterialsApi::new(ctx, resolver),
+            bone_buffer: bone_buffer::BoneBufferApi::new(ctx, resolver),
+            mesh: mesh::MeshApi::new(ctx, resolver),
+            log: log::LogApi::new(ctx, resolver),
 
             frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },
             shutdown: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:shutdown")) },

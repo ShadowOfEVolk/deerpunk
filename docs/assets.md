@@ -1,6 +1,6 @@
 # Asset Manager (`ResourceManager`)
 
-Runtime asset registry for deerpunk. Lives in `crates/common/resource`, owned by `Host`.
+Runtime asset registry for deerpunk. Lives in `crates/engine-resource`, owned by `Host`.
 
 Inspectable via the inspector collection `assets` (`assets.list` / `assets.get`).
 
@@ -24,7 +24,7 @@ Inspectable via the inspector collection `assets` (`assets.list` / `assets.get`)
 | `LoadedAsset` | `data` + `size` + `type_name` from a loader |
 | `AssetInfo` | Snapshot row for inspector / debug |
 
-Code: `crates/common/resource/{mod,loader,bsp_loader,wad_loader}.rs`.
+Code: `crates/engine-resource/src/lib.rs`, `loader.rs`, `loaders/` (`file`, `wad`, `shader`, `texgen`, …).
 
 ## URIs
 
@@ -83,7 +83,7 @@ let data = h.try_get(); // None if failed
 ### Loader resolution order
 
 1. `LoadOpts.loader` if set (e.g. `"bsp"`, `"file"`, `"wad"`).
-2. Else file extension from the path (`bsp` → `BspLoader`, `obj`/`fbx`/`wgsl` → `FileLoader`, `wad` → `WadLoader`).
+2. Else file extension from the path (`bsp` → `bsp`, `mdl` → gamelib loader id `studio` when registered, `obj`/`fbx`/`wgsl` → `file`, `wad` → `wad`).
 3. Else URI protocol (`file`, `wad`, `ui`, …).
 
 ### Dedup
@@ -102,7 +102,13 @@ Registered by `register_default_loaders(rm, gamedir)` from `Host::initialize`:
 
 Additional loaders (e.g. `ui`) may be registered by other crates via `register_loader`.
 
-Custom loader:
+### Gamelib loaders (`v1:resources:register`)
+
+Server and client gamelib DLLs register loaders during `init` via `EngineApi::resources` (`ResourceLoaderDesc` / `register_loader`). The host wraps them as [`CallbackLoader`](crates/engine-host/engine_api/callback_loader.rs). Use `type_tag = "mesh"` when returning a [`Mesh`](crates/engine-resource/mesh.rs).
+
+Studio models on map entities use `Mesh3D.uri` = Hammer `model` path (e.g. `models/clock.mdl`). Without a registered `.mdl` loader, `ResourceManager` reports `unrecognised file extension`.
+
+Custom loader (in-engine):
 
 ```rust
 impl Loader for MyLoader {

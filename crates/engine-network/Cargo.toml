@@ -1,0 +1,11 @@
+[package]
+name = "deerpunk-engine-network"
+version = "0.1.0"
+edition = "2021"
+description = "Deerpunk wire protocol, session, LAN, loopback (no ECS)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+socket2 = "0.5"

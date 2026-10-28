@@ -225,11 +225,150 @@ void rmlui_lua_do_string(const char* code)
     Rml::Lua::Interpreter::DoString(s, s);
 }
 
+static constexpr const char* kLuaDataModelsRegistryKey = "datamodels";
+static constexpr const char* kLuaDataModelMetatable = "RMLDATAMODEL";
+
+static int rmlui_data_model_set_field(lua_State* L, const char* model_name, const char* field_name, int value_stack_index)
+{
+    if (!L || !model_name || !model_name[0] || !field_name || !field_name[0])
+        return 0;
+
+    const int value_abs = lua_absindex(L, value_stack_index);
+
+    lua_pushstring(L, kLuaDataModelsRegistryKey);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return 0;
+    }
+    lua_pushstring(L, model_name);
+    lua_rawget(L, -2);
+    lua_remove(L, -2);
+    if (!lua_isuserdata(L, -1) || !luaL_testudata(L, -1, kLuaDataModelMetatable)) {
+        lua_pop(L, 1);
+        return 0;
+    }
+
+    lua_pushvalue(L, value_abs);
+    lua_setfield(L, -2, field_name);
+    lua_pop(L, 1);
+    return 1;
+}
+
+static Rml::String attribute_string(const Rml::Element* el, const char* name)
+{
+    if (!el)
+        return {};
+    const Rml::Variant* v = el->GetAttribute(name);
+    if (!v || v->GetType() != Rml::Variant::STRING)
+        return {};
+    return v->Get<Rml::String>();
+}
+
+static Rml::String rmlui_document_data_model_name(Rml::ElementDocument* doc)
+{
+    if (!doc)
+        return {};
+    Rml::String model = attribute_string(doc, "data-model");
+    if (!model.empty())
+        return model;
+    for (int i = 0; i < doc->GetNumChildren(); ++i) {
+        Rml::Element* child = doc->GetChild(i);
+        if (!child)
+            continue;
+        Rml::String tag = child->GetTagName();
+        if (tag == "body" || tag == "BODY") {
+            model = attribute_string(child, "data-model");
+            if (!model.empty())
+                return model;
+        }
+    }
+    return {};
+}
+
+int rmlui_data_model_set_bool(const char* model_name, const char* field_name, int value)
+{
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    lua_pushboolean(L, value);
+    const int ok = rmlui_data_model_set_field(L, model_name, field_name, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+
+int rmlui_data_model_set_number(const char* model_name, const char* field_name, double value)
+{
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    lua_pushnumber(L, value);
+    const int ok = rmlui_data_model_set_field(L, model_name, field_name, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+
+int rmlui_data_model_set_string(const char* model_name, const char* field_name, const char* value)
+{
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    lua_pushstring(L, value ? value : "");
+    const int ok = rmlui_data_model_set_field(L, model_name, field_name, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+
+static int rmlui_document_data_model_set_field(rmlui_handle_t doc, const char* field_name, int value_stack_index)
+{
+    if (!doc)
+        return 0;
+    const Rml::String model = rmlui_document_data_model_name((Rml::ElementDocument*)doc);
+    if (model.empty())
+        return 0;
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    return rmlui_data_model_set_field(L, model.c_str(), field_name, value_stack_index);
+}
+
+int rmlui_document_data_model_set_bool(rmlui_handle_t doc, const char* field_name, int value)
+{
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    lua_pushboolean(L, value);
+    const int ok = rmlui_document_data_model_set_field(doc, field_name, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+
+int rmlui_document_data_model_set_number(rmlui_handle_t doc, const char* field_name, double value)
+{
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    lua_pushnumber(L, value);
+    const int ok = rmlui_document_data_model_set_field(doc, field_name, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+
+int rmlui_document_data_model_set_string(rmlui_handle_t doc, const char* field_name, const char* value)
+{
+    lua_State* L = Rml::Lua::Interpreter::GetLuaState();
+    if (!L)
+        return 0;
+    lua_pushstring(L, value ? value : "");
+    const int ok = rmlui_document_data_model_set_field(doc, field_name, -1);
+    lua_pop(L, 1);
+    return ok;
+}
+
 int rmlui_context_set_data_model_bool(rmlui_handle_t ctx, const char* model_name, const char* var_name, int value)
 {
-    // Newer RmlUi removed DataModelHandle::SetVariable; bind vars via constructor instead.
-    (void)ctx; (void)model_name; (void)var_name; (void)value;
-    return 0;
+    (void)ctx;
+    return rmlui_data_model_set_bool(model_name, var_name, value);
 }
 
 rmlui_handle_t rmlui_document_load(rmlui_handle_t ctx, const char* path)

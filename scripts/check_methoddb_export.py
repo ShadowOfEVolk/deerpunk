@@ -10,8 +10,8 @@ for p in sorted(root.glob("*.rs")):
         fn = m.group(1)
         start = m.start()
         pre = t[max(0, start - 400) : start]
-        if not re.search(r"#\[deerpunk_macro::export\([^\]]+\)\]\s*$", pre.rstrip()[-120:]):
-            if "deerpunk_macro::export" not in pre.split("\n")[-3:]:
+        if not re.search(r"#\[deerpunk_engine_macro::export\([^\]]+\)\]\s*$", pre.rstrip()[-120:]):
+            if "deerpunk_engine_macro::export" not in pre.split("\n")[-3:]:
                 missing.append(fn)
     if missing:
         print(f"{p.name}: {', '.join(missing)}")

@@ -1,0 +1,25 @@
+[package]
+name = "deerpunk-engine-client"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-server = { path = "../engine-server" }
+deerpunk-engine-ffi = { path = "../engine-ffi" }
+deerpunk-engine-renderer = { path = "../engine-renderer" }
+deerpunk-ui = { path = "../engine-ui" }
+rand = "0.8"
+glam = "0.33"
+sdl2 = { version = "0.37", features = ["raw-window-handle"] }
+raw-window-handle.workspace = true
+wgpu.workspace = true
+log.workspace = true
+image = "0.25"
+imgui = "0.12"
+inventory = "0.3"
+libloading = "0.8"
+serde_json = "1"

@@ -34,6 +34,7 @@ pub struct InputApi {
     is_key_down_fn: extern "C" fn(*mut u8, u32) -> bool,
     mouse_dx_fn: extern "C" fn(*mut u8) -> f32,
     mouse_dy_fn: extern "C" fn(*mut u8) -> f32,
+    take_mouse_wheel_fn: extern "C" fn(*mut u8) -> f32,
     set_relative_mouse_fn: extern "C" fn(*mut u8, i32) -> i32,
 }
 
@@ -47,6 +48,9 @@ impl InputApi {
             is_key_down_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:is_key_down")) },
             mouse_dx_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:mouse_dx")) },
             mouse_dy_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:mouse_dy")) },
+            take_mouse_wheel_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:input:take_mouse_wheel"))
+            },
             set_relative_mouse_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:input:set_relative_mouse"))
             },
@@ -63,6 +67,11 @@ impl InputApi {
 
     pub fn mouse_dy(&self) -> f32 {
         (self.mouse_dy_fn)(self.ctx)
+    }
+
+    /// Scroll accumulated this frame (positive = up). Clears the accumulator.
+    pub fn take_mouse_wheel(&self) -> f32 {
+        (self.take_mouse_wheel_fn)(self.ctx)
     }
 
     pub fn set_relative_mouse(&self, on: bool) {

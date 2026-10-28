@@ -1,0 +1,24 @@
+[package]
+name = "deerpunk-engine-server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-ffi = { path = "../engine-ffi" }
+
+inventory = "0.3"
+libloading = "0.8"
+renet = "2.0"
+renet_netcode = "2.0"
+renetcode = "2.0"
+socket2 = "0.5"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+json_comments = "0.2"
+log = { workspace = true }
+glam = "0.33"

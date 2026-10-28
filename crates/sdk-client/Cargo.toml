@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-deerpunk-engine-sdk = { path = "../sdk-common" }
+deerpunk-sdk-common = { path = "../sdk-common" }

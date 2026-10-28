@@ -1,0 +1,13 @@
+[package]
+name = "deerpunk-engine-resource"
+version = "0.1.0"
+edition = "2021"
+description = "Asset registry, mesh handles, and built-in host loaders"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+glam = "0.33"
+image = "0.25"
+log = { workspace = true }

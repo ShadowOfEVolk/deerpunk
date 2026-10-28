@@ -31,7 +31,12 @@ pub struct WorldApiResolved {
     query_count_fn: extern "C" fn(*mut u8, *const u64, usize, *const u64, usize) -> usize,
     query_matches_fn: extern "C" fn(*mut u8, u64, *const u64, usize, *const u64, usize) -> bool,
     query_prepare_fn: extern "C" fn(*mut u8, *const u8, usize) -> u32,
-    query_execute_fn: extern "C" fn(*mut u8, u32, extern "C" fn(u64, *const *const c_void, usize, *mut c_void), *mut c_void),
+    query_execute_fn: extern "C" fn(
+        *mut u8,
+        u32,
+        extern "C" fn(u64, *const *const c_void, usize, *mut c_void),
+        *mut c_void,
+    ),
     spawn_prefab_fn: extern "C" fn(*mut u8, *const u8, usize, *const SpawnPrefabOpts) -> u64,
     component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
 }
@@ -196,13 +201,8 @@ impl WorldApiResolved {
         size: usize,
         align: usize,
     ) -> Result<ComponentId, String> {
-        let desc = ComponentRegisterDesc::new(
-            name,
-            size,
-            align,
-            std::ptr::null_mut(),
-            no_prefab_apply(),
-        );
+        let desc =
+            ComponentRegisterDesc::new(name, size, align, std::ptr::null_mut(), no_prefab_apply());
         self.component_register(&desc)
     }
 
@@ -223,11 +223,7 @@ impl WorldApiResolved {
     /// Returns `Some(result)` on hit (with hit point, fraction, texture name),
     /// `None` on miss.
     /// Spawn `{gamedir}/prefabs/{name}.prefab` into the server world.
-    pub fn spawn_prefab(
-        &self,
-        name: &str,
-        opts: &SpawnPrefabOpts,
-    ) -> Result<EntityId, String> {
+    pub fn spawn_prefab(&self, name: &str, opts: &SpawnPrefabOpts) -> Result<EntityId, String> {
         let bytes = name.as_bytes();
         let id = (self.spawn_prefab_fn)(self.ctx, bytes.as_ptr(), bytes.len(), opts as *const _);
         if id == 0 {
@@ -236,5 +232,4 @@ impl WorldApiResolved {
             Ok(id)
         }
     }
-
 }

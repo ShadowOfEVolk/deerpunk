@@ -1,23 +1,23 @@
 # Сеть (протокол)
 
-UDP multiplayer поверх **renet + renet_netcode**. Wire payload — те же байты SVC/CLC, что и in-process `Channel` (listen-server в одном процессе).
+UDP multiplayer поверх **netcode + renet**. Wire payload — те же байты SVC/CLC, что и in-process **`NetLoopback`** (listen-server в одном процессе).
 
 Исходники:
 
 | Слой | Путь |
 |---|---|
-| Дискриминаторы SVC/CLC | `crates/common/network/protocol.rs` |
-| Prefab RPC | `crates/common/network/prefab_rep.rs` |
-| Field paths | `crates/common/network/field_path.rs` |
-| UserCmd | `crates/common/network/usercmd.rs` |
-| UserMessage | `crates/common/network/user_message.rs` |
-| SoundEvent | `crates/common/network/sound_event.rs` |
-| `NetworkEntity` | `crates/common/components/network_entity.rs` |
-| Transport | `crates/host/net.rs` |
-| In-process очереди | `crates/host/channel.rs` |
-| Emit (server) | `crates/server/network/prefab_rep.rs` |
-| Apply (client) | `crates/client/network/prefab_rep.rs` |
-| MethodDB | `crates/host/engine_api/net.rs`, `crates/engine-api/src/net.rs` |
+| Дискриминаторы SVC/CLC | `crates/engine-common/network/protocol.rs` |
+| Prefab RPC | `crates/engine-common/network/prefab_rep.rs` |
+| Field paths | `crates/engine-common/network/field_path.rs` |
+| UserCmd | `crates/engine-common/network/usercmd.rs` |
+| UserMessage | `crates/engine-common/network/user_message.rs` |
+| SoundEvent | `crates/engine-common/network/sound_event.rs` |
+| `NetworkEntity` | `crates/engine-common/components/network_entity.rs` |
+| UDP socket + renet | `crates/engine-server/net.rs` (`NetSocket`) |
+| Loopback (in-process) | `crates/engine-common/network/loopback.rs` (`NetLoopback`) |
+| Emit (server) | `crates/engine-server/network/prefab_rep.rs` |
+| Apply (client) | `crates/engine-client/network/prefab_rep.rs` |
+| MethodDB | `crates/engine-host/engine_api/net.rs`, `crates/engine-api/src/net.rs` |
 
 Все целые и float на wire — **little-endian**.
 
@@ -33,7 +33,7 @@ UDP multiplayer поверх **renet + renet_netcode**. Wire payload — те ж
 | Auth | OOB challenge + netcode **Secure** |
 | Bind listen | `0.0.0.0:<port>` — **один** UDP, demux (`udp_demux.rs`) |
 
-Роли `NetTransport`: `Idle` / `Host` / `Client`. Payload = `[u8 cmd][payload…]` — без дополнительного framing поверх renet message.
+Роли `NetSocket`: `Idle` / `Host` / `Client`. Payload = `[u8 cmd][payload…]` — без дополнительного framing поверх renet message.
 
 ### Каналы renet (`DefaultChannel`)
 
@@ -410,7 +410,7 @@ GoldSrc-style OOB на **`sv_port`**. **Host:** один сокет — `FF FF F
 - Lua: `eng_get_files_list("lan://servers")` → JSON `[{addr,ip,port,hostname,map,players,maxplayers},…]`.
 - Команды: `lan_refresh`, `lan_stop`. Cvar `hostname` — имя в списке.
 
-Исходники: `crates/host/lan.rs`, меню darkdemo `ui/widgets/main_menu.rml` (connect game).
+Исходники: `crates/engine-host/lan.rs`, меню darkdemo `ui/widgets/main_menu.rml` (connect game).
 
 ---
 

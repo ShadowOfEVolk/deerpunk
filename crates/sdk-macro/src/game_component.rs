@@ -78,12 +78,25 @@ impl Parse for Attrs {
     }
 }
 
-fn inventory_submit(ident: &syn::Ident, name: &str) -> TokenStream {
+fn inventory_submit(
+    ident: &syn::Ident,
+    name: &str,
+    both: bool,
+    client: bool,
+) -> TokenStream {
+    let worlds = if both {
+        quote! { deerpunk_engine_sdk::GameComponentWorlds::Both }
+    } else if client {
+        quote! { deerpunk_engine_sdk::GameComponentWorlds::Client }
+    } else {
+        quote! { deerpunk_engine_sdk::GameComponentWorlds::Server }
+    };
     quote! {
         ::inventory::submit! {
             deerpunk_engine_sdk::GameComponentRegistrar {
                 name: #name,
                 register: #ident::register,
+                worlds: #worlds,
             }
         }
     }
@@ -94,10 +107,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let input: DeriveInput = syn::parse2(item)?;
     let ident = &input.ident;
     let name = attrs.name.unwrap_or_else(|| ident.to_string());
-    let inv = inventory_submit(ident, &name);
 
     let both = attrs.both;
     let client = attrs.client;
+    let inv = inventory_submit(ident, &name, both, client);
     let prefab = attrs.prefab;
     let inspect = attrs.inspect;
 
@@ -115,6 +128,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         ));
     }
 
+    let has_layout = attrs.layout.is_some();
     let layout = attrs
         .layout
         .map(|t| quote! { #t })
@@ -174,10 +188,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 cbor_ptr: *const u8,
                 cbor_len: usize,
             ) -> i32 {
-                if user.is_null() {
+                let Some(api) = deerpunk_engine_sdk::try_engine() else {
                     return -1;
-                }
-                let api = unsafe { &*(user as *const deerpunk_engine_sdk::EngineApi) };
+                };
+                let _ = user;
                 let value = if cbor_ptr.is_null() || cbor_len == 0 {
                     ::serde_json::Value::Object(::serde_json::Map::new())
                 } else {
@@ -192,7 +206,16 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 };
                 let component =
                     <Self as deerpunk_engine_sdk::PrefabFromValue>::from_prefab_value(&value);
-                #world_api.set(entity, component_id, component);
+                if #both {
+                    deerpunk_engine_sdk::prefab::set_component_copy(
+                        api,
+                        entity,
+                        component_id,
+                        component,
+                    );
+                } else {
+                    #world_api.set(entity, component_id, component);
+                }
                 0
             }
         }
@@ -209,13 +232,27 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 out_ptr: *mut u8,
                 out_cap: usize,
             ) -> i32 {
-                if user.is_null() || out_ptr.is_null() || out_cap == 0 {
+                if out_ptr.is_null() || out_cap == 0 {
                     return -1;
                 }
-                let api = unsafe { &*(user as *const deerpunk_engine_sdk::EngineApi) };
-                let component = match #world_api.get::<Self>(entity, component_id) {
-                    Some(v) => v,
-                    None => return -1,
+                let Some(api) = deerpunk_engine_sdk::try_engine() else {
+                    return -1;
+                };
+                let _ = user;
+                let component = if #both {
+                    match deerpunk_engine_sdk::prefab::get_component_copy::<Self>(
+                        api,
+                        entity,
+                        component_id,
+                    ) {
+                        Some(v) => v,
+                        None => return -1,
+                    }
+                } else {
+                    match #world_api.get::<Self>(entity, component_id) {
+                        Some(v) => v,
+                        None => return -1,
+                    }
                 };
                 let json = <Self as #json_trait>::to_inspect_json(&component);
                 let cbor = match deerpunk_engine_sdk::prefab::value_to_cbor(&json) {
@@ -300,30 +337,82 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         quote! { deerpunk_engine_sdk::no_inspect_dump() }
     };
 
+    let (layout_meta_setup, layout_meta_desc) = if has_layout {
+        (
+            quote! {
+                static __LAYOUT_META: ::std::sync::LazyLock<Vec<u8>> = ::std::sync::LazyLock::new(|| {
+                    deerpunk_engine_common::layout_meta::encode(
+                        &<#layout as deerpunk_engine_common::layout_meta::LayoutDescribe>::layout_meta(),
+                    )
+                });
+            },
+            quote! {
+                layout_meta_ptr: __LAYOUT_META.as_ptr(),
+                layout_meta_len: __LAYOUT_META.len(),
+            },
+        )
+    } else {
+        (
+            quote! {},
+            quote! {
+                layout_meta_ptr: ::std::ptr::null(),
+                layout_meta_len: 0,
+            },
+        )
+    };
+
     let register_full = quote! {
         #size_align
+        #layout_meta_setup
         let schema = Self::__inspect_schema_cbor();
-        let user = (api as *const deerpunk_engine_sdk::EngineApi) as *mut ::std::ffi::c_void;
+        // Prefab apply uses [`deerpunk_engine_sdk::engine()`]; `user_data` unused.
         let desc = deerpunk_engine_sdk::ComponentRegisterDesc {
             name_ptr: Self::COMPONENT_NAME.as_ptr(),
             name_len: Self::COMPONENT_NAME.len(),
             size: __size,
             align: __align,
-            user_data: user,
+            user_data: ::std::ptr::null_mut(),
             apply_fn: #apply_fn_ptr,
             inspect_schema_ptr: schema.as_ptr(),
             inspect_schema_len: schema.len(),
-            inspect_dump_user: user,
+            inspect_dump_user: ::std::ptr::null_mut(),
             inspect_dump_fn: #dump_fn_ptr,
+            #layout_meta_desc
         };
         if #both {
-            let _ = api.client_world.component_register(&desc);
+            let _client_id = api.client_world.component_register(&desc).unwrap_or(0);
             api.world.component_register(&desc).unwrap_or(0)
         } else if #client {
             api.client_world.component_register(&desc).unwrap_or(0)
         } else {
             api.world.component_register(&desc).unwrap_or(0)
         }
+    };
+
+    let register_client_fn = if both {
+        quote! {
+            pub fn register_client(api: &deerpunk_engine_sdk::EngineApi) -> deerpunk_engine_sdk::ComponentId {
+                #size_align
+                #layout_meta_setup
+                let schema = Self::__inspect_schema_cbor();
+                let desc = deerpunk_engine_sdk::ComponentRegisterDesc {
+                    name_ptr: Self::COMPONENT_NAME.as_ptr(),
+                    name_len: Self::COMPONENT_NAME.len(),
+                    size: __size,
+                    align: __align,
+                    user_data: ::std::ptr::null_mut(),
+                    apply_fn: #apply_fn_ptr,
+                    inspect_schema_ptr: schema.as_ptr(),
+                    inspect_schema_len: schema.len(),
+                    inspect_dump_user: ::std::ptr::null_mut(),
+                    inspect_dump_fn: #dump_fn_ptr,
+                    #layout_meta_desc
+                };
+                api.client_world.component_register(&desc).unwrap_or(0)
+            }
+        }
+    } else {
+        quote! {}
     };
 
     Ok(quote! {
@@ -339,6 +428,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             pub fn register(api: &deerpunk_engine_sdk::EngineApi) -> deerpunk_engine_sdk::ComponentId {
                 #register_full
             }
+
+            #register_client_fn
         }
 
         #inv

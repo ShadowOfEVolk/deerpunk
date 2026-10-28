@@ -1,18 +1,21 @@
 [workspace]
 members = [
-    "crates/host",
-    "crates/common",
-    "crates/server",
-    "crates/client",
-    "crates/client-fmod",
-    "crates/renderer",
-    "crates/sdk-common",
-    "crates/sdk-client",
     "crates/engine-api",
+    "crates/engine-client",
+    "crates/engine-client-fmod",
+    "crates/engine-client-kira",
+    "crates/engine-common",
+    "crates/engine-network",
+    "crates/engine-resource",
     "crates/engine-ffi",
-    "crates/ui",
-    "crates/inspector-protocol",
-    "crates/deerpunk-macro",
+    "crates/engine-host",
+    "crates/engine-inspector-protocol",
+    "crates/engine-macro",
+    "crates/engine-renderer",
+    "crates/engine-server",
+    "crates/engine-ui",
+    "crates/sdk-client",
+    "crates/sdk-common",
     "crates/sdk-macro",
 ]
 resolver = "2"
@@ -37,11 +40,16 @@ edition = "2021"
 name = "deerpunk"
 path = "src/main.rs"
 
+[features]
+default = ["full"]
+full = ["deerpunk-engine-host/full"]
+full-kira = ["deerpunk-engine-host/full-kira"]
+
 [dependencies]
-deerpunk-engine-host = { path = "crates/host", features = ["full"] }
-deerpunk-engine-common = { path = "crates/common" }
-deerpunk-engine-client = { path = "crates/client" }
-deerpunk-engine-renderer = { path = "crates/renderer" }
+deerpunk-engine-host = { path = "crates/engine-host", default-features = false }
+deerpunk-engine-common = { path = "crates/engine-common" }
+deerpunk-engine-client = { path = "crates/engine-client" }
+deerpunk-engine-renderer = { path = "crates/engine-renderer" }
 log = { workspace = true }
 wgpu = "30"
 glam = "0.33"

@@ -1,0 +1,58 @@
+[package]
+name = "deerpunk-engine-host"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-api = { path = "../engine-api" }
+deerpunk-engine-ffi = { path = "../engine-ffi" }
+deerpunk-engine-server = { path = "../engine-server" }
+deerpunk-engine-client = { path = "../engine-client", optional = true }
+deerpunk-engine-renderer = { path = "../engine-renderer", optional = true }
+deerpunk-engine-client-fmod = { path = "../engine-client-fmod", optional = true }
+deerpunk-engine-client-kira = { path = "../engine-client-kira", optional = true }
+deerpunk-ui = { path = "../engine-ui", optional = true }
+
+log = { workspace = true }
+glam = "0.33"
+bincode = "1.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+imgui = "0.12"
+inventory = "0.3"
+libloading = "0.8"
+image = "0.25"
+deerpunk-inspector-protocol = { path = "../engine-inspector-protocol" }
+sha1 = "0.10"
+base64 = "0.22"
+deerpunk-engine-macro = { path = "../engine-macro" }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+[features]
+default = ["full"]
+dedicated-server = []
+audio-fmod = ["deerpunk-engine-client-fmod"]
+audio-kira = ["deerpunk-engine-client-kira"]
+client = [
+    "deerpunk-engine-client",
+    "deerpunk-ui",
+    "deerpunk-engine-renderer",
+    "audio-fmod",
+]
+full = [
+    "deerpunk-engine-client",
+    "deerpunk-ui",
+    "deerpunk-engine-renderer",
+    "audio-fmod",
+]
+full-kira = [
+    "deerpunk-engine-client",
+    "deerpunk-ui",
+    "deerpunk-engine-renderer",
+    "audio-kira",
+]

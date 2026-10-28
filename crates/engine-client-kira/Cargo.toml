@@ -1,0 +1,17 @@
+[package]
+name = "deerpunk-engine-client-kira"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deerpunk-engine-client = { path = "../engine-client" }
+deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-resource = { path = "../engine-resource" }
+kira = { version = "0.9", features = ["ogg", "wav"] }
+log = { workspace = true }
+rand = "0.8"
+serde_json = "1"
+walkdir = "2"

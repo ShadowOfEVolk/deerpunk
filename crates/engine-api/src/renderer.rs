@@ -17,7 +17,11 @@ pub struct RendererApiResolved {
         u32,
     ) -> u32,
     set_scene_lighting_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> i32,
+    set_sky_palette_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
+    set_procedural_sky_fn: unsafe extern "C" fn(*mut u8, i32) -> i32,
+    set_gamelib_sky_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
     load_shader_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> u32,
+    reload_shaders_fn: unsafe extern "C" fn(*mut u8) -> i32,
 }
 
 impl RendererApiResolved {
@@ -39,8 +43,20 @@ impl RendererApiResolved {
             set_scene_lighting_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_scene_lighting"))
             },
+            set_sky_palette_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_sky_palette"))
+            },
+            set_procedural_sky_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_procedural_sky"))
+            },
+            set_gamelib_sky_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_gamelib_sky"))
+            },
             load_shader_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:load_shader"))
+            },
+            reload_shaders_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:reload_shaders"))
             },
         }
     }
@@ -92,6 +108,18 @@ impl RendererApiResolved {
     /// Set scene-level lighting (sun direction + ambient color).
     /// `sun_dir` = [x, y, z, intensity] (intensity 0 = sun off). Passed as raw bytes.
     /// `ambient` = [r, g, b, _]. Passed as raw bytes.
+    /// Fullscreen procedural sky (`gamedir/shaders/sky.wgsl`). Not a camera material.
+    pub fn set_procedural_sky(&self, enable: bool) -> i32 {
+        unsafe { (self.set_procedural_sky_fn)(self.ctx, if enable { 1 } else { 0 }) }
+    }
+
+    /// Hosek colors from gamelib: 156 bytes (39×f32 LE). Empty slice clears the payload.
+    pub fn set_gamelib_sky(&self, bytes: &[u8]) -> i32 {
+        unsafe {
+            (self.set_gamelib_sky_fn)(self.ctx, bytes.as_ptr(), bytes.len())
+        }
+    }
+
     pub fn set_scene_lighting(&self, sun_dir: &[f32; 4], ambient: &[f32; 4]) -> i32 {
         // Cast f32 arrays to raw bytes (16 bytes each) without bytemuck dep.
         let sd_bytes: &[u8] = unsafe {
@@ -111,6 +139,18 @@ impl RendererApiResolved {
         }
     }
 
+    /// Sky gradient palette (day_k + zenith rgb) — must match `ohmyblock_shared_net::daytime`.
+    pub fn set_sky_palette(&self, day_k: f32, zenith: &[f32; 3]) -> i32 {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&day_k.to_le_bytes());
+        bytes[4..8].copy_from_slice(&zenith[0].to_le_bytes());
+        bytes[8..12].copy_from_slice(&zenith[1].to_le_bytes());
+        bytes[12..16].copy_from_slice(&zenith[2].to_le_bytes());
+        unsafe {
+            (self.set_sky_palette_fn)(self.ctx, bytes.as_ptr(), bytes.len())
+        }
+    }
+
     /// Load a `.wgsl` shader into the ShaderRegistry. Returns ShaderId (0 = failed).
     ///
     /// `path` — `file://` URI cache key (e.g. `"file://shaders/mesh.wgsl"`).
@@ -121,5 +161,10 @@ impl RendererApiResolved {
         unsafe {
             (self.load_shader_fn)(self.ctx, p.as_ptr(), p.len(), d.as_ptr(), d.len())
         }
+    }
+
+    /// Hot-reload WGSL from gamedir (sky, postfx, materials already in the registry).
+    pub fn reload_shaders(&self) -> i32 {
+        unsafe { (self.reload_shaders_fn)(self.ctx) }
     }
 }

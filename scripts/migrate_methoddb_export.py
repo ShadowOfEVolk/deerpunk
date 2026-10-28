@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inventory::submit! -> #[deerpunk_macro::export(...)] on tramp fns."""
+"""inventory::submit! -> #[deerpunk_engine_macro::export(...)] on tramp fns."""
 
 import re
 from pathlib import Path
@@ -71,11 +71,11 @@ def migrate_file(path: Path) -> bool:
             s = line.strip()
             if not s or s.startswith("//"):
                 continue
-            return "deerpunk_macro::export" in s
+            return "deerpunk_engine_macro::export" in s
         return False
 
     for cb, api_name, scopes in entries:
-        attr = f'#[deerpunk_macro::export(name = "{api_name}", {scope_lit(scopes)})]\n'
+        attr = f'#[deerpunk_engine_macro::export(name = "{api_name}", {scope_lit(scopes)})]\n'
         fn_pat = re.compile(
             rf'(?m)^[ \t]*pub extern "C" fn {re.escape(cb)}\s*\(',
         )

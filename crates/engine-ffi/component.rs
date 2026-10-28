@@ -46,6 +46,9 @@ pub struct ComponentRegisterDesc {
     pub inspect_dump_user: *mut c_void,
     /// Zero → no dump (see [`no_inspect_dump`]).
     pub inspect_dump_fn: ComponentInspectDumpFn,
+    /// DPK1 layout metadata ([`deerpunk_engine_common::layout_meta::encode`]).
+    pub layout_meta_ptr: *const u8,
+    pub layout_meta_len: usize,
 }
 
 impl ComponentRegisterDesc {
@@ -67,6 +70,8 @@ impl ComponentRegisterDesc {
             inspect_schema_len: 0,
             inspect_dump_user: std::ptr::null_mut(),
             inspect_dump_fn: no_inspect_dump(),
+            layout_meta_ptr: std::ptr::null(),
+            layout_meta_len: 0,
         }
     }
 }

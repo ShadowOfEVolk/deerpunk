@@ -83,8 +83,21 @@ int rmlui_context_remove_data_model(rmlui_handle_t ctx, const char* name);
 /** Выполнить Lua-код (для сброса MenuState.datamodel, Options.datamodel перед reload). */
 void rmlui_lua_do_string(const char* code);
 
-/** Установить переменную в data model (через DataModelHandle::SetVariable). */
+/** @deprecated use rmlui_data_model_set_bool */
 int rmlui_context_set_data_model_bool(rmlui_handle_t ctx, const char* model_name, const char* var_name, int value);
+
+/** Set a field on a named Lua data-model (opened via OpenDataModel). */
+int rmlui_data_model_set_bool(const char* model_name, const char* field_name, int value);
+int rmlui_data_model_set_number(const char* model_name, const char* field_name, double value);
+int rmlui_data_model_set_string(const char* model_name, const char* field_name, const char* value);
+
+/**
+ * Set a field on the document's body `data-model` (widget / document handle).
+ * @return 1 on success, 0 if document/model/field missing.
+ */
+int rmlui_document_data_model_set_bool(rmlui_handle_t doc, const char* field_name, int value);
+int rmlui_document_data_model_set_number(rmlui_handle_t doc, const char* field_name, double value);
+int rmlui_document_data_model_set_string(rmlui_handle_t doc, const char* field_name, const char* value);
 
 rmlui_handle_t rmlui_document_load(rmlui_handle_t ctx, const char* path);
 void rmlui_document_show(rmlui_handle_t doc);

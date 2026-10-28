@@ -7,11 +7,13 @@
 
 ```
 bin (deerpunk)          — точка входа, грузит DLL, крутит Host::run
-crates/host             — Host: склейка систем, MethodDB, загрузка ServerDll
-crates/server           — серверная логика движка (без окна/GPU)
-crates/client           — окно, ввод, extract сцены → snapshot
-crates/renderer         — только GPU: snapshot → кадр (wgpu)
-crates/common           — ядро: ECS World, физика, ресурсы, IPC, типы
+crates/engine-host             — Host: склейка систем, MethodDB, загрузка ServerDll
+crates/engine-server           — серверная логика движка (без окна/GPU)
+crates/engine-client           — окно, ввод, extract сцены → snapshot
+crates/engine-renderer         — только GPU: snapshot → кадр (wgpu)
+crates/engine-common           — ядро: ECS World, физика, ресурсы, типы
+crates/engine-network          — wire: SVC/CLC, UserCmd, LAN, loopback (без Flecs)
+crates/engine-resource         — ResourceManager, mesh, WAD, встроенные loaders (file/wad/shader/texgen)
 crates/engine-api       — единственный safe ABI для game DLL (без линка на host)
 ```
 
@@ -29,14 +31,14 @@ crates/engine-api       — единственный safe ABI для game DLL (�
 Три контракта (не смешивать):
 
 1. **ABI gamelib** — `ServerInitData`, строки `v1:*`, POD-компоненты (`crates/engine-api` + trampolines в `host/engine_api`).
-2. **Внутренний Rust API** — `World`, `PhysicsWorld`, schedule (`crates/common`, `crates/host`).
-3. **Render contract** — `RenderScene` / `RenderSnapshot` (`crates/renderer`). Renderer не знает про ECS.
+2. **Внутренний Rust API** — `World`, `PhysicsWorld`, schedule (`crates/engine-common`, `crates/engine-host`).
+3. **Render contract** — `RenderScene` / `RenderSnapshot` (`crates/engine-renderer`). Renderer не знает про ECS.
 
 ---
 
 ## Host
 
-`Host` (`crates/host`) — процессный оркестратор. Не геймплей.
+`Host` (`crates/engine-host`) — процессный оркестратор. Не геймплей.
 
 Владеет:
 
@@ -100,7 +102,7 @@ Host::run loop
 | `server_frame` | один кадр логики `(dt: f32)` |
 | `server_shutdown` | cleanup |
 
-Загрузка: `libloading` в `crates/host/server_dll.rs`.
+Загрузка: `libloading` в `crates/engine-host/server_dll.rs`.
 
 Контракт для DLL:
 
@@ -140,7 +142,7 @@ Safe-обёртка для Rust-gamelib: `crates/engine-api`.
 
 ### Сцена (ECS World)
 
-- Реализация: Flecs (`crates/common/world.rs`), обёртка `World`
+- Реализация: Flecs (`crates/engine-common/world.rs`), обёртка `World`
 - Живёт в `ServerEngine.world`
 - Сущности + компоненты по имени (DLL-safe), queries (`query_prepare` / `query_execute` / batches)
 - Встроенные компоненты регистрирует Host: `Transform`, `Mesh3D`, `Material`, `Camera`, …
@@ -151,7 +153,7 @@ Safe-обёртка для Rust-gamelib: `crates/engine-api`.
 
 ### Физика
 
-- Rapier3D, обёртка `PhysicsWorld` в `crates/common/physics`
+- Rapier3D, обёртка `PhysicsWorld` в `crates/engine-common/physics`
 - Живёт рядом со сценой в `ServerEngine`
 - Связь entity ↔ rigid body через `body_map` / vehicle map
 - Стегории коллизий (terrain, tank, projectile, …)
@@ -164,10 +166,10 @@ Safe-обёртка для Rust-gamelib: `crates/engine-api`.
 Три шага, жёстко разделённые:
 
 1. **ECS** — компоненты `Mesh3D`, `Material`, `Camera`, transform…
-2. **Extract** (`crates/client/render_extractor.rs`) — queries → `RenderScene` (камеры, mesh draws, terrain…)
-3. **GPU** (`crates/renderer`) — `RenderSnapshot` → passes (sky, meshes, HDR tonemap, …)
+2. **Extract** (`crates/engine-client/render_extractor.rs`) — queries → `RenderScene` (камеры, mesh draws, terrain…)
+3. **GPU** (`crates/engine-renderer`) — `RenderSnapshot` → passes (sky, meshes, HDR tonemap, …)
 
-**UI** (`crates/ui` / RmlUi): document = UI unit. Client собирает `UiFrame` (геометрия), renderer рисует отдельным **ui pass** после tonemap (alpha blend). Не blit CPU-framebuffer.
+**UI** (`crates/engine-ui` / RmlUi): document = UI unit. Client собирает `UiFrame` (геометрия), renderer рисует отдельным **ui pass** после tonemap (alpha blend). Не blit CPU-framebuffer.
 
 Renderer не импортирует Flecs и не читает `World`. Любая новая отрисовка: сначала данные в snapshot-контракт, потом GPU-код.
 
@@ -175,7 +177,7 @@ Renderer не импортирует Flecs и не читает `World`. Люб�
 
 ### Cmd (консоль команд)
 
-Quake-style командный буфер в `crates/host/cmd.rs`.
+Quake-style командный буфер в `crates/engine-host/cmd.rs`.
 
 - Регистрация именованных команд (callbacks)
 - Буфер строк, исполнение по кадру / из конфига
@@ -186,11 +188,11 @@ Cmd — язык управления движком и отладки, не з�
 
 ### Cvar
 
-Конфигурационные переменные в `crates/host/cvar.rs`.
+Конфигурационные переменные в `crates/engine-host/cvar.rs`.
 
 - Статические дефолты через `inventory::submit! { CvarDef { … } }`
 - Runtime map `name → string`, парсинг в f32/bool/usize
-- Примеры: `gamedir`, `r_texturehandle`, `ipc_debug`
+- Примеры: `gamedir`, `sv_inspector_port`, `r_fullbright`
 
 Cvar меняет поведение и настройки; не хранит состояние игры (здоровье, инвентарь и т.п. — это компоненты сцены).
 
@@ -200,11 +202,11 @@ Cvar меняет поведение и настройки; не хранит с
 
 | Хочешь… | Куда |
 |---|---|
-| Тип/утилита без GPU и окна | `crates/common` |
+| Тип/утилита без GPU и окна | `crates/engine-common` |
 | Геймплей / правила | ServerDll (+ при необходимости `v1:*`) |
-| Серверную систему движка | `crates/server` или `ServerEngine` |
-| Ввод, окно, extract | `crates/client` |
-| Шейдер / GPU pass | `crates/renderer` + поле в snapshot |
+| Серверную систему движка | `crates/engine-server` или `ServerEngine` |
+| Ввод, окно, extract | `crates/engine-client` |
+| Шейдер / GPU pass | `crates/engine-renderer` + поле в snapshot |
 | Вызов из game DLL | trampoline + `engine-api`, имя `v1:domain:name` |
 | Консоль / конфиг | cmd / cvar на Host |
 | Загрузка ассетов / лоадеры | `ResourceManager` + [assets.md](assets.md) |

@@ -1,6 +1,6 @@
 # RmlUi third-party layout
 
-Used by `crates/ui` (`deerpunk-ui`).
+Used by `crates/engine-ui` (`deerpunk-ui`).
 
 | Path | Source |
 |------|--------|
