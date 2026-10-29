@@ -95,33 +95,39 @@ struct PartHit {
     t: f32,
 }
 
+use crate::view_camera::camera_world_at_entity;
+
 fn camera_ray(world: &World) -> Option<([f32; 3], [f32; 3])> {
-    let t_id = world.component_init::<TransformComponent>();
     let cam_id = world.component_init::<CameraComponent>();
-    let cc_id = world.component_init::<CharacterController>();
+    let tag_id = world.component_init::<deerpunk_engine_common::components::ViewCameraTag>();
     for e in world.inspect_entities() {
-        if !world.has(e.id, t_id) || !world.has(e.id, cam_id) {
+        if !world.has(e.id, cam_id) {
             continue;
         }
-        let t = unsafe { &*(world.get_raw(e.id, t_id) as *const TransformComponent) };
-        let cam = unsafe { &*(world.get_raw(e.id, cam_id) as *const CameraComponent) };
-        let mut eye = cam.eye_height;
-        if eye <= 0.0 {
-            if world.has(e.id, cc_id) {
-                let cc = unsafe { &*(world.get_raw(e.id, cc_id) as *const CharacterController) };
-                eye = cc.eye_height();
-            }
-        }
-        let forward = t.rotation * Vec3::Y;
-        let len = forward.length();
-        if len < 1e-6 {
+        if !world.has(e.id, tag_id) {
             continue;
         }
-        let d = forward / len;
-        return Some((
-            [t.position.x, t.position.y, t.position.z + eye],
-            [d.x, d.y, d.z],
-        ));
+        let Some((eye, rot)) = camera_world_at_entity(world, e.id) else {
+            continue;
+        };
+        let dir = (rot * Vec3::Y).normalize_or_zero();
+        if dir.length_squared() < 1e-8 {
+            continue;
+        }
+        return Some((eye.to_array(), dir.to_array()));
+    }
+    for e in world.inspect_entities() {
+        if !world.has(e.id, cam_id) {
+            continue;
+        }
+        let Some((eye, rot)) = camera_world_at_entity(world, e.id) else {
+            continue;
+        };
+        let dir = (rot * Vec3::Y).normalize_or_zero();
+        if dir.length_squared() < 1e-8 {
+            continue;
+        }
+        return Some((eye.to_array(), dir.to_array()));
     }
     None
 }

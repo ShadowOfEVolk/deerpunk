@@ -190,11 +190,15 @@ impl ShaderDef {
             || self.wgsl.contains("lm_uv")
     }
 
-    /// Skinned opaque mesh: bone palette in group 0 + joint/weight vertex inputs.
+    /// Skinned opaque mesh: bone palette in group 0 binding 1 (`mesh_skinned` layout).
     pub fn uses_skinned_mesh_vertex(&self) -> bool {
-        self.meta.skinned
-            || self.wgsl.contains("BoneBlock")
-            || self.wgsl.contains("skin_position")
+        if self.meta.skinned {
+            return true;
+        }
+        self.meta.pass == Some(RenderPass::MeshOpaque)
+            && self.bindings.iter().any(|b| {
+                b.group == 0 && b.binding == 1 && b.kind == BindingKind::Uniform
+            })
     }
 }
 

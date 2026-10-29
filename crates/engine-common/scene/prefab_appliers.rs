@@ -93,21 +93,6 @@ fn apply_camera(
     if let Some(f) = value.get("far").and_then(|v| v.as_f64()) {
         cam.far = f as f32;
     }
-    if let Some(e) = value.get("eye_height").and_then(|v| v.as_f64()) {
-        cam.eye_height = e as f32;
-    }
-    if let Some(y) = value.get("view_yaw").and_then(|v| v.as_f64()) {
-        cam.view_yaw = y as f32;
-    }
-    if let Some(p) = value.get("view_pitch").and_then(|v| v.as_f64()) {
-        cam.view_pitch = p as f32;
-    }
-    if let Some(r) = value.get("view_roll").and_then(|v| v.as_f64()) {
-        cam.view_roll = r as f32;
-    }
-    if value.get("client_view").and_then(|v| v.as_bool()) == Some(true) {
-        cam.client_view = true;
-    }
     world.set(entity, comp, cam);
     Ok(())
 }

@@ -7,7 +7,15 @@ use super::resources::read_str;
 
 pub(crate) fn register_component_desc(host: &mut crate::Host, desc: &ComponentRegisterDesc) -> u64 {
     let name = read_str(desc.name_ptr, desc.name_len);
-    if name.is_empty() || desc.size == 0 {
+    if name.is_empty() {
+        log::error!("[server_world] component_register: empty component name");
+        return 0;
+    }
+    if desc.size == 0 {
+        log::error!(
+            "[server_world] component_register \"{name}\": size must be > 0 \
+             (Flecs cannot store zero-sized components; add a `_tag: u8` field)"
+        );
         return 0;
     }
     let apply = desc.apply_fn;

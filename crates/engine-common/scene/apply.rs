@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::components::{
     CameraComponent, LuaScript, MapKv, Material, NetworkEntity, PointLight, SoundEmitter,
-    TransformComponent, UiDocumentComponent, Worldspawn,
+    TransformComponent, UiDocumentComponent, ViewCameraTag, Worldspawn,
 };
 use crate::network::field_path::NetFieldId;
 use crate::physics::CharacterController;
@@ -62,11 +62,13 @@ pub fn apply_component(
             if let Some(f) = value.get("far").and_then(|v| v.as_f64()) {
                 cam.far = f as f32;
             }
-            if let Some(e) = value.get("eye_height").and_then(|v| v.as_f64()) {
-                cam.eye_height = e as f32;
-            }
             let id = world.component_init::<CameraComponent>();
             world.set(entity, id, cam);
+            Ok(())
+        }
+        "ViewCamera" | "ViewCameraTag" => {
+            let id = world.component_init::<ViewCameraTag>();
+            world.set(entity, id, ViewCameraTag::marker());
             Ok(())
         }
         "CharacterController" => {

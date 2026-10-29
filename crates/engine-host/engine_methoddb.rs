@@ -211,19 +211,6 @@ impl crate::Host {
         0
     }
 
-    #[methoddb::bind(name = "apply_local_view")]
-    pub fn api_players_apply_local_view(
-        &mut self,
-        yaw: f32,
-        pitch: f32,
-        roll: f32,
-        eye_height: f32,
-        fov_y: f32,
-    ) -> i32 {
-        self.apply_local_view(yaw, pitch, roll, eye_height, fov_y);
-        0
-    }
-
     #[methoddb::bind(name = "set_simorg")]
     pub fn api_players_set_simorg(&mut self, x: f32, y: f32, z: f32) -> i32 {
         #[cfg(any(feature = "client", feature = "full"))]
@@ -404,32 +391,16 @@ impl crate::Host {
         let Some(ent) = self.local_client_entity() else {
             return -1;
         };
-        use deerpunk_engine_common::components::{CameraComponent, TransformComponent};
-        use deerpunk_engine_common::physics::CHAR_EYE_HEIGHT;
+        use deerpunk_engine_client::view_camera::{camera_world_at_entity, find_view_camera_child};
         use glam::Vec3;
 
-        let tid = client.world.component_init::<TransformComponent>();
-        let Some(t) = client.world.get::<TransformComponent>(ent, tid) else {
+        let pawn = ent;
+        let Some(cam_ent) = find_view_camera_child(&client.world, pawn) else {
             return -1;
         };
-        let cam_id = client.world.component_init::<CameraComponent>();
-        let eye_h = client
-            .world
-            .get::<CameraComponent>(ent, cam_id)
-            .map(|c| c.eye_height)
-            .filter(|h| *h > 0.0)
-            .unwrap_or(CHAR_EYE_HEIGHT);
-        let feet = if client.local_sim.valid && self.cvar.get_usize_or("cl_predict", 1) != 0 {
-            client.local_sim.display
-        } else {
-            t.position
+        let Some((eye, view_rot)) = camera_world_at_entity(&client.world, cam_ent) else {
+            return -1;
         };
-        let eye = feet + Vec3::new(0.0, 0.0, eye_h);
-        let view_rot = client
-            .world
-            .get::<CameraComponent>(ent, cam_id)
-            .map(|c| c.world_rotation(t.rotation))
-            .unwrap_or(t.rotation);
         let dir = (view_rot * Vec3::Y).normalize_or_zero();
         if dir.length_squared() < 1e-8 {
             return -1;

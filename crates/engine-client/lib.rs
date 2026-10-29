@@ -24,6 +24,7 @@ pub mod app;
 pub mod client_engine;
 pub mod console;
 pub mod local_view;
+pub mod view_camera;
 pub mod local_sim;
 pub mod usercmd_channel;
 

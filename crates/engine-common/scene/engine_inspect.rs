@@ -42,11 +42,6 @@ fn dump_camera(world: &World, entity: EntityId, comp: ComponentId) -> Result<Val
         "fov_y": c.fov_y.to_degrees(),
         "near": c.near,
         "far": c.far,
-        "eye_height": c.eye_height,
-        "view_yaw": c.view_yaw,
-        "view_pitch": c.view_pitch,
-        "view_roll": c.view_roll,
-        "client_view": c.client_view,
     }))
 }
 
@@ -220,7 +215,6 @@ pub fn register_engine_component_inspect(world: &World) {
                 "fov_y": { "type": "number" },
                 "near": { "type": "number" },
                 "far": { "type": "number" },
-                "eye_height": { "type": "number" },
             }
         }),
         dump_camera,

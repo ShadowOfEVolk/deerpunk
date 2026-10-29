@@ -255,6 +255,8 @@ pub struct RenderSnapshot {
     pub view_proj: [[f32; 4]; 4],
     /// Inverse view-projection (computed from view_proj).
     pub inv_view_proj: [[f32; 4]; 4],
+    /// Sky/cloud ray reconstuction: `inv(proj * view_rot)` with view translation stripped.
+    pub inv_view_proj_sky: [[f32; 4]; 4],
     /// World-space camera position.
     pub camera_pos: [f32; 3],
     /// Меши для отрисовки.
@@ -304,6 +306,12 @@ impl RenderSnapshot {
                 [0.0, 0.0, 0.0, 1.0],
             ],
             inv_view_proj: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            inv_view_proj_sky: [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
@@ -529,6 +537,9 @@ pub struct CameraRenderSnapshot {
     pub projection: glam::Mat4,
     pub view_proj: glam::Mat4,
     pub inv_view_proj: glam::Mat4,
+    pub inv_view_proj_sky: glam::Mat4,
+    /// World eye — same as [`CameraDefinition::position`] from extract (transform hierarchy).
+    pub camera_pos: [f32; 3],
     /// Indices into `geometry.mesh_draws` when [`frustum_culled`] is true.
     pub visible_mesh: Vec<u32>,
     /// Indices into `geometry.skinned_mesh_draws` when [`frustum_culled`] is true.
@@ -661,11 +672,17 @@ impl RenderScene {
 
                 let assemble_start = std::time::Instant::now();
                 let inv_view_proj = view_proj.inverse();
+                let inv_view_proj_sky = deerpunk_engine_common::coord::inv_view_proj_sky_at_origin(
+                    view,
+                    projection,
+                );
                 let snap = CameraRenderSnapshot {
                     view,
                     projection,
                     view_proj,
                     inv_view_proj,
+                    inv_view_proj_sky: glam::Mat4::from_cols_array_2d(&inv_view_proj_sky),
+                    camera_pos: cam.position,
                     visible_mesh,
                     visible_skinned,
                     frustum_culled,
@@ -695,11 +712,17 @@ impl RenderScene {
         if cam.frustum_culled {
             mesh_out.reserve(cam.visible_mesh.len());
             for &i in &cam.visible_mesh {
-                mesh_out.push(self.geometry.mesh_draws[i as usize].clone());
+                let idx = i as usize;
+                if idx < self.geometry.mesh_draws.len() {
+                    mesh_out.push(self.geometry.mesh_draws[idx].clone());
+                }
             }
             skinned_out.reserve(cam.visible_skinned.len());
             for &i in &cam.visible_skinned {
-                skinned_out.push(self.geometry.skinned_mesh_draws[i as usize].clone());
+                let idx = i as usize;
+                if idx < self.geometry.skinned_mesh_draws.len() {
+                    skinned_out.push(self.geometry.skinned_mesh_draws[idx].clone());
+                }
             }
         } else {
             mesh_out.clone_from(&self.geometry.mesh_draws);

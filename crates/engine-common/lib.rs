@@ -28,6 +28,7 @@ pub use deerpunk_engine_resource as resource;
 pub mod sound_event;
 pub mod scheduler;
 pub mod transform;
+pub mod transform_hierarchy;
 pub mod ui_draw;
 
 pub use components::{

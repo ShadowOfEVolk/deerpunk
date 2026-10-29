@@ -13,7 +13,22 @@ use crate::gpu::{
     MAX_POINT_LIGHTS,
 };
 use crate::render_profile::lap_ms;
+use crate::shader_registry::ShaderRegistry;
 use crate::snapshot::MeshTexture;
+
+type MeshPipelineKey = (u32, bool, bool);
+
+/// Pipeline cache key for **static** mesh draws (`mesh_globals_bg`, never skinned group-0 layout).
+fn static_mesh_pipeline_key(shaders: &ShaderRegistry, shader_id: u32) -> MeshPipelineKey {
+    let Some(def) = shaders.get(shader_id) else {
+        return (shader_id, false, false);
+    };
+    (
+        shader_id,
+        def.group1_uses_lightmap_array(),
+        false,
+    )
+}
 
 impl Renderer {
     pub(crate) fn pass_mesh(
@@ -222,7 +237,7 @@ impl Renderer {
             )
         });
 
-        let mut last_mesh_pipeline: Option<(u32, bool)> = None;
+        let mut last_mesh_pipeline: Option<MeshPipelineKey> = None;
 
         let draw_order = std::mem::take(&mut self.mesh_draw_order);
         let mut batch_groups: HashMap<MeshBatchKey, Vec<usize>> = HashMap::new();
@@ -232,6 +247,13 @@ impl Renderer {
             if !self.multi_draw_indirect_supported
                 || !md.batchable
                 || !static_vis(i)
+            {
+                continue;
+            }
+            if ctx
+                .shaders
+                .get(md.shader_id)
+                .is_some_and(|d| d.uses_skinned_mesh_vertex())
             {
                 continue;
             }
@@ -287,9 +309,13 @@ impl Renderer {
                     let offset = (representative as u64 * mesh_uniform_size) as u32;
                     pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
 
-                    let pipeline = self
-                        .ensure_shader_mesh_pipeline(ctx.shaders, key.shader_id, ctx.format);
-                    let pipe_key = (key.shader_id, key.lm_surface);
+                    let pipeline = self.ensure_shader_mesh_pipeline(
+                        ctx.shaders,
+                        key.shader_id,
+                        ctx.format,
+                        false,
+                    );
+                    let pipe_key = static_mesh_pipeline_key(ctx.shaders, key.shader_id);
                     if last_mesh_pipeline != Some(pipe_key) {
                         ctx.draw_acc.note_pipeline();
                         pass.set_pipeline(pipeline);
@@ -412,9 +438,13 @@ impl Renderer {
                 .unwrap_or(false);
             let bsp_mesh = Self::mesh_has_bsp_surface_data(&md.mesh);
 
-            let pipeline =
-                self.ensure_shader_mesh_pipeline(ctx.shaders, md.shader_id, ctx.format);
-            let pipe_key = (md.shader_id, lm_surface);
+            let pipeline = self.ensure_shader_mesh_pipeline(
+                ctx.shaders,
+                md.shader_id,
+                ctx.format,
+                false,
+            );
+            let pipe_key = static_mesh_pipeline_key(ctx.shaders, md.shader_id);
             if last_mesh_pipeline != Some(pipe_key) {
                 ctx.draw_acc.note_pipeline();
                 pass.set_pipeline(pipeline);

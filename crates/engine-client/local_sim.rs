@@ -91,7 +91,7 @@ impl ClientEngine {
         self.local_sim.push_correction(predicted, authoritative, smooth_time);
     }
 
-    pub fn stamp_simorg_on_entity(&mut self, entity: u64, body_yaw: f32) {
+    pub fn stamp_simorg_on_entity(&mut self, entity: u64) {
         if !self.local_sim.valid {
             return;
         }
@@ -99,14 +99,13 @@ impl ClientEngine {
         let Some(t) = self.world.get::<TransformComponent>(entity, tid) else {
             return;
         };
-        let rot = Quat::from_rotation_z(-body_yaw);
         let pos = self.local_sim.display;
         self.world.set(
             entity,
             tid,
             TransformComponent {
                 position: pos,
-                rotation: rot,
+                rotation: t.rotation,
                 scale: t.scale,
             },
         );

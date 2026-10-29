@@ -5,8 +5,9 @@ use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::SkinnedMesh3D;
 use deerpunk_engine_common::components::{CameraComponent, MeshDrawAux, PointLight, TransformComponent};
 use deerpunk_engine_common::material::DrawMaterial;
-use deerpunk_engine_common::physics::CharacterController;
 use deerpunk_engine_common::resource::mesh_registry::MeshRegistry;
+
+use crate::view_camera::{camera_entity_for_view, resolve_camera_world};
 use deerpunk_engine_common::world::{ComponentId, QueryId, World};
 use deerpunk_engine_common::MeshTexture;
 use deerpunk_engine_renderer::material_allocator::MaterialAllocator;
@@ -28,7 +29,7 @@ pub struct RenderExtractor {
     q_terrain_splat: QueryId,
     q_lights: QueryId,
     q_skinned: QueryId,
-    char_id: ComponentId,
+    parent_id: ComponentId,
     mesh_draw_aux_id: ComponentId,
     mesh_cache: MeshDrawExtractCache,
 }
@@ -37,12 +38,13 @@ impl RenderExtractor {
     pub fn new(world: &mut World) -> Self {
         let _ = world.component_init::<TransformComponent>();
         let _ = world.component_init::<CameraComponent>();
+        let parent_id = world.component_init::<deerpunk_engine_common::components::ParentComponent>();
+        let _ = world.component_init::<deerpunk_engine_common::components::ViewCameraTag>();
         let _ = world.component_init::<Mesh3D>();
         let _ = world.component_init::<DrawMaterial>();
         let _ = world.component_init::<SkinnedMesh3D>();
         let _ = world.component_init::<TerrainSplatMaterial>();
         let _ = world.component_init::<PointLight>();
-        let char_id = world.component_init::<CharacterController>();
         let mesh_draw_aux_id = world.component_init::<MeshDrawAux>();
         let _ = world.component_init::<deerpunk_engine_common::components::MeshDrawHidden>();
         Self {
@@ -55,7 +57,7 @@ impl RenderExtractor {
             q_skinned: world.query_prepare(
                 "TransformComponent, SkinnedMesh3D, DrawMaterial, !MeshDrawHidden",
             ),
-            char_id,
+            parent_id,
             mesh_draw_aux_id,
             mesh_cache: MeshDrawExtractCache::new(),
         }
@@ -120,24 +122,22 @@ impl RenderExtractor {
                 };
                 for (i, (t, c)) in transforms.iter().zip(cameras.iter()).enumerate() {
                     let ent = entities[i];
-                    if let Some(view) = view_entity {
-                        if ent != view {
-                            continue;
-                        }
-                    } else if !scene.cameras.is_empty() {
-                        // No SetView yet — keep a single camera (avoid flicker).
+                    if !camera_entity_for_view(world, view_entity, ent) {
+                        continue;
+                    }
+                    if view_entity.is_none() && !scene.cameras.is_empty() {
                         break;
                     }
-                    // Origin = feet for pawns: eye_height on camera, else CC default.
-                    let mut eye = c.eye_height;
-                    if eye <= 0.0 {
-                        if let Some(cc) = world.get::<CharacterController>(ent, self.char_id) {
-                            eye = cc.eye_height();
-                        }
-                    }
+                    let (world_pos, world_rot) = resolve_camera_world(
+                        world,
+                        ent,
+                        t,
+                        c,
+                        self.parent_id,
+                    );
                     scene.push_camera(CameraDefinition {
-                        position: [t.position.x, t.position.y, t.position.z + eye],
-                        rotation: c.world_rotation(t.rotation),
+                        position: world_pos.to_array(),
+                        rotation: world_rot,
                         fov_y: c.fov_y,
                         near: c.near,
                         far: c.far,

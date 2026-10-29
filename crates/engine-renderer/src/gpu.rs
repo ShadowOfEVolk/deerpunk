@@ -459,7 +459,8 @@ pub struct Renderer {
     /// Layout when group 1 = 2D albedo + `texture_2d_array` (shader reflection).
     mesh_lm_surface_pipeline_layout: wgpu::PipelineLayout,
     /// Per-shader opaque mesh pipelines (`ShaderId` from registry).
-    shader_mesh_pipelines: HashMap<(ShaderId, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// `(shader_id, format, skinned_bind_group_layout)` — static draws use `false`, skinned draws `true`.
+    shader_mesh_pipelines: HashMap<(ShaderId, wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
     /// Key: (albedo_tex_slot, lightmap_gpu) — id 0 = white fallback.
     mesh_lm_surface_bgs: HashMap<(u32, u32), wgpu::BindGroup>,
     repeat_sampler: wgpu::Sampler,
@@ -3863,18 +3864,20 @@ impl Renderer {
             })
     }
 
+    /// `skinned_layout`: group-0 bind group includes bone palette (must match [`Self::pass_mesh`] bind setup).
     fn ensure_shader_mesh_pipeline(
         &mut self,
         shaders: &ShaderRegistry,
         shader_id: ShaderId,
         format: wgpu::TextureFormat,
+        skinned_layout: bool,
     ) -> &wgpu::RenderPipeline {
-        let key = (shader_id, format);
+        let key = (shader_id, format, skinned_layout);
         if !self.shader_mesh_pipelines.contains_key(&key) {
             let def = shaders
                 .get(shader_id)
                 .expect("MeshDraw shader_id not in ShaderRegistry");
-            let skinned = def.uses_skinned_mesh_vertex();
+            let skinned = skinned_layout && def.uses_skinned_mesh_vertex();
             let lm_surface = !skinned && def.group1_uses_lightmap_array();
             let extended = !skinned && def.uses_extended_mesh_vertex();
             let p = self.build_shader_mesh_pipeline(
@@ -3900,7 +3903,7 @@ impl Renderer {
             if let Some(def) = shaders.get(shader_id) {
                 if def.uses_skinned_mesh_vertex() {
                     return self
-                        .ensure_shader_mesh_pipeline(shaders, shader_id, format)
+                        .ensure_shader_mesh_pipeline(shaders, shader_id, format, true)
                         .clone();
                 }
             }

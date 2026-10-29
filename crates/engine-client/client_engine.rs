@@ -110,7 +110,6 @@ pub struct ClientEngine {
     pub lan_browser: LanBrowser,
     pub lightstyles: LightstyleTable,
     pub last_ls_patterns: Vec<String>,
-    pub local_view: Option<LocalViewStamp>,
     pub demo_writer: Option<demo::DemoWriter>,
     pub demo_player: Option<demo::DemoPlayer>,
     /// Last albedo atlas slot from gamelib `flush_pending_albedos` FFI.
@@ -187,7 +186,6 @@ impl ClientEngine {
             lan_browser: LanBrowser::default(),
             lightstyles: LightstyleTable::hl_defaults(),
             last_ls_patterns: vec![String::new(); MAX_LIGHTSTYLES],
-            local_view: None,
             demo_writer: None,
             demo_player: None,
             last_atlas_slot: 0,
@@ -224,44 +222,24 @@ impl ClientEngine {
         self.gamelib_sky = payload;
     }
 
-    fn sky_camera_pos(
-        &self,
-        scene: &RenderScene,
-        view_entity: Option<u64>,
-    ) -> Option<[f32; 3]> {
-        if let Some(cam) = scene
+    /// Same eye position the extractor already put on [`RenderScene::cameras`].
+    fn sky_camera_pos(scene: &RenderScene) -> Option<[f32; 3]> {
+        scene
             .cameras
             .iter()
             .find(|c| matches!(c.target, RenderTarget::Surface))
-        {
-            let pos = cam
-                .view_matrix()
-                .inverse()
-                .transform_point3(glam::Vec3::ZERO);
-            return Some(pos.to_array());
-        }
-        let ent = view_entity?;
-        let tid = self.world.component_init::<TransformComponent>();
-        let cid = self.world.component_init::<CameraComponent>();
-        let t = self.world.get::<TransformComponent>(ent, tid)?;
-        let eye = self
-            .world
-            .get::<CameraComponent>(ent, cid)
-            .map(|c| c.eye_height)
-            .filter(|h| *h > 0.0)
-            .unwrap_or(1.62);
-        Some([t.position.x, t.position.y, t.position.z + eye])
+            .map(|c| c.position)
     }
 
     /// Fullscreen sky: sun + horizon from [`Renderer::scene_sun_dir`] /
     /// [`Renderer::scene_ambient`] (gamelib `set_scene_lighting`), zenith from
     /// [`Renderer::scene_sky_zenith`] (`set_sky_palette`). Optional Hosek params
     /// from `set_gamelib_sky` (exposure / day_fade in `params[30..32]`).
-    fn fill_procedural_sky(&mut self, scene: &mut RenderScene, view_entity: Option<u64>) {
+    fn fill_procedural_sky(&mut self, scene: &mut RenderScene) {
         if !self.procedural_sky {
             return;
         }
-        let Some(camera_pos) = self.sky_camera_pos(scene, view_entity) else {
+        let Some(camera_pos) = Self::sky_camera_pos(scene) else {
             return;
         };
         let sd = self.renderer.scene_sun_dir();
@@ -830,7 +808,7 @@ impl ClientEngine {
         let post_start = std::time::Instant::now();
         scene.game_time = self.time;
         self.fill_bone_palettes(&mut scene);
-        self.fill_procedural_sky(&mut scene, view_entity);
+        self.fill_procedural_sky(&mut scene);
         extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
 
         self.renderer.note_extract_gpu_stats(extract_gpu);
@@ -1075,11 +1053,8 @@ impl ClientEngine {
             snapshot.clear = snap.clear;
             snapshot.view_proj = snap.view_proj.to_cols_array_2d();
             snapshot.inv_view_proj = snap.inv_view_proj.to_cols_array_2d();
-            snapshot.camera_pos = snap
-                .view
-                .inverse()
-                .transform_point3(glam::Vec3::ZERO)
-                .to_array();
+            snapshot.inv_view_proj_sky = snap.inv_view_proj_sky.to_cols_array_2d();
+            snapshot.camera_pos = snap.camera_pos;
             snapshot.game_time = snap.game_time;
             snapshot.instances.clear();
             snapshot.hud.clear();
