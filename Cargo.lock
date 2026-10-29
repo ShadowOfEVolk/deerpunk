@@ -882,6 +882,7 @@ dependencies = [
  "imgui",
  "imgui-wgpu",
  "inventory",
+ "log",
  "naga",
  "pollster",
  "raw-window-handle",

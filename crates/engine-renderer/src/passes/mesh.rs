@@ -13,7 +13,22 @@ use crate::gpu::{
     MAX_POINT_LIGHTS,
 };
 use crate::render_profile::lap_ms;
+use crate::shader_registry::ShaderRegistry;
 use crate::snapshot::MeshTexture;
+
+type MeshPipelineKey = (u32, bool, bool);
+
+/// Pipeline cache key for **static** mesh draws (`mesh_globals_bg`, never skinned group-0 layout).
+fn static_mesh_pipeline_key(shaders: &ShaderRegistry, shader_id: u32) -> MeshPipelineKey {
+    let Some(def) = shaders.get(shader_id) else {
+        return (shader_id, false, false);
+    };
+    (
+        shader_id,
+        def.group1_uses_lightmap_array(),
+        false,
+    )
+}
 
 impl Renderer {
     pub(crate) fn pass_mesh(
@@ -157,6 +172,12 @@ impl Renderer {
             let n = ctx.snapshot.point_lights.len().min(MAX_POINT_LIGHTS);
             lights.count = n as u32;
             lights.scene_time_bits = ctx.snapshot.game_time.to_bits();
+            lights.zenith = [
+                self.scene_sky_zenith[0],
+                self.scene_sky_zenith[1],
+                self.scene_sky_zenith[2],
+                0.0,
+            ];
             // Scene-level lighting (set via set_scene_lighting).
             lights.sun_dir = self.scene_sun_dir;
             lights.ambient = self.scene_ambient;
@@ -222,7 +243,7 @@ impl Renderer {
             )
         });
 
-        let mut last_mesh_pipeline: Option<(u32, bool)> = None;
+        let mut last_mesh_pipeline: Option<MeshPipelineKey> = None;
 
         let draw_order = std::mem::take(&mut self.mesh_draw_order);
         let mut batch_groups: HashMap<MeshBatchKey, Vec<usize>> = HashMap::new();
@@ -232,6 +253,13 @@ impl Renderer {
             if !self.multi_draw_indirect_supported
                 || !md.batchable
                 || !static_vis(i)
+            {
+                continue;
+            }
+            if ctx
+                .shaders
+                .get(md.shader_id)
+                .is_some_and(|d| d.uses_skinned_mesh_vertex())
             {
                 continue;
             }
@@ -287,9 +315,13 @@ impl Renderer {
                     let offset = (representative as u64 * mesh_uniform_size) as u32;
                     pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
 
-                    let pipeline = self
-                        .ensure_shader_mesh_pipeline(ctx.shaders, key.shader_id, ctx.format);
-                    let pipe_key = (key.shader_id, key.lm_surface);
+                    let pipeline = self.ensure_shader_mesh_pipeline(
+                        ctx.shaders,
+                        key.shader_id,
+                        ctx.hdr_format,
+                        false,
+                    );
+                    let pipe_key = static_mesh_pipeline_key(ctx.shaders, key.shader_id);
                     if last_mesh_pipeline != Some(pipe_key) {
                         ctx.draw_acc.note_pipeline();
                         pass.set_pipeline(pipeline);
@@ -412,9 +444,13 @@ impl Renderer {
                 .unwrap_or(false);
             let bsp_mesh = Self::mesh_has_bsp_surface_data(&md.mesh);
 
-            let pipeline =
-                self.ensure_shader_mesh_pipeline(ctx.shaders, md.shader_id, ctx.format);
-            let pipe_key = (md.shader_id, lm_surface);
+            let pipeline = self.ensure_shader_mesh_pipeline(
+                ctx.shaders,
+                md.shader_id,
+                ctx.hdr_format,
+                false,
+            );
+            let pipe_key = static_mesh_pipeline_key(ctx.shaders, md.shader_id);
             if last_mesh_pipeline != Some(pipe_key) {
                 ctx.draw_acc.note_pipeline();
                 pass.set_pipeline(pipeline);
@@ -485,7 +521,7 @@ impl Renderer {
             }
             if last_skinned_shader != Some(sd.shader_id) {
                 let pipeline =
-                    self.ensure_skinned_draw_pipeline(ctx.shaders, sd.shader_id, ctx.format);
+                    self.ensure_skinned_draw_pipeline(ctx.shaders, sd.shader_id, ctx.hdr_format);
                 ctx.draw_acc.note_pipeline();
                 pass.set_pipeline(&pipeline);
                 last_skinned_shader = Some(sd.shader_id);
@@ -544,11 +580,124 @@ impl Renderer {
                 ctx.snapshot,
                 depth_view,
                 ctx.hdr_view,
-                ctx.format,
+                ctx.hdr_format,
                 DEPTH_FORMAT,
             );
         }
     }
         ctx.prof.mesh_stats.draw_encode_ms = lap_ms(ctx.lap);
+    }
+
+    pub(crate) fn pass_viewmodel(
+        &mut self,
+        ctx: &mut FrameCtx<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let Some(vp) = ctx.snapshot.viewmodel_view_proj else {
+            return;
+        };
+        let draws = &ctx.snapshot.viewmodel_mesh_draws;
+        if draws.is_empty() {
+            return;
+        }
+        let mesh_uniform_size = Self::mesh_uniform_stride();
+        let draw_count = draws.len();
+        let base_slot = ctx.snapshot.mesh_draws.len() as u64;
+        let total_slots = base_slot + draw_count as u64;
+        self.ensure_mesh_uniform_slots(total_slots);
+        let fullbright_flag = if self.fullbright { 1u32 } else { 0u32 };
+        let lightmap_flag = if self.lightmap_only { 1u32 } else { 0u32 };
+        self.mesh_uniform_scratch
+            .resize((mesh_uniform_size * draw_count as u64) as usize, 0);
+        for (i, md) in draws.iter().enumerate() {
+            let uniform = MeshUniform {
+                view_proj: vp,
+                model: md.model_mat,
+                material_data: [md.material_id, md.uniform_aux, fullbright_flag, lightmap_flag],
+                camera_pos: ctx.snapshot.viewmodel_camera_pos,
+                _pad_cam: 0.0,
+            };
+            let off = (i as u64 * mesh_uniform_size) as usize;
+            self.mesh_uniform_scratch[off..off + std::mem::size_of::<MeshUniform>()]
+                .copy_from_slice(bytemuck::bytes_of(&uniform));
+        }
+        self.queue.write_buffer(
+            &self.mesh_globals_buf,
+            base_slot * mesh_uniform_size,
+            &self.mesh_uniform_scratch[..(mesh_uniform_size * draw_count as u64) as usize],
+        );
+
+        self.ensure_depth(frame_width(), frame_height());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("viewmodel pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: ctx.hdr_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.depth_view.as_ref().unwrap(),
+                depth_ops: Some(wgpu::Operations {
+                    // Keep world depth; viewmodel lens uses a closer near plane so the item still wins.
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_bind_group(3, &self.lights_bg, &[]);
+
+        for (i, md) in draws.iter().enumerate() {
+            if md.shader_id == 0 {
+                continue;
+            }
+            let handle = self.mesh_resolve_for_draw(&md.mesh);
+            let pipeline = self.ensure_shader_mesh_pipeline(
+                ctx.shaders,
+                md.shader_id,
+                ctx.hdr_format,
+                false,
+            );
+            ctx.draw_acc.note_pipeline();
+            pass.set_pipeline(&pipeline);
+            let slot = base_slot + i as u64;
+            let offset = (slot * mesh_uniform_size) as u32;
+            pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
+            if ctx
+                .shaders
+                .get(md.shader_id)
+                .map(|d| d.group1_uses_lightmap_array())
+                .unwrap_or(false)
+            {
+                let bind1 = self.ensure_albedo_lightmap_bg(md.texture.0, md.lightmap_gpu);
+                pass.set_bind_group(1, &bind1, &[]);
+            } else {
+                pass.set_bind_group(1, self.mesh_bind_group(md.texture), &[]);
+            }
+            pass.set_bind_group(
+                2,
+                self.ensure_material_bg(md.material_id, md.normal, md.orm),
+                &[],
+            );
+            let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
+            let ib = self.mesh_pool.index_buffer(handle.buffer_id);
+            pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
+            pass.set_index_buffer(
+                ib.slice(self.mesh_pool.index_byte_range(handle)),
+                wgpu::IndexFormat::Uint32,
+            );
+            let count = handle.idx_count;
+            if count > 0 {
+                pass.draw_indexed(0..count, 0, 0..1);
+                ctx.draw_acc.note_draw_indexed(count);
+            }
+        }
     }
 }

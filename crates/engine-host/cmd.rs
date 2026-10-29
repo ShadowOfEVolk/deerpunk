@@ -264,7 +264,7 @@ impl CmdSystem {
             let vol = ctx.cmd.cvar().get_f32_or("s_volume", 1.0);
             if let Some(client) = ctx.cmd.client_engine_mut() {
                 client.set_audio_volume(vol);
-                client.audio_play_2d(&event, vol, &[]);
+                client.audio_play_2d(&event, vol, &[], 0);
             }
         }));
     }

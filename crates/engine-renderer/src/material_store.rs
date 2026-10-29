@@ -463,6 +463,10 @@ fn default_value(
 fn material_content_hash(asset: &MaterialAsset, props: &[PropertyValue]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    asset.shader.hash(&mut hasher);
+    for def in &asset.shader_defines {
+        def.hash(&mut hasher);
+    }
     for prop in props {
         match prop {
             PropertyValue::Float(v) => v.to_bits().hash(&mut hasher),

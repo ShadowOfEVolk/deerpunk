@@ -255,6 +255,8 @@ pub struct RenderSnapshot {
     pub view_proj: [[f32; 4]; 4],
     /// Inverse view-projection (computed from view_proj).
     pub inv_view_proj: [[f32; 4]; 4],
+    /// Sky/cloud ray reconstuction: `inv(proj * view_rot)` with view translation stripped.
+    pub inv_view_proj_sky: [[f32; 4]; 4],
     /// World-space camera position.
     pub camera_pos: [f32; 3],
     /// Меши для отрисовки.
@@ -276,6 +278,10 @@ pub struct RenderSnapshot {
     /// Frustum cull stats for the active camera (when enabled).
     pub cull_stats: CullStats,
     pub frustum_culled: bool,
+    /// First-person overlay draws (viewmodel camera pass).
+    pub viewmodel_mesh_draws: Vec<MeshDraw>,
+    pub viewmodel_view_proj: Option<[[f32; 4]; 4]>,
+    pub viewmodel_camera_pos: [f32; 3],
     /// BSP / map static lights visible this frame (gamelib may set).
     pub visible_world_lights: u32,
     /// PVS occluder volumes tested (reserved).
@@ -309,9 +315,18 @@ impl RenderSnapshot {
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            inv_view_proj_sky: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
             camera_pos: [0.0, 0.0, 0.0],
             cull_stats: CullStats::default(),
             frustum_culled: false,
+            viewmodel_mesh_draws: Vec::new(),
+            viewmodel_view_proj: None,
+            viewmodel_camera_pos: [0.0; 3],
             visible_world_lights: 0,
             visible_occluders: 0,
         }
@@ -489,6 +504,12 @@ pub struct PointLightDraw {
 }
 
 /// Геометрия сцены — всё что можно рендерить.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewModelPass {
+    pub view_proj: glam::Mat4,
+    pub camera_pos: [f32; 3],
+}
+
 #[derive(Clone)]
 pub struct SceneGeometry {
     pub mesh_draws: Vec<MeshDraw>,
@@ -497,6 +518,9 @@ pub struct SceneGeometry {
     pub terrain_splat_draws: Vec<TerrainSplatDraw>,
     pub sky: Option<SkyDraw>,
     pub point_lights: Vec<PointLightDraw>,
+    /// First-person overlay (separate lens; drawn after world mesh pass).
+    pub viewmodel_mesh_draws: Vec<MeshDraw>,
+    pub viewmodel_pass: Option<ViewModelPass>,
     /// Hash of mesh + skinned draw keys/bounds; bump via [`Self::refresh_cull_serial`].
     pub cull_serial: u64,
 }
@@ -517,6 +541,8 @@ impl Default for SceneGeometry {
             terrain_splat_draws: Vec::new(),
             sky: None,
             point_lights: Vec::new(),
+            viewmodel_mesh_draws: Vec::new(),
+            viewmodel_pass: None,
             cull_serial: 0,
         }
     }
@@ -529,6 +555,9 @@ pub struct CameraRenderSnapshot {
     pub projection: glam::Mat4,
     pub view_proj: glam::Mat4,
     pub inv_view_proj: glam::Mat4,
+    pub inv_view_proj_sky: glam::Mat4,
+    /// World eye — same as [`CameraDefinition::position`] from extract (transform hierarchy).
+    pub camera_pos: [f32; 3],
     /// Indices into `geometry.mesh_draws` when [`frustum_culled`] is true.
     pub visible_mesh: Vec<u32>,
     /// Indices into `geometry.skinned_mesh_draws` when [`frustum_culled`] is true.
@@ -661,11 +690,17 @@ impl RenderScene {
 
                 let assemble_start = std::time::Instant::now();
                 let inv_view_proj = view_proj.inverse();
+                let inv_view_proj_sky = deerpunk_engine_common::coord::inv_view_proj_sky_at_origin(
+                    view,
+                    projection,
+                );
                 let snap = CameraRenderSnapshot {
                     view,
                     projection,
                     view_proj,
                     inv_view_proj,
+                    inv_view_proj_sky: glam::Mat4::from_cols_array_2d(&inv_view_proj_sky),
+                    camera_pos: cam.position,
                     visible_mesh,
                     visible_skinned,
                     frustum_culled,
@@ -695,11 +730,17 @@ impl RenderScene {
         if cam.frustum_culled {
             mesh_out.reserve(cam.visible_mesh.len());
             for &i in &cam.visible_mesh {
-                mesh_out.push(self.geometry.mesh_draws[i as usize].clone());
+                let idx = i as usize;
+                if idx < self.geometry.mesh_draws.len() {
+                    mesh_out.push(self.geometry.mesh_draws[idx].clone());
+                }
             }
             skinned_out.reserve(cam.visible_skinned.len());
             for &i in &cam.visible_skinned {
-                skinned_out.push(self.geometry.skinned_mesh_draws[i as usize].clone());
+                let idx = i as usize;
+                if idx < self.geometry.skinned_mesh_draws.len() {
+                    skinned_out.push(self.geometry.skinned_mesh_draws[idx].clone());
+                }
             }
         } else {
             mesh_out.clone_from(&self.geometry.mesh_draws);

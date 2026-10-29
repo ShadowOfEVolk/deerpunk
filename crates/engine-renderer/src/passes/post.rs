@@ -12,7 +12,7 @@ impl Renderer {
     ) {
     // --- Bloom → tonemap → grain → surface ---
     if let Some(surface_view) = ctx.surface_view {
-        self.ensure_tonemap_pipeline(ctx.format);
+        self.ensure_tonemap_pipeline(ctx.surface_format);
         let hdr_view_ref = self.hdr_view.as_ref().expect("HDR texture not initialized");
         let w = frame_width();
         let h = frame_height();
@@ -27,7 +27,7 @@ impl Renderer {
             hdr_view_ref,
             w,
             h,
-            ctx.format,
+            ctx.surface_format,
             surface_view,
             &pipeline,
             &self.tonemap_uniform_buf,
@@ -43,7 +43,7 @@ impl Renderer {
             let device = &self.device;
             let queue = &self.queue;
             let ui_pass = &mut self.ui_pass;
-            ui_pass.encode(device, queue, encoder, surface_view, ctx.format, &ui, Some(ctx.prof));
+            ui_pass.encode(device, queue, encoder, surface_view, ctx.surface_format, &ui, Some(ctx.prof));
             lap_ms(ctx.lap);
         } else {
             lap_ms(ctx.lap);

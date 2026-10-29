@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::components::NetworkEntity;
+use crate::components::{NetworkEntity, ParentComponent};
 use crate::network::field_path::{FieldValue, NetFieldId};
 use crate::resource::{MeshRegistry, ResourceManager};
 use crate::world::{EntityId, World};
@@ -61,7 +61,7 @@ pub fn spawn_prefab_entity(
 ) -> Result<EntityId, SceneLoadError> {
     log::info!("[scene] spawning prefab '{name}'");
     let prefab = load_prefab_file(gamedir, name)?;
-    if prefab.components.is_empty() {
+    if prefab.components.is_empty() && prefab.children.is_empty() {
         return Err(format!("prefab '{name}': no components").into());
     }
     let entity = world.spawn();
@@ -69,12 +69,62 @@ pub fn spawn_prefab_entity(
         apply_prefab_component_value(world, meshes, gamedir, resources, entity, comp_name, value)
             .map_err(|e| format!("prefab '{name}' {comp_name}: {e}"))?;
     }
+    spawn_prefab_children(
+        world,
+        meshes,
+        gamedir,
+        resources,
+        entity,
+        &prefab.children,
+        name,
+    )?;
     stamp_network_prefab_name(world, entity, name);
     if let Some(map) = map {
         apply_map_spawn_tail(world, entity, map);
     }
     log::info!("[scene] spawned prefab '{name}' entity={entity:#x}");
     Ok(entity)
+}
+
+fn spawn_prefab_children(
+    world: &World,
+    meshes: &mut MeshRegistry,
+    gamedir: &Path,
+    resources: &ResourceManager,
+    parent: EntityId,
+    children: &[PrefabFile],
+    prefab_name: &str,
+) -> Result<(), SceneLoadError> {
+    if children.is_empty() {
+        return Ok(());
+    }
+    let parent_id = world.component_init::<ParentComponent>();
+    for (idx, child_def) in children.iter().enumerate() {
+        let child = world.spawn();
+        for (comp_name, value) in &child_def.components {
+            apply_prefab_component_value(
+                world,
+                meshes,
+                gamedir,
+                resources,
+                child,
+                comp_name,
+                value,
+            )
+            .map_err(|e| format!("prefab '{prefab_name}' child[{idx}] {comp_name}: {e}"))?;
+        }
+        world.set(child, parent_id, ParentComponent { parent });
+        spawn_prefab_children(
+            world,
+            meshes,
+            gamedir,
+            resources,
+            child,
+            &child_def.children,
+            prefab_name,
+        )?;
+    }
+    Ok(())
 }
 
 /// Spawn a single entity from `{gamedir}/prefabs/{name}.prefab`.
@@ -132,6 +182,7 @@ pub fn spawn_prefab_filtered_with_component_overrides_cached(
         if let Some(def) = cache.get_cached(name) {
             PrefabFile {
                 components: def.components.clone(),
+                children: Vec::new(),
             }
         } else {
             load_prefab_file(gamedir, name)?
@@ -139,7 +190,7 @@ pub fn spawn_prefab_filtered_with_component_overrides_cached(
     } else {
         load_prefab_file(gamedir, name)?
     };
-    if prefab.components.is_empty() {
+    if prefab.components.is_empty() && prefab.children.is_empty() {
         return Err(format!("prefab '{name}': no components").into());
     }
     for (k, v) in component_overrides {
@@ -154,6 +205,29 @@ pub fn spawn_prefab_filtered_with_component_overrides_cached(
         }
         apply_prefab_component_value(world, meshes, gamedir, resources, entity, comp_name, value)
             .map_err(|e| format!("prefab '{name}' {comp_name}: {e}"))?;
+    }
+    if prefab.children.is_empty() {
+        if let Ok(full) = load_prefab_file(gamedir, name) {
+            spawn_prefab_children(
+                world,
+                meshes,
+                gamedir,
+                resources,
+                entity,
+                &full.children,
+                name,
+            )?;
+        }
+    } else {
+        spawn_prefab_children(
+            world,
+            meshes,
+            gamedir,
+            resources,
+            entity,
+            &prefab.children,
+            name,
+        )?;
     }
     stamp_network_prefab_name(world, entity, name);
     resolve_client_mesh_components(world, meshes, gamedir, resources, entity);
@@ -192,6 +266,7 @@ pub fn spawn_prefab_filtered_with_overrides_cached(
         if let Some(def) = cache.get_cached(name) {
             PrefabFile {
                 components: def.components.clone(),
+                children: Vec::new(),
             }
         } else {
             load_prefab_file(gamedir, name)?
@@ -199,7 +274,7 @@ pub fn spawn_prefab_filtered_with_overrides_cached(
     } else {
         load_prefab_file(gamedir, name)?
     };
-    if prefab.components.is_empty() {
+    if prefab.components.is_empty() && prefab.children.is_empty() {
         return Err(format!("prefab '{name}': no components").into());
     }
     apply_overrides_to_prefab(&mut prefab.components, overrides);
@@ -212,6 +287,29 @@ pub fn spawn_prefab_filtered_with_overrides_cached(
         }
         apply_prefab_component_value(world, meshes, gamedir, resources, entity, comp_name, value)
             .map_err(|e| format!("prefab '{name}' {comp_name}: {e}"))?;
+    }
+    if prefab.children.is_empty() {
+        if let Ok(full) = load_prefab_file(gamedir, name) {
+            spawn_prefab_children(
+                world,
+                meshes,
+                gamedir,
+                resources,
+                entity,
+                &full.children,
+                name,
+            )?;
+        }
+    } else {
+        spawn_prefab_children(
+            world,
+            meshes,
+            gamedir,
+            resources,
+            entity,
+            &prefab.children,
+            name,
+        )?;
     }
     stamp_network_prefab_name(world, entity, name);
     resolve_client_mesh_components(world, meshes, gamedir, resources, entity);

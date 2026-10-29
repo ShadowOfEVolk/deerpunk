@@ -7,4 +7,7 @@ use serde_json::Value;
 pub struct PrefabFile {
     #[serde(default)]
     pub components: HashMap<String, Value>,
+    /// Spawned as child entities with [`ParentComponent`] → root.
+    #[serde(default)]
+    pub children: Vec<PrefabFile>,
 }

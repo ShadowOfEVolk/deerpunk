@@ -181,7 +181,14 @@ impl crate::Host {
         };
         let content_root = self.resources.base_dir();
         match ce.shader_registry.load(path, &defines_vec, &source, &content_root) {
-            Ok(id) => id,
+            Ok(id) => {
+                if let Some(def) = ce.shader_registry.get(id) {
+                    if let Some(ref err) = def.compile_error {
+                        log::warn!("[renderer] load_shader '{path}' active as error fallback: {err}");
+                    }
+                }
+                id
+            }
             Err(e) => {
                 log::error!("[renderer] load_shader '{path}': {e}");
                 0

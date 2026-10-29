@@ -1,6 +1,6 @@
 === World Dump (panic) ===
-Actually alive (scanned): 246
-Entity slots: count=246, alive=246
+Actually alive (scanned): 248
+Entity slots: count=248, alive=248
   0x00000001 'Component' : Component, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000002 'Identifier' : Component, Relationship, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000003 'Poly' : Component, (Identifier,Name), (Identifier,Symbol), (ChildOf,flecs.core)
@@ -245,5 +245,7 @@ Entity slots: count=246, alive=246
   0x00000024 'LightmapId' : Component, (Identifier,Name), (Identifier,Symbol)
   0x00000025 'Collider' : Component, (Identifier,Name), (Identifier,Symbol)
   0x00000026 'ItemDropComponent' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x00000027 'MeshDrawHidden' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x00000028 'MeshDrawAux' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000027 'ParentComponent' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000028 'ViewCameraTag' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000029 'MeshDrawHidden' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x0000002a 'MeshDrawAux' : Component, (Identifier,Name), (Identifier,Symbol)

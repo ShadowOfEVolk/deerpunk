@@ -3,17 +3,24 @@ use std::sync::Arc;
 use deerpunk_engine_common::components::mesh3d::Mesh3D;
 use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::SkinnedMesh3D;
-use deerpunk_engine_common::components::{CameraComponent, MeshDrawAux, PointLight, TransformComponent};
+use deerpunk_engine_common::components::{
+    CameraComponent, MeshDrawAux, PointLight, RenderLayer, TransformComponent, ViewModelCameraTag,
+};
+use deerpunk_engine_common::components::render_layer::{
+    render_layer_visible, RENDER_LAYER_DEFAULT_DRAW, RENDER_LAYER_VIEWMODEL, RENDER_LAYER_WORLD,
+};
+use deerpunk_engine_common::transform_hierarchy::world_pose;
 use deerpunk_engine_common::material::DrawMaterial;
-use deerpunk_engine_common::physics::CharacterController;
 use deerpunk_engine_common::resource::mesh_registry::MeshRegistry;
+
+use crate::view_camera::{camera_entity_for_view, find_viewmodel_camera_child, resolve_camera_world};
 use deerpunk_engine_common::world::{ComponentId, QueryId, World};
 use deerpunk_engine_common::MeshTexture;
 use deerpunk_engine_renderer::material_allocator::MaterialAllocator;
 use deerpunk_engine_renderer::material_store::MaterialStore;
 use deerpunk_engine_renderer::snapshot::{
     CameraDefinition, MeshDraw, PointLightDraw, RenderScene, RenderTarget, SkinnedMeshDraw,
-    TerrainSplatDraw,
+    TerrainSplatDraw, ViewModelPass,
 };
 use deerpunk_engine_renderer::world_bounds;
 use deerpunk_engine_renderer::SceneExtractGpuStats;
@@ -28,36 +35,128 @@ pub struct RenderExtractor {
     q_terrain_splat: QueryId,
     q_lights: QueryId,
     q_skinned: QueryId,
-    char_id: ComponentId,
+    parent_id: ComponentId,
+    viewmodel_cam_tag_id: ComponentId,
+    render_layer_id: ComponentId,
     mesh_draw_aux_id: ComponentId,
     mesh_cache: MeshDrawExtractCache,
+    viewmodel_cache: MeshDrawExtractCache,
 }
 
 impl RenderExtractor {
     pub fn new(world: &mut World) -> Self {
         let _ = world.component_init::<TransformComponent>();
         let _ = world.component_init::<CameraComponent>();
+        let parent_id = world.component_init::<deerpunk_engine_common::components::ParentComponent>();
+        let _ = world.component_init::<deerpunk_engine_common::components::ViewCameraTag>();
         let _ = world.component_init::<Mesh3D>();
         let _ = world.component_init::<DrawMaterial>();
         let _ = world.component_init::<SkinnedMesh3D>();
         let _ = world.component_init::<TerrainSplatMaterial>();
         let _ = world.component_init::<PointLight>();
-        let char_id = world.component_init::<CharacterController>();
         let mesh_draw_aux_id = world.component_init::<MeshDrawAux>();
         let _ = world.component_init::<deerpunk_engine_common::components::MeshDrawHidden>();
+        let _ = world.component_init::<ViewModelCameraTag>();
+        let render_layer_id = world.component_init::<RenderLayer>();
+        let viewmodel_cam_tag_id = world.component_init::<ViewModelCameraTag>();
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
-            q_draw_materials: world
-                .query_prepare("TransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden"),
+            q_draw_materials: world.query_prepare(
+                "TransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden",
+            ),
             q_terrain_splat: world
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
             q_skinned: world.query_prepare(
                 "TransformComponent, SkinnedMesh3D, DrawMaterial, !MeshDrawHidden",
             ),
-            char_id,
+            parent_id,
+            viewmodel_cam_tag_id,
+            render_layer_id,
             mesh_draw_aux_id,
             mesh_cache: MeshDrawExtractCache::new(),
+            viewmodel_cache: MeshDrawExtractCache::new(),
+        }
+    }
+
+    fn draw_layer_mask(world: &World, ent: u64, render_layer_id: ComponentId) -> u32 {
+        world
+            .get::<RenderLayer>(ent, render_layer_id)
+            .map(|l| l.mask)
+            .unwrap_or(RENDER_LAYER_DEFAULT_DRAW)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_mesh_draw(
+        ent_copy: u64,
+        m: &Mesh3D,
+        dm_handle: deerpunk_engine_common::material::MaterialHandle,
+        uniform_aux: u32,
+        resolve: &dyn Fn(u64, deerpunk_engine_common::resource::mesh_handle::MeshHandle) -> Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+        material_store: &mut MaterialStore,
+        material_allocator: &mut MaterialAllocator,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        gpu_stats: &mut SceneExtractGpuStats,
+    ) -> Option<MeshDraw> {
+        let mesh = resolve(ent_copy, m.mesh);
+        let (texture, normal, orm) = match material_store.get(dm_handle) {
+            Some(e) => (e.albedo, e.normal, e.orm),
+            None => (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE),
+        };
+        let t0 = std::time::Instant::now();
+        let material_id = material_store.resolve_gpu_tracked(
+            dm_handle,
+            material_allocator,
+            device,
+            queue,
+            Some(gpu_stats),
+        );
+        gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
+
+        let (shader_id, lightmap_gpu) = material_store
+            .get(dm_handle)
+            .map(|e| (e.shader, e.lightmap_id))
+            .unwrap_or((0, 0));
+
+        if shader_id == 0 {
+            panic!(
+                "DrawMaterial entity {ent_copy:#x} handle {:?}: shader not loaded (shader_id=0)",
+                dm_handle
+            );
+        }
+
+        Some(MeshDraw {
+            mesh,
+            model_mat: [[0.0; 4]; 4],
+            batchable: false,
+            material_id,
+            texture,
+            normal,
+            orm,
+            sun_dir: [0.0, 0.0, 1.0, 0.0],
+            ambient: [0.0; 4],
+            shader_id,
+            lightmap_gpu,
+            first_index: 0,
+            index_count: 0,
+            world_bounds: deerpunk_engine_renderer::Aabb::default(),
+            entity_id: ent_copy,
+            uniform_aux,
+        })
+    }
+
+    fn world_transform(
+        world: &World,
+        ent: u64,
+        t: &TransformComponent,
+        parent_id: ComponentId,
+    ) -> TransformComponent {
+        let (pos, rot) = world_pose(world, ent, t, parent_id);
+        TransformComponent {
+            position: pos,
+            rotation: rot,
+            scale: t.scale,
         }
     }
 
@@ -102,6 +201,9 @@ impl RenderExtractor {
         let mut scene = RenderScene::new();
         let extract_body_start = std::time::Instant::now();
         self.mesh_cache.begin_frame();
+        self.viewmodel_cache.begin_frame();
+        let view_cam_tag_id = world.component_init::<deerpunk_engine_common::components::ViewCameraTag>();
+        let mut view_cam_entity: Option<u64> = None;
 
         if let Some(batches) = world.query_batches(self.q_cameras) {
             for batch in batches {
@@ -120,24 +222,35 @@ impl RenderExtractor {
                 };
                 for (i, (t, c)) in transforms.iter().zip(cameras.iter()).enumerate() {
                     let ent = entities[i];
-                    if let Some(view) = view_entity {
-                        if ent != view {
-                            continue;
-                        }
-                    } else if !scene.cameras.is_empty() {
-                        // No SetView yet — keep a single camera (avoid flicker).
+                    if !render_layer_visible(RENDER_LAYER_WORLD, c.layer_mask) {
+                        continue;
+                    }
+                    if !camera_entity_for_view(world, view_entity, ent) {
+                        continue;
+                    }
+                    // Local view: only the tagged view camera (ignore duplicate CameraComponent spawns).
+                    if view_entity.is_some()
+                        && view_cam_tag_id != 0
+                        && !world.has(ent, view_cam_tag_id)
+                    {
+                        continue;
+                    }
+                    if view_entity.is_none() && !scene.cameras.is_empty() {
                         break;
                     }
-                    // Origin = feet for pawns: eye_height on camera, else CC default.
-                    let mut eye = c.eye_height;
-                    if eye <= 0.0 {
-                        if let Some(cc) = world.get::<CharacterController>(ent, self.char_id) {
-                            eye = cc.eye_height();
-                        }
+                    if view_cam_tag_id != 0 && world.has(ent, view_cam_tag_id) {
+                        view_cam_entity = Some(ent);
                     }
+                    let (world_pos, world_rot) = resolve_camera_world(
+                        world,
+                        ent,
+                        t,
+                        c,
+                        self.parent_id,
+                    );
                     scene.push_camera(CameraDefinition {
-                        position: [t.position.x, t.position.y, t.position.z + eye],
-                        rotation: c.world_rotation(t.rotation),
+                        position: world_pos.to_array(),
+                        rotation: world_rot,
                         fov_y: c.fov_y,
                         near: c.near,
                         far: c.far,
@@ -176,6 +289,7 @@ impl RenderExtractor {
                 for i in 0..batch.count {
                     let ent = entities[i];
                     let t = &transforms[i];
+                    let wt = Self::world_transform(world, ent, t, self.parent_id);
                     let m = &meshes[i];
                     let dm = &draw_mats[i];
 
@@ -189,65 +303,57 @@ impl RenderExtractor {
                     } else {
                         0
                     };
+                    let draw_layers = Self::draw_layer_mask(world, ent, self.render_layer_id);
+                    let to_world = render_layer_visible(draw_layers, RENDER_LAYER_WORLD);
+                    let to_viewmodel = render_layer_visible(draw_layers, RENDER_LAYER_VIEWMODEL);
+                    if !to_world && !to_viewmodel {
+                        continue;
+                    }
                     let static_key = static_mesh_key(m, dm, uniform_aux);
                     let ent_copy = ent;
                     let dm_handle = dm.handle;
-                    self.mesh_cache.push_mesh(
-                        ent,
-                        t,
-                        m,
-                        static_key,
-                        || {
-                            let mesh = resolve(ent_copy, m.mesh);
-                            let (texture, normal, orm) = match material_store.get(dm_handle) {
-                                Some(e) => (e.albedo, e.normal, e.orm),
-                                None => {
-                                    (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE)
-                                }
-                            };
-                            let t0 = std::time::Instant::now();
-                            let material_id = material_store.resolve_gpu_tracked(
+                    if to_world {
+                        self.mesh_cache.push_mesh(
+                            ent,
+                            &wt,
+                            m,
+                            static_key,
+                            || Self::build_mesh_draw(
+                                ent_copy,
+                                m,
                                 dm_handle,
+                                uniform_aux,
+                                &resolve,
+                                material_store,
                                 material_allocator,
                                 device,
                                 queue,
-                                Some(gpu_stats),
-                            );
-                            gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
-
-                            let (shader_id, lightmap_gpu) = material_store
-                                .get(dm_handle)
-                                .map(|e| (e.shader, e.lightmap_id))
-                                .unwrap_or((0, 0));
-
-                            if shader_id == 0 {
-                                panic!(
-                                    "DrawMaterial entity {ent_copy:#x} handle {:?}: shader not loaded (shader_id=0)",
-                                    dm_handle
-                                );
-                            }
-
-                            Some(MeshDraw {
-                                mesh,
-                                model_mat: [[0.0; 4]; 4],
-                                batchable: false,
-                                material_id,
-                                texture,
-                                normal,
-                                orm,
-                                sun_dir: [0.0, 0.0, 1.0, 0.0],
-                                ambient: [0.0; 4],
-                                shader_id,
-                                lightmap_gpu,
-                                first_index: 0,
-                                index_count: 0,
-                                world_bounds: deerpunk_engine_renderer::Aabb::default(),
-                                entity_id: ent_copy,
+                                gpu_stats,
+                            ),
+                            frustum_ref,
+                        );
+                    }
+                    if to_viewmodel {
+                        self.viewmodel_cache.push_mesh(
+                            ent,
+                            &wt,
+                            m,
+                            static_key,
+                            || Self::build_mesh_draw(
+                                ent_copy,
+                                m,
+                                dm_handle,
                                 uniform_aux,
-                            })
-                        },
-                        frustum_ref,
-                    );
+                                &resolve,
+                                material_store,
+                                material_allocator,
+                                device,
+                                queue,
+                                gpu_stats,
+                            ),
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -313,6 +419,7 @@ impl RenderExtractor {
                 for i in 0..batch.count {
                     let ent = entities[i];
                     let t = &transforms[i];
+                    let wt = Self::world_transform(world, ent, t, self.parent_id);
                     let sm = &meshes[i];
                     let dm = &draw_mats[i];
                     if sm.bone_buffer == 0 {
@@ -324,7 +431,7 @@ impl RenderExtractor {
                     let bone_buffer = sm.bone_buffer;
                     self.mesh_cache.push_skinned(
                         ent,
-                        t,
+                        &wt,
                         static_key,
                         || {
                             let mesh = resolve(ent_copy, sm.mesh);
@@ -394,6 +501,32 @@ impl RenderExtractor {
 
         scene.geometry.mesh_draws = self.mesh_cache.take_mesh_out();
         scene.geometry.skinned_mesh_draws = self.mesh_cache.take_skinned_out();
+        scene.geometry.viewmodel_mesh_draws = self.viewmodel_cache.take_mesh_out();
+        self.viewmodel_cache.finish_frame();
+        scene.geometry.viewmodel_pass = view_cam_entity.and_then(|view_cam| {
+            let vm_ent = find_viewmodel_camera_child(world, view_cam)?;
+            let tid = world.component_init::<TransformComponent>();
+            let cid = world.component_init::<CameraComponent>();
+            let local = world.get::<TransformComponent>(vm_ent, tid)?;
+            let lens = world.get::<CameraComponent>(vm_ent, cid)?;
+            let (world_pos, world_rot) =
+                resolve_camera_world(world, vm_ent, &local, &lens, self.parent_id);
+            let cam = CameraDefinition {
+                position: world_pos.to_array(),
+                rotation: world_rot,
+                fov_y: lens.fov_y,
+                near: lens.near,
+                far: lens.far,
+                target: RenderTarget::Surface,
+                dirty: true,
+            };
+            let view = cam.view_matrix();
+            let projection = cam.projection_matrix(aspect);
+            Some(ViewModelPass {
+                view_proj: projection * view,
+                camera_pos: world_pos.to_array(),
+            })
+        });
         gpu_stats.mesh_draws = scene.geometry.mesh_draws.len() as u32;
         gpu_stats.skinned_draws = scene.geometry.skinned_mesh_draws.len() as u32;
         self.mesh_cache.finish_frame();

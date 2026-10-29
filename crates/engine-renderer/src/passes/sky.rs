@@ -24,10 +24,7 @@ impl Renderer {
         for (i, v) in sky.params.iter().enumerate() {
             params[i / 4][i % 4] = *v;
         }
-        let sky_inv_vp = deerpunk_engine_common::coord::inv_view_proj_camera_relative(
-            snapshot.inv_view_proj,
-            snapshot.camera_pos,
-        );
+        let sky_inv_vp = snapshot.inv_view_proj_sky;
         let uniform = SkyUniform {
             inv_view_proj: sky_inv_vp,
             view_proj: snapshot.view_proj,
@@ -36,7 +33,7 @@ impl Renderer {
                 snapshot.camera_pos[0],
                 snapshot.camera_pos[1],
                 snapshot.camera_pos[2],
-                1.0,
+                snapshot.game_time,
             ],
             params,
             sky_color: [
@@ -107,10 +104,7 @@ impl Renderer {
         drop(pass);
 
         let cloud_uniform = CloudUniform {
-            inv_view_proj: deerpunk_engine_common::coord::inv_view_proj_camera_relative(
-                snapshot.inv_view_proj,
-                snapshot.camera_pos,
-            ),
+            inv_view_proj: snapshot.inv_view_proj_sky,
             camera_pos: [
                 snapshot.camera_pos[0],
                 snapshot.camera_pos[1],
@@ -121,10 +115,10 @@ impl Renderer {
             params: [
                 0.38,
                 self.cloud_mode as f32,
-                700.0,
+                580.0, // meters above camera eye (not world Z)
                 self.cloud_speed,
             ],
-            time: [snapshot.game_time, 0.0, 0.0, 0.0],
+            time: [snapshot.game_time, self.cloud_scale, 0.0, 0.0],
             sky_color: [
                 sky.sky_color[0],
                 sky.sky_color[1],

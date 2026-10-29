@@ -57,13 +57,20 @@ pub trait AudioBackend {
     fn update(&mut self, listener: &AudioListener, attached: AttachedSounds, volume: f32);
 
     /// One-shot Studio event at the listener (UI / non-positional).
+    /// `instance_id` — host [`sound_id`] for looping/streaming events (stop via [`Self::stop_instance`]).
     fn play_event_2d(
         &mut self,
         assets: &ResourceManager,
         event: &str,
         volume: f32,
         params: &[(&str, f32)],
+        instance_id: u32,
     );
+
+    /// Stop a looping 2D instance started with a non-zero `instance_id`.
+    fn stop_instance(&mut self, instance_id: u32) {
+        let _ = instance_id;
+    }
 
     /// One-shot Studio event at a world position.
     fn play_event_3d(
@@ -118,6 +125,7 @@ impl AudioBackend for NullAudio {
         _event: &str,
         _volume: f32,
         _params: &[(&str, f32)],
+        _instance_id: u32,
     ) {
     }
 

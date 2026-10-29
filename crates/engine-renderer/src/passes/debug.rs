@@ -34,7 +34,7 @@ impl Renderer {
         let verts = crate::debug_draw::collect_vertices(ctx.snapshot, 1.5, 120000);
         if !verts.is_empty() {
             self.ensure_depth(frame_width(), frame_height());
-            self.ensure_debug_pipelines(ctx.format);
+            self.ensure_debug_pipelines(ctx.hdr_format);
 
             self.queue
                 .write_buffer(&self.debug_vertex_buf, 0, bytemuck::cast_slice(&verts));

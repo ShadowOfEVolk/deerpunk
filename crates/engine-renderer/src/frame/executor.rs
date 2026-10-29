@@ -60,6 +60,7 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
         }
         "sprites_3d" => renderer.pass_sprites_3d(ctx, nc.encoder, sprite_pipeline),
         "mesh" => renderer.pass_mesh(ctx, nc.encoder),
+        "viewmodel" => renderer.pass_viewmodel(ctx, nc.encoder),
         "terrain_splat" => renderer.pass_terrain_splat(ctx, nc.encoder),
         "debug" => renderer.pass_debug_lines(ctx, nc.encoder),
         "hud" => renderer.pass_hud(ctx, nc.encoder, sprite_pipeline, hud_vp),

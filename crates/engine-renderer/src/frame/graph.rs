@@ -27,6 +27,7 @@ pub fn build_forward_graph() -> RenderGraph {
         .add_node(forward_node("clear_hdr", &[], &[HDR]))
         .add_node(forward_node("sprites_3d", &[HDR], &[HDR]))
         .add_node(forward_node("mesh", &[HDR], &[HDR, DEPTH]))
+        .add_node(forward_node("viewmodel", &[HDR, DEPTH], &[HDR, DEPTH]))
         .add_node(forward_node(
             "terrain_splat",
             &[HDR, DEPTH],

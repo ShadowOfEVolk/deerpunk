@@ -245,6 +245,9 @@ pub fn mat4_inverse(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 }
 
 /// Rebase `inv(view*proj)` so unprojected points are camera-relative (stable at large world XY).
+///
+/// Prefer [`inv_view_proj_sky_at_origin`] for fullscreen sky rays: multiplying by `T(-eye)` after
+/// `inv(VP)` amplifies f32 error when `eye` is far from the origin, which shows up as sky-only shake.
 pub fn inv_view_proj_camera_relative(
     inv_view_proj: [[f32; 4]; 4],
     camera_world: [f32; 3],
@@ -256,4 +259,13 @@ pub fn inv_view_proj_camera_relative(
         [-camera_world[0], -camera_world[1], -camera_world[2], 1.0],
     ];
     mat4_mul(&t, &inv_view_proj)
+}
+
+/// Inverse view-projection for sky / cloud fullscreen passes: same rotation as the camera, eye at origin.
+pub fn inv_view_proj_sky_at_origin(view: glam::Mat4, projection: glam::Mat4) -> [[f32; 4]; 4] {
+    let mut view_at_origin = view;
+    view_at_origin.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+    (projection * view_at_origin)
+        .inverse()
+        .to_cols_array_2d()
 }

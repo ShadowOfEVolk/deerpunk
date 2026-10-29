@@ -1138,7 +1138,11 @@ impl Host {
             || self.cvar.get_usize_or("r_showfps", 0) != 0;
         let show_pos = self.cvar.get_usize_or("cl_showpos", 0) as i32;
         let net_show = self.cvar.get_usize_or("net_show", 0) as i32;
-        let view = self.client_engine.as_ref().and_then(|c| c.local_view);
+        let view = self.local_client_entity().and_then(|pawn| {
+            self.client_engine.as_ref().and_then(|c| {
+                deerpunk_engine_client::view_camera::read_local_view_stamp(&c.world, pawn)
+            })
+        });
         let local_client_ent = self.local_client_entity();
         let net_hud = if net_show > 0 {
             Some(self.net_hud_info(net_show))
@@ -1803,7 +1807,13 @@ impl Host {
 
     #[cfg(any(feature = "client", feature = "full"))]
     fn demo_record_view_frame(&mut self) {
-        let Some(view) = self.client_engine.as_mut().unwrap().local_view else {
+        let Some(pawn) = self.local_client_entity() else {
+            return;
+        };
+        let client = self.client_engine.as_ref().unwrap();
+        let Some(view) =
+            deerpunk_engine_client::view_camera::read_local_view_stamp(&client.world, pawn)
+        else {
             return;
         };
         let t = self.time_secs;
@@ -1840,12 +1850,24 @@ impl Host {
                 self.client_engine.as_mut().unwrap().last_atlas_slot = s;
             }
         }
+        let pawn = self.local_client_entity();
         if let Some(client) = self.client_engine.as_mut() {
-            if let Some(v) = client.demo_player.as_ref().and_then(|p| p.last_view) {
-                client.set_local_view_stamp(v.yaw, v.pitch, v.roll, v.eye_height, v.fov_y);
-            }
-            if let Some(engine) = self.server_engine.as_ref() {
-                client.reapply_local_view(&engine.players, &engine.rep);
+            if let (Some(v), Some(pawn)) = (
+                client.demo_player.as_ref().and_then(|p| p.last_view),
+                pawn,
+            ) {
+                use deerpunk_engine_client::client_engine::LocalViewStamp;
+                deerpunk_engine_client::local_view::stamp_view_on_entity(
+                    &client.world,
+                    pawn,
+                    LocalViewStamp {
+                        yaw: v.yaw,
+                        pitch: v.pitch,
+                        roll: v.roll,
+                        eye_height: v.eye_height,
+                        fov_y: v.fov_y,
+                    },
+                );
             }
         }
         let finished = self
@@ -1863,32 +1885,6 @@ impl Host {
     #[cfg(any(feature = "client", feature = "full"))]
     /// Apply client view stamp to the local mirrored pawn (angles + eye + fov).
     #[cfg(any(feature = "client", feature = "full"))]
-    pub fn apply_local_view(
-        &mut self,
-        yaw: f32,
-        pitch: f32,
-        roll: f32,
-        eye_height: f32,
-        fov_y: f32,
-    ) {
-        let Some(client) = self.client_engine.as_mut() else {
-            return;
-        };
-        client.set_local_view_stamp(yaw, pitch, roll, eye_height, fov_y);
-        client.reapply_stamped_local_view();
-    }
-
-    #[cfg(not(any(feature = "client", feature = "full")))]
-    pub fn apply_local_view(
-        &mut self,
-        _yaw: f32,
-        _pitch: f32,
-        _roll: f32,
-        _eye_height: f32,
-        _fov_y: f32,
-    ) {
-    }
-
     /// Evaluate client lightstyle table → GPU scales (patterns via gamelib UM hooks).
     #[cfg(any(feature = "client", feature = "full"))]
     fn tick_lightstyles(&mut self) {
@@ -1978,16 +1974,11 @@ impl Host {
                         .local_sim
                         .tick_display(dt, smooth, nosmooth, view_smooth);
                 }
-                let yaw = self
-                    .client_engine
-                    .as_ref()
-                    .and_then(|c| c.local_view.map(|v| v.yaw))
-                    .unwrap_or(0.0);
                 if let Some(ent) = self.local_client_entity() {
                     self.client_engine
                         .as_mut()
                         .unwrap()
-                        .stamp_simorg_on_entity(ent, yaw);
+                        .stamp_simorg_on_entity(ent);
                 }
             }
 

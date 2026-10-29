@@ -141,6 +141,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_cloud_scale",
+    "1",
+    "Cloud pattern scale (>1 = larger clouds + world tile quantize for low res).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_sky_turbidity",
     "3.0",
     "Hosek-Wilkie atmosphere turbidity 1..10 (higher = hazier).",

@@ -32,6 +32,8 @@ pub struct CullScratch {
     id_to_index: HashMap<u64, u32>,
     keys_scratch: Vec<(u64, Aabb)>,
     cached_cull_serial: u64,
+    cached_mesh_draw_len: usize,
+    cached_skinned_draw_len: usize,
     mesh_octree_serial: u64,
     skinned_octree_serial: u64,
     last_view_proj: Mat4,
@@ -51,6 +53,8 @@ impl CullScratch {
             id_to_index: HashMap::new(),
             keys_scratch: Vec::new(),
             cached_cull_serial: 0,
+            cached_mesh_draw_len: 0,
+            cached_skinned_draw_len: 0,
             mesh_octree_serial: 0,
             skinned_octree_serial: 0,
             last_view_proj: Mat4::ZERO,
@@ -189,18 +193,22 @@ pub fn cull_mesh_indices(
     let len = draws.len();
     if len == 0 {
         scratch.visible_mesh.clear();
+        scratch.cached_mesh_draw_len = 0;
         return (0, 0);
     }
 
     if scratch.last_view_proj == cam.view_proj
         && cull_serial == scratch.cached_cull_serial
+        && scratch.cached_mesh_draw_len == len
         && !scratch.visible_mesh.is_empty()
     {
         return (len as u32, scratch.visible_mesh.len() as u32);
     }
-    if scratch.last_view_proj != cam.view_proj {
+    if scratch.last_view_proj != cam.view_proj || cull_serial != scratch.cached_cull_serial {
         scratch.visible_mesh.clear();
         scratch.visible_skinned.clear();
+        scratch.cached_mesh_draw_len = 0;
+        scratch.cached_skinned_draw_len = 0;
     }
     scratch.last_view_proj = cam.view_proj;
     scratch.cached_cull_serial = cull_serial;
@@ -228,6 +236,7 @@ pub fn cull_mesh_indices(
             &mut scratch.visible_mesh,
         );
     }
+    scratch.cached_mesh_draw_len = len;
     (len as u32, scratch.visible_mesh.len() as u32)
 }
 
@@ -242,11 +251,13 @@ pub fn cull_skinned_indices(
     let len = draws.len();
     if len == 0 {
         scratch.visible_skinned.clear();
+        scratch.cached_skinned_draw_len = 0;
         return (0, 0);
     }
 
     if scratch.last_view_proj == cam.view_proj
         && cull_serial == scratch.cached_cull_serial
+        && scratch.cached_skinned_draw_len == len
         && !scratch.visible_skinned.is_empty()
     {
         return (len as u32, scratch.visible_skinned.len() as u32);
@@ -275,5 +286,6 @@ pub fn cull_skinned_indices(
             &mut scratch.visible_skinned,
         );
     }
+    scratch.cached_skinned_draw_len = len;
     (len as u32, scratch.visible_skinned.len() as u32)
 }

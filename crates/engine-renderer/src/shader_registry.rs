@@ -12,6 +12,8 @@ use deerpunk_engine_common::material::{
 };
 use deerpunk_engine_common::MeshTexture;
 
+use crate::shader_fallback::ERROR_MESH_WGSL;
+
 /// Stable id for a compiled shader variant.
 pub type ShaderId = deerpunk_engine_common::material::ShaderId;
 
@@ -26,6 +28,8 @@ pub struct ShaderDef {
     pub wgsl: String,
     /// Reflected bind group layout entries (group 0 = material group).
     pub bindings: Vec<BindingEntry>,
+    /// Set when the requested WGSL failed and [`ERROR_MESH_WGSL`] was substituted.
+    pub compile_error: Option<String>,
 }
 
 /// A reflected binding entry from naga.
@@ -89,25 +93,44 @@ impl ShaderRegistry {
             return Ok(id);
         }
 
-        let base = ShaderPreprocessor::shader_include_base(content_root, path);
-        let preprocessed = ShaderPreprocessor::process_at(source, defines, base.as_deref())
-            .map_err(|e| format!("shader preprocess '{path}': {e}"))?;
-
-        let bindings = reflect_bindings(&preprocessed.wgsl)
-            .map_err(|e| format!("shader reflect '{path}': {e}"))?;
-
-        let id = self.defs.len() as ShaderId + 1; // 0 = none
-        let def = ShaderDef {
-            id,
-            path: path.to_string(),
-            meta: preprocessed.meta,
-            wgsl: preprocessed.wgsl,
-            bindings,
-        };
-
-        self.defs.push(Arc::new(def));
-        self.cache.insert(cache_key, id);
-        Ok(id)
+        match compile_shader_source(path, defines, source, content_root) {
+            Ok((meta, wgsl, bindings)) => {
+                let id = self.defs.len() as ShaderId + 1;
+                self.defs.push(Arc::new(ShaderDef {
+                    id,
+                    path: path.to_string(),
+                    meta,
+                    wgsl,
+                    bindings,
+                    compile_error: None,
+                }));
+                self.cache.insert(cache_key, id);
+                Ok(id)
+            }
+            Err(e) => {
+                log::error!(
+                    "[shader] '{path}' (defines={defines_key:?}): {e} — using engine error material"
+                );
+                let (meta, wgsl, bindings) = compile_shader_source(
+                    path,
+                    &[],
+                    ERROR_MESH_WGSL,
+                    content_root,
+                )
+                .map_err(|e2| format!("engine error shader failed: {e2}"))?;
+                let id = self.defs.len() as ShaderId + 1;
+                self.defs.push(Arc::new(ShaderDef {
+                    id,
+                    path: path.to_string(),
+                    meta,
+                    wgsl,
+                    bindings,
+                    compile_error: Some(e),
+                }));
+                self.cache.insert(cache_key, id);
+                Ok(id)
+            }
+        }
     }
 
     /// Get a shader def by id.
@@ -150,27 +173,45 @@ impl ShaderRegistry {
         content_root: &Path,
     ) -> Result<ShaderId, String> {
         let defines_key = canonical_defines(defines);
-        let cache_key = (path.to_string(), defines_key);
+        let cache_key = (path.to_string(), defines_key.clone());
         let id = self
             .cache
             .get(&cache_key)
             .copied()
             .ok_or_else(|| format!("shader not loaded: {path}"))?;
 
-        let base = ShaderPreprocessor::shader_include_base(content_root, path);
-        let preprocessed = ShaderPreprocessor::process_at(source, defines, base.as_deref())
-            .map_err(|e| format!("shader preprocess '{path}': {e}"))?;
-        let bindings = reflect_bindings(&preprocessed.wgsl)
-            .map_err(|e| format!("shader reflect '{path}': {e}"))?;
-
-        let def = ShaderDef {
-            id,
-            path: path.to_string(),
-            meta: preprocessed.meta,
-            wgsl: preprocessed.wgsl,
-            bindings,
-        };
-        self.defs[id as usize - 1] = Arc::new(def);
+        match compile_shader_source(path, defines, source, content_root) {
+            Ok((meta, wgsl, bindings)) => {
+                self.defs[id as usize - 1] = Arc::new(ShaderDef {
+                    id,
+                    path: path.to_string(),
+                    meta,
+                    wgsl,
+                    bindings,
+                    compile_error: None,
+                });
+            }
+            Err(e) => {
+                log::error!(
+                    "[shader] reload '{path}' (defines={defines_key:?}): {e} — using engine error material"
+                );
+                let (meta, wgsl, bindings) = compile_shader_source(
+                    path,
+                    &[],
+                    ERROR_MESH_WGSL,
+                    content_root,
+                )
+                .map_err(|e2| format!("engine error shader failed: {e2}"))?;
+                self.defs[id as usize - 1] = Arc::new(ShaderDef {
+                    id,
+                    path: path.to_string(),
+                    meta,
+                    wgsl,
+                    bindings,
+                    compile_error: Some(e),
+                });
+            }
+        }
         Ok(id)
     }
 }
@@ -190,11 +231,15 @@ impl ShaderDef {
             || self.wgsl.contains("lm_uv")
     }
 
-    /// Skinned opaque mesh: bone palette in group 0 + joint/weight vertex inputs.
+    /// Skinned opaque mesh: bone palette in group 0 binding 1 (`mesh_skinned` layout).
     pub fn uses_skinned_mesh_vertex(&self) -> bool {
-        self.meta.skinned
-            || self.wgsl.contains("BoneBlock")
-            || self.wgsl.contains("skin_position")
+        if self.meta.skinned {
+            return true;
+        }
+        self.meta.pass == Some(RenderPass::MeshOpaque)
+            && self.bindings.iter().any(|b| {
+                b.group == 0 && b.binding == 1 && b.kind == BindingKind::Uniform
+            })
     }
 }
 
@@ -206,6 +251,20 @@ fn canonical_defines(defines: &[String]) -> String {
     let mut sorted: Vec<&str> = defines.iter().map(|s| s.as_str()).collect();
     sorted.sort_unstable();
     sorted.join(",")
+}
+
+fn compile_shader_source(
+    path: &str,
+    defines: &[String],
+    source: &str,
+    content_root: &Path,
+) -> Result<(ShaderMeta, String, Vec<BindingEntry>), String> {
+    let base = ShaderPreprocessor::shader_include_base(content_root, path);
+    let preprocessed = ShaderPreprocessor::process_at(source, defines, base.as_deref())
+        .map_err(|e| format!("shader preprocess '{path}': {e}"))?;
+    let bindings = reflect_bindings(&preprocessed.wgsl)
+        .map_err(|e| format!("shader reflect '{path}': {e}"))?;
+    Ok((preprocessed.meta, preprocessed.wgsl, bindings))
 }
 
 /// Reflect bind group entries from WGSL source using naga.
@@ -308,6 +367,17 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         assert_eq!(def.bindings[1].kind, BindingKind::Texture2d);
         assert_eq!(def.bindings[2].binding, 2);
         assert_eq!(def.bindings[2].kind, BindingKind::Sampler);
+    }
+
+    #[test]
+    fn broken_shader_uses_error_material() {
+        let mut reg = ShaderRegistry::new();
+        let id = reg
+            .load("bad.wgsl", &[], "not valid wgsl {{{", Path::new("."))
+            .unwrap();
+        let def = reg.get(id).unwrap();
+        assert!(def.compile_error.is_some());
+        assert!(def.wgsl.contains("0.92, 0.08, 0.78"));
     }
 
     #[test]

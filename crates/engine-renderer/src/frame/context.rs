@@ -10,7 +10,10 @@ use crate::snapshot::RenderSnapshot;
 pub struct FrameCtx<'a> {
     pub snapshot: &'a RenderSnapshot,
     pub hdr_view: &'a wgpu::TextureView,
-    pub format: TextureFormat,
+    /// HDR intermediate (`Rgba16Float`) — mesh / sky / sprites.
+    pub hdr_format: TextureFormat,
+    /// Swapchain / tonemap + UI target.
+    pub surface_format: TextureFormat,
     pub surface_view: Option<&'a wgpu::TextureView>,
     pub shaders: &'a ShaderRegistry,
     pub prof: &'a mut RenderFrameProfile,

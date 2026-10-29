@@ -20,6 +20,7 @@ pub mod postfx;
 pub mod render_graph;
 pub mod render_profile;
 pub mod shader_registry;
+mod shader_fallback;
 pub mod snapshot;
 pub mod text_util;
 pub mod ui_pass;

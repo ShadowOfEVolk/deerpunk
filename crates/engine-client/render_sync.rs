@@ -38,6 +38,7 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
     );
     r.set_cloud_speed(cvar.get_f32_or("r_cloud_speed", 0.04));
     r.set_cloud_mode(cvar.get_f32_or("r_cloud_mode", 0.0).round() as u32);
+    r.set_cloud_scale(cvar.get_f32_or("r_cloud_scale", 1.0));
     r.set_sky_turbidity(cvar.get_f32_or("r_sky_turbidity", 3.0));
     let a = cvar.get_f32_or("r_sky_albedo", 0.25).clamp(0.0, 1.0);
     r.set_sky_albedo([a, a, a]);

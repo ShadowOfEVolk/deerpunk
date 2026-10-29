@@ -202,6 +202,13 @@ impl World {
     }
 
     pub fn component_init_raw(&self, desc: &ComponentDescriptor) -> ComponentId {
+        if desc.size == 0 {
+            panic!(
+                "ECS component_init \"{}\": size must be > 0 \
+                 (Flecs cannot store zero-sized types; add e.g. `_tag: u8` like MeshDrawHidden)",
+                desc.name
+            );
+        }
         log::debug!(
             "component register: name={}, size={}, align={}",
             desc.name,

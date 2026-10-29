@@ -13,6 +13,10 @@ pub mod bone_buffer;
 pub mod skinned_mesh3d;
 pub mod material;
 pub mod camera;
+pub mod parent;
+pub mod view_camera;
+pub mod view_model_camera;
+pub mod render_layer;
 pub mod pending_albedo_atlas;
 pub mod pending_lightmap;
 pub mod ui_document;
@@ -46,6 +50,13 @@ pub use bone_buffer::BoneBufferComponent;
 pub use skinned_mesh3d::SkinnedMesh3D;
 pub use material::Material;
 pub use camera::CameraComponent;
+pub use parent::ParentComponent;
+pub use view_camera::ViewCameraTag;
+pub use view_model_camera::ViewModelCameraTag;
+pub use render_layer::{
+    render_layer_visible, RenderLayer, RENDER_LAYER_DEFAULT_DRAW, RENDER_LAYER_VIEWMODEL,
+    RENDER_LAYER_VIEWMODEL_CAMERA, RENDER_LAYER_WORLD, RENDER_LAYER_WORLD_CAMERA,
+};
 pub use pending_albedo_atlas::PendingAlbedoAtlas;
 pub use pending_lightmap::{LightmapId, PendingLightmap};
 pub use ui_document::UiDocumentComponent;

@@ -110,7 +110,6 @@ pub struct ClientEngine {
     pub lan_browser: LanBrowser,
     pub lightstyles: LightstyleTable,
     pub last_ls_patterns: Vec<String>,
-    pub local_view: Option<LocalViewStamp>,
     pub demo_writer: Option<demo::DemoWriter>,
     pub demo_player: Option<demo::DemoPlayer>,
     /// Last albedo atlas slot from gamelib `flush_pending_albedos` FFI.
@@ -187,7 +186,6 @@ impl ClientEngine {
             lan_browser: LanBrowser::default(),
             lightstyles: LightstyleTable::hl_defaults(),
             last_ls_patterns: vec![String::new(); MAX_LIGHTSTYLES],
-            local_view: None,
             demo_writer: None,
             demo_player: None,
             last_atlas_slot: 0,
@@ -224,44 +222,24 @@ impl ClientEngine {
         self.gamelib_sky = payload;
     }
 
-    fn sky_camera_pos(
-        &self,
-        scene: &RenderScene,
-        view_entity: Option<u64>,
-    ) -> Option<[f32; 3]> {
-        if let Some(cam) = scene
+    /// Same eye position the extractor already put on [`RenderScene::cameras`].
+    fn sky_camera_pos(scene: &RenderScene) -> Option<[f32; 3]> {
+        scene
             .cameras
             .iter()
             .find(|c| matches!(c.target, RenderTarget::Surface))
-        {
-            let pos = cam
-                .view_matrix()
-                .inverse()
-                .transform_point3(glam::Vec3::ZERO);
-            return Some(pos.to_array());
-        }
-        let ent = view_entity?;
-        let tid = self.world.component_init::<TransformComponent>();
-        let cid = self.world.component_init::<CameraComponent>();
-        let t = self.world.get::<TransformComponent>(ent, tid)?;
-        let eye = self
-            .world
-            .get::<CameraComponent>(ent, cid)
-            .map(|c| c.eye_height)
-            .filter(|h| *h > 0.0)
-            .unwrap_or(1.62);
-        Some([t.position.x, t.position.y, t.position.z + eye])
+            .map(|c| c.position)
     }
 
     /// Fullscreen sky: sun + horizon from [`Renderer::scene_sun_dir`] /
     /// [`Renderer::scene_ambient`] (gamelib `set_scene_lighting`), zenith from
     /// [`Renderer::scene_sky_zenith`] (`set_sky_palette`). Optional Hosek params
     /// from `set_gamelib_sky` (exposure / day_fade in `params[30..32]`).
-    fn fill_procedural_sky(&mut self, scene: &mut RenderScene, view_entity: Option<u64>) {
+    fn fill_procedural_sky(&mut self, scene: &mut RenderScene) {
         if !self.procedural_sky {
             return;
         }
-        let Some(camera_pos) = self.sky_camera_pos(scene, view_entity) else {
+        let Some(camera_pos) = Self::sky_camera_pos(scene) else {
             return;
         };
         let sd = self.renderer.scene_sun_dir();
@@ -499,10 +477,10 @@ impl ClientEngine {
     }
 
     /// One-shot Studio event at the listener (UI / non-positional).
-    pub fn audio_play_2d(&mut self, event: &str, volume: f32, params: &[(&str, f32)]) {
+    pub fn audio_play_2d(&mut self, event: &str, volume: f32, params: &[(&str, f32)], instance_id: u32) {
         if let Some(a) = self.audio.as_mut() {
             with_audio_assets(self.audio_assets, |assets| {
-                a.play_event_2d(assets, event, volume, params);
+                a.play_event_2d(assets, event, volume, params, instance_id);
             });
         }
     }
@@ -549,7 +527,7 @@ impl ClientEngine {
     pub fn audio_apply_play(&mut self, rpc: &SoundPlayRpc) {
         let params: Vec<(&str, f32)> = rpc.params.iter().map(|(n, v)| (n.as_str(), *v)).collect();
         if rpc.is_2d() {
-            self.audio_play_2d(&rpc.event, rpc.volume, &params);
+            self.audio_play_2d(&rpc.event, rpc.volume, &params, rpc.sound_id);
             return;
         }
         if rpc.is_loop() {
@@ -574,6 +552,7 @@ impl ClientEngine {
     pub fn audio_apply_stop(&mut self, sound_id: u32) {
         let key = sound_id as u64;
         if let Some(a) = self.audio.as_mut() {
+            a.stop_instance(sound_id);
             a.stop_attached(key);
         }
         self.server_sound_loops.remove(&sound_id);
@@ -830,7 +809,7 @@ impl ClientEngine {
         let post_start = std::time::Instant::now();
         scene.game_time = self.time;
         self.fill_bone_palettes(&mut scene);
-        self.fill_procedural_sky(&mut scene, view_entity);
+        self.fill_procedural_sky(&mut scene);
         extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
 
         self.renderer.note_extract_gpu_stats(extract_gpu);
@@ -1075,11 +1054,8 @@ impl ClientEngine {
             snapshot.clear = snap.clear;
             snapshot.view_proj = snap.view_proj.to_cols_array_2d();
             snapshot.inv_view_proj = snap.inv_view_proj.to_cols_array_2d();
-            snapshot.camera_pos = snap
-                .view
-                .inverse()
-                .transform_point3(glam::Vec3::ZERO)
-                .to_array();
+            snapshot.inv_view_proj_sky = snap.inv_view_proj_sky.to_cols_array_2d();
+            snapshot.camera_pos = snap.camera_pos;
             snapshot.game_time = snap.game_time;
             snapshot.instances.clear();
             snapshot.hud.clear();
@@ -1088,9 +1064,23 @@ impl ClientEngine {
                 let gather_start = std::time::Instant::now();
                 sc.gather_visible_draws(snap, &mut snapshot.mesh_draws, &mut snapshot.skinned_mesh_draws);
                 gather_ms += gather_start.elapsed().as_secs_f32() * 1000.0;
+                snapshot.viewmodel_mesh_draws.clone_from(&sc.geometry.viewmodel_mesh_draws);
+                snapshot.viewmodel_view_proj = sc
+                    .geometry
+                    .viewmodel_pass
+                    .as_ref()
+                    .map(|p| p.view_proj.to_cols_array_2d());
+                snapshot.viewmodel_camera_pos = sc
+                    .geometry
+                    .viewmodel_pass
+                    .as_ref()
+                    .map(|p| p.camera_pos)
+                    .unwrap_or(snap.camera_pos);
             } else {
                 snapshot.mesh_draws.clear();
                 snapshot.skinned_mesh_draws.clear();
+                snapshot.viewmodel_mesh_draws.clear();
+                snapshot.viewmodel_view_proj = None;
             }
             snapshot.bone_palettes.clone_from(&snap.bone_palettes);
             snapshot.point_lights.clone_from(&snap.point_lights);
@@ -1117,6 +1107,7 @@ impl ClientEngine {
             }
             first = false;
             rendered_surface = true;
+            break;
         }
         self.renderer
             .note_cull_detail(frustum_ms, assemble_ms, gather_ms);
@@ -1263,9 +1254,14 @@ impl ClientEngine {
 /// Listener from a world→view matrix (position = view origin).
 fn listener_from_view(view: glam::Mat4) -> AudioListener {
     let inv = view.inverse();
-    // Camera looks down −Z in view space; map axes back to world space.
-    let forward = inv.transform_vector3(glam::Vec3::NEG_Z);
-    let up = inv.transform_vector3(glam::Vec3::Y);
+    // Matches `CameraDefinition::view_matrix` (look_to_rh, forward +Y, world Z-up).
+    let mut forward = inv.transform_vector3(glam::Vec3::NEG_Z);
+    let mut up = inv.transform_vector3(glam::Vec3::Y);
+    if up.length_squared() < 1e-8 {
+        up = glam::Vec3::Z;
+    }
+    forward = forward.normalize_or_zero();
+    up = up.normalize_or_zero();
     let pos = inv.transform_point3(glam::Vec3::ZERO);
     AudioListener {
         position: pos.to_array(),
@@ -1311,10 +1307,7 @@ fn load_shader_sources(rm: &ResourceManager) -> ShaderSources {
     let shader_dir = std::env::var("SHADER_DIR").unwrap_or_else(|_| "shaders".to_string());
     let shader_dir = Path::new(&shader_dir);
 
-    let ui_path = shader_dir.join("ui.wgsl");
-    let ui_uri = path_to_file_uri(&ui_path);
-    let ui_handle = rm.load::<ShaderSource>(&ui_uri);
-    let ui = ui_handle.try_get().unwrap().wgsl;
+    let ui = load_wgsl_required(rm, shader_dir, "ui");
 
     ShaderSources {
         sprite: load_wgsl_required(rm, shader_dir, "sprite"),

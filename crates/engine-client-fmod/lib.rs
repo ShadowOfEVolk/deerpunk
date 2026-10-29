@@ -694,6 +694,7 @@ impl AudioBackend for FmodBackend {
         event: &str,
         volume: f32,
         params: &[(&str, f32)],
+        _instance_id: u32,
     ) {
         let Some(studio) = self.studio.as_ref() else {
             return;

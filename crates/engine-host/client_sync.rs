@@ -21,12 +21,6 @@ impl Host {
         }
 
         self.flush_client_pending_albedo_slot();
-
-        if self.client_in_play() {
-            if let Some(client) = self.client_engine.as_mut() {
-                client.reapply_stamped_local_view();
-            }
-        }
     }
 
     #[cfg(not(any(feature = "client", feature = "full")))]

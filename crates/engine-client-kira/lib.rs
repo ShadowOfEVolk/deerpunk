@@ -13,6 +13,8 @@ use kira::manager::{
     AudioManager, AudioManagerSettings,
 };
 use kira::sound::static_sound::{StaticSoundData, StaticSoundSettings};
+use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
+use kira::sound::FromFileError;
 use kira::tween::Tween;
 use rand::Rng;
 use walkdir::WalkDir;
@@ -23,6 +25,8 @@ pub struct KiraBackend {
     gamedir: PathBuf,
     clip_cache: HashMap<String, StaticSoundData>,
     attached: HashMap<u64, kira::sound::static_sound::StaticSoundHandle>,
+    /// Looping 2D instances keyed by host `sound_id` (music — streamed from disk).
+    loop_streams: HashMap<u32, StreamingSoundHandle<FromFileError>>,
     last_volume: f32,
     last_listener: AudioListener,
 }
@@ -35,6 +39,7 @@ impl Default for KiraBackend {
             gamedir: PathBuf::new(),
             clip_cache: HashMap::new(),
             attached: HashMap::new(),
+            loop_streams: HashMap::new(),
             last_volume: 1.0,
             last_listener: AudioListener::default(),
         }
@@ -47,12 +52,13 @@ impl KiraBackend {
         listener_fwd: [f32; 3],
         listener_up: [f32; 3],
         origin: [f32; 3],
-    ) -> (f32, f32) {
+    ) -> (f32, f64) {
         let dx = origin[0] - listener_pos[0];
         let dy = origin[1] - listener_pos[1];
         let dz = origin[2] - listener_pos[2];
         let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(0.001);
-        let atten = 1.0 / (1.0 + dist * 0.08);
+        // Inverse-distance with reference distance ~6 m (game units).
+        let atten = (6.0 / (6.0 + dist)).clamp(0.05, 1.0);
 
         let fwd_len = (listener_fwd[0] * listener_fwd[0]
             + listener_fwd[1] * listener_fwd[1]
@@ -79,12 +85,52 @@ impl KiraBackend {
         let r_len = (rx * rx + ry * ry + rz * rz).sqrt().max(0.001);
 
         let side = (dx * rx + dy * ry + dz * rz) / (dist * r_len);
-        let pan = if dist < 1.25 {
-            0.0
-        } else {
-            side.clamp(-1.0, 1.0)
-        };
-        (atten, pan)
+        let elev = (dy / dist).clamp(-0.35, 0.35);
+        // Kira panning is 0 = left, 0.5 = center, 1 = right (not -1..1).
+        let stereo = (side + elev * 0.12).clamp(-1.0, 1.0);
+        let kira_pan = ((stereo as f64 + 1.0) * 0.5).clamp(0.0, 1.0);
+        (atten, kira_pan)
+    }
+
+    fn clips_for_def(def: &SoundEventDef) -> Vec<&str> {
+        match def {
+            SoundEventDef::Single { clip, .. } => vec![clip.as_str()],
+            SoundEventDef::Random { clips, .. } => clips.iter().map(String::as_str).collect(),
+        }
+    }
+
+    /// Decode short SFX clips once at startup so gameplay plays don't hitch the mixer.
+    fn warm_sfx_clip_cache(&mut self) {
+        let mut to_load: Vec<(String, PathBuf)> = Vec::new();
+        for def in self.events.events.values() {
+            for clip_rel in Self::clips_for_def(def) {
+                if clip_rel.contains("/music/") || clip_rel.contains("\\music\\") {
+                    continue;
+                }
+                let uri = self.resolve_clip_uri(clip_rel);
+                if self.clip_cache.contains_key(&uri) {
+                    continue;
+                }
+                to_load.push((uri, self.resolve_clip_path(clip_rel)));
+            }
+        }
+        for (uri, path) in to_load {
+            match StaticSoundData::from_file(&path) {
+                Ok(d) => {
+                    self.clip_cache.insert(uri, d);
+                }
+                Err(e) => log::warn!("[kira] warm {}: {e}", path.display()),
+            }
+        }
+    }
+
+    fn resolve_clip_path(&self, clip: &str) -> PathBuf {
+        if clip.starts_with("file://") {
+            let rest = clip.strip_prefix("file://").unwrap_or(clip).trim_start_matches('/');
+            return PathBuf::from(rest);
+        }
+        let rel = clip.trim_start_matches('/');
+        self.gamedir.join(rel)
     }
 
     fn resolve_clip_uri(&self, clip: &str) -> String {
@@ -142,6 +188,60 @@ impl KiraBackend {
         (vol, pitch)
     }
 
+    fn play_streaming_loop(
+        &mut self,
+        def: &SoundEventDef,
+        volume: f32,
+        params: &[(&str, f32)],
+        instance_id: u32,
+    ) -> bool {
+        let mut rng = rand::thread_rng();
+        let clip_rel = match def.pick_clip(&mut rng) {
+            Some(c) => c,
+            None => return false,
+        };
+        let path = self.resolve_clip_path(clip_rel);
+        let manager = match self.manager.as_mut() {
+            Some(m) => m,
+            None => return false,
+        };
+
+        let pr = def.pitch_range();
+        let pitch = if pr.min >= pr.max {
+            pr.min
+        } else {
+            rng.gen_range(pr.min..=pr.max)
+        };
+        let (vol_mul, pitch_mul) = Self::apply_params(def, params, def.base_volume() * volume, pitch);
+
+        let mut data = match StreamingSoundData::from_file(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("[kira] stream open {}: {e}", path.display());
+                return false;
+            }
+        };
+        data = data
+            .loop_region(..)
+            .volume(vol_mul.clamp(0.0, 2.0) as f64)
+            .playback_rate(pitch_mul.clamp(0.1, 4.0) as f64);
+
+        if let Some(mut old) = self.loop_streams.remove(&instance_id) {
+            let _ = old.stop(Tween::default());
+        }
+
+        match manager.play(data) {
+            Ok(handle) => {
+                self.loop_streams.insert(instance_id, handle);
+                true
+            }
+            Err(e) => {
+                log::warn!("[kira] stream play {}: {e}", path.display());
+                false
+            }
+        }
+    }
+
     fn play_clip(
         &mut self,
         assets: &ResourceManager,
@@ -184,7 +284,7 @@ impl KiraBackend {
                 Self::spatial_gain_pan(listener.position, listener.forward, listener.up, origin);
             settings = settings
                 .volume((vol_mul * atten).clamp(0.0, 2.0) as f64)
-                .panning(pan as f64);
+                .panning(pan);
         }
 
         if r#loop {
@@ -208,6 +308,7 @@ impl KiraBackend {
         volume: f32,
         params: &[(&str, f32)],
         force_loop: bool,
+        instance_id: u32,
     ) {
         let id = normalize_event_id(event);
         let def = match self.events.events.get(id) {
@@ -218,6 +319,10 @@ impl KiraBackend {
             }
         };
         let r#loop = force_loop || def.is_loop();
+        if r#loop && instance_id != 0 && origin.is_none() {
+            let _ = self.play_streaming_loop(&def, volume, params, instance_id);
+            return;
+        }
         let listener = self.last_listener;
         self.play_clip(assets, &def, origin, volume, params, &listener, r#loop);
     }
@@ -301,9 +406,11 @@ impl AudioBackend for KiraBackend {
         };
         self.manager = Some(manager);
         self.events = discover_datapack_events(ctx.gamedir);
+        self.warm_sfx_clip_cache();
         log::info!(
-            "[kira] ready — {} event(s), gamedir={}",
+            "[kira] ready — {} event(s), {} cached clip(s), gamedir={}",
             self.events.events.len(),
+            self.clip_cache.len(),
             ctx.gamedir.display()
         );
         true
@@ -313,6 +420,7 @@ impl AudioBackend for KiraBackend {
         for (k, v) in &registry.events {
             self.events.insert(k.clone(), v.clone());
         }
+        self.warm_sfx_clip_cache();
     }
 
     fn update(&mut self, listener: &AudioListener, attached: &[(u64, [f32; 3])], volume: f32) {
@@ -336,7 +444,7 @@ impl AudioBackend for KiraBackend {
                         *origin,
                     );
                 let _ = handle.set_volume(atten.clamp(0.0, 2.0) as f64, Tween::default());
-                let _ = handle.set_panning(pan as f64, Tween::default());
+                let _ = handle.set_panning(pan, Tween::default());
             }
         }
     }
@@ -347,8 +455,18 @@ impl AudioBackend for KiraBackend {
         event: &str,
         volume: f32,
         params: &[(&str, f32)],
+        instance_id: u32,
     ) {
-        self.play_event_inner(assets, event, None, volume, params, false);
+        self.play_event_inner(assets, event, None, volume, params, false, instance_id);
+    }
+
+    fn stop_instance(&mut self, instance_id: u32) {
+        if instance_id == 0 {
+            return;
+        }
+        if let Some(mut h) = self.loop_streams.remove(&instance_id) {
+            let _ = h.stop(Tween::default());
+        }
     }
 
     fn play_event_3d(
@@ -359,7 +477,7 @@ impl AudioBackend for KiraBackend {
         volume: f32,
         params: &[(&str, f32)],
     ) {
-        self.play_event_inner(assets, event, Some(origin), volume, params, false);
+        self.play_event_inner(assets, event, Some(origin), volume, params, false, 0);
     }
 
     fn start_attached(
@@ -405,7 +523,7 @@ impl AudioBackend for KiraBackend {
         let settings = StaticSoundSettings::new()
             .volume((def.base_volume() * volume * atten).clamp(0.0, 2.0) as f64)
             .playback_rate(pitch.clamp(0.1, 4.0) as f64)
-            .panning(pan as f64)
+            .panning(pan)
             .loop_region(..);
         match manager.play(data.with_settings(settings)) {
             Ok(h) => {
@@ -423,6 +541,7 @@ impl AudioBackend for KiraBackend {
 
     fn shutdown(&mut self) {
         self.attached.clear();
+        self.loop_streams.clear();
         self.clip_cache.clear();
         self.manager = None;
     }

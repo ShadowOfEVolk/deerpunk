@@ -8,6 +8,8 @@ use deerpunk_engine_common::ui_draw::{UiFrame, UiVertex};
 
 use crate::render_profile::{lap_ms, RenderFrameProfile};
 
+const UI_TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct UiGlobals {
@@ -304,9 +306,9 @@ impl UiPass {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: UI_TEX_FORMAT,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+            view_formats: &[UI_TEX_FORMAT],
         });
         Self::write_texture_rgba(queue, &texture, upload);
         let view = texture.create_view(&Default::default());

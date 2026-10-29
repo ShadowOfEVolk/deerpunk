@@ -27,7 +27,6 @@ type SendUsercmdFn = extern "C" fn(*mut u8, *const u8, usize) -> i32;
 type GetUsercmdFn = extern "C" fn(*mut u8, u32, *mut u8, usize) -> i32;
 type MoveSnapshotFn = extern "C" fn(*mut u8, *mut f32, usize, *mut u64) -> i32;
 /// yaw, pitch, roll, eye_height, fov_y (radians where angular).
-type ApplyLocalViewFn = extern "C" fn(*mut u8, f32, f32, f32, f32, f32) -> i32;
 type LocalEntityFn = extern "C" fn(*mut u8) -> u64;
 /// register(name, size) → msgid (>0) or -1
 type UmRegisterFn = extern "C" fn(*mut u8, *const u8, usize, i16) -> i32;
@@ -64,7 +63,6 @@ pub struct NetApi {
     send_usercmd_fn: SendUsercmdFn,
     get_usercmd_fn: GetUsercmdFn,
     move_snapshot_fn: MoveSnapshotFn,
-    apply_local_view_fn: ApplyLocalViewFn,
     local_entity_fn: LocalEntityFn,
     um_register_fn: UmRegisterFn,
     um_send_fn: UmSendFn,
@@ -102,9 +100,6 @@ impl NetApi {
             send_usercmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:send_usercmd")) },
             get_usercmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:players:get_usercmd")) },
             move_snapshot_fn: unsafe { std::mem::transmute(resolve(r, "v1:move:snapshot")) },
-            apply_local_view_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:apply_local_view"))
-            },
             local_entity_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:players:local_entity"))
             },
@@ -269,20 +264,6 @@ impl NetApi {
         } else {
             Err("move.snapshot failed".into())
         }
-    }
-
-    /// Client view stamp onto the local mirrored pawn (angles + eye + fov).
-    ///
-    /// Angles and `fov_y` in radians; `eye_height` = feet→eye world units (Z-up).
-    pub fn apply_local_view(
-        &self,
-        yaw: f32,
-        pitch: f32,
-        roll: f32,
-        eye_height: f32,
-        fov_y: f32,
-    ) {
-        (self.apply_local_view_fn)(self.ctx, yaw, pitch, roll, eye_height, fov_y);
     }
 
     /// Local listen player's pawn entity, or `None` if unbound.

@@ -12,9 +12,9 @@ impl Renderer {
     ) {
     // --- Terrain splat pass ---
     if !ctx.snapshot.terrain_splat_draws.is_empty() {
-        if !self.terrain_splat_pipelines.contains_key(&ctx.format) {
-            let p = self.build_terrain_splat_pipeline(ctx.format);
-            self.terrain_splat_pipelines.insert(ctx.format, p);
+        if !self.terrain_splat_pipelines.contains_key(&ctx.hdr_format) {
+            let p = self.build_terrain_splat_pipeline(ctx.hdr_format);
+            self.terrain_splat_pipelines.insert(ctx.hdr_format, p);
         }
 
         let uniform_size = 128u64;
@@ -44,7 +44,7 @@ impl Renderer {
             .map(|td| self.mesh_for_draw(&td.mesh))
             .collect();
 
-        let pipeline = self.terrain_splat_pipelines.get(&ctx.format).unwrap();
+        let pipeline = self.terrain_splat_pipelines.get(&ctx.hdr_format).unwrap();
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terrain splat pass"),

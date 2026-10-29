@@ -32,6 +32,21 @@ use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
 mod passes;
 
 /// `vsync=true` → FIFO (ждёт vblank). `false` → без ожидания vblank, если драйвер умеет.
+fn pick_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+    const ORDER: [wgpu::TextureFormat; 4] = [
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+    ];
+    for want in ORDER {
+        if caps.formats.contains(&want) {
+            return want;
+        }
+    }
+    caps.formats[0]
+}
+
 fn select_present_mode(caps: &wgpu::SurfaceCapabilities, vsync: bool) -> wgpu::PresentMode {
     let modes = &caps.present_modes;
     if vsync {
@@ -150,6 +165,8 @@ const MESH_UNIFORM_SLOTS_INIT: u64 = 512;
 /// Формат всех наших текстур и offscreen-таргета (без sRGB — байты как были
 /// в CPU-пикспмапе, чтобы картинка совпадала с прежним рендерером).
 const TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// Block/item/albedo PNG atlases (sRGB storage, linear sample).
+const ALBEDO_TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 pub struct ShaderSources {
@@ -285,16 +302,17 @@ pub(crate) struct GpuPointLight {
 pub(crate) struct LightsUniform {
     count: u32,
     scene_time_bits: u32,
-    _p1: u32,
-    _p2: u32,
+    _pad: [u32; 2],
+    /// Hosek zenith (linear), same as sky dome — terrain outdoor_light matches sky.
+    zenith: [f32; 4],
     /// xyz = sun direction, w = intensity (0 = sun off).
     sun_dir: [f32; 4],
-    /// rgb ambient color (alpha unused).
+    /// rgb = horizon haze (linear), w = sun-side glow for fog.
     ambient: [f32; 4],
     lights: [GpuPointLight; MAX_POINT_LIGHTS],
 }
 
-const _: () = assert!(std::mem::size_of::<LightsUniform>() == 16 + 32 + 32 * MAX_POINT_LIGHTS);
+const _: () = assert!(std::mem::size_of::<LightsUniform>() == 64 + 32 * MAX_POINT_LIGHTS);
 const _: () = assert!(std::mem::size_of::<GpuPointLight>() == 32);
 
 const MAX_LIGHTSTYLES: usize = 64;
@@ -459,7 +477,8 @@ pub struct Renderer {
     /// Layout when group 1 = 2D albedo + `texture_2d_array` (shader reflection).
     mesh_lm_surface_pipeline_layout: wgpu::PipelineLayout,
     /// Per-shader opaque mesh pipelines (`ShaderId` from registry).
-    shader_mesh_pipelines: HashMap<(ShaderId, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// `(shader_id, format, skinned_bind_group_layout)` — static draws use `false`, skinned draws `true`.
+    shader_mesh_pipelines: HashMap<(ShaderId, wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
     /// Key: (albedo_tex_slot, lightmap_gpu) — id 0 = white fallback.
     mesh_lm_surface_bgs: HashMap<(u32, u32), wgpu::BindGroup>,
     repeat_sampler: wgpu::Sampler,
@@ -555,6 +574,7 @@ pub struct Renderer {
     tonemap_bg_layout: wgpu::BindGroupLayout,
     tonemap_bg: Option<wgpu::BindGroup>,
     tonemap_pipeline: Option<wgpu::RenderPipeline>,
+    tonemap_pipeline_format: Option<wgpu::TextureFormat>,
     tonemap_uniform_buf: wgpu::Buffer,
 
     // Auto-exposure
@@ -629,6 +649,8 @@ pub struct Renderer {
     cloud_speed: f32,
     /// 0 = soft volumetric, 1 = dithered cheap (`r_cloud_mode`).
     cloud_mode: u32,
+    /// World pattern scale (`r_cloud_scale`); >1 enlarges noise + enables tile quantize.
+    cloud_scale: f32,
     /// Hosek-Wilkie atmosphere parameters (set from cvars `r_sky_*`).
     /// Turbidity 1..10, ground albedo RGB 0..1. Drives `SkyState` in the client
     /// engine so the procedural sky, scene ambient and fog share one model.
@@ -856,6 +878,7 @@ impl Renderer {
         let scene_sky_zenith = [0.28, 0.55, 0.92];
         let cloud_speed = 0.04;
         let cloud_mode = 0u32;
+        let cloud_scale = 1.0;
         let scene_sky_turbidity = 3.0;
         let scene_sky_albedo = [0.2, 0.25, 0.3];
         let sky_debug_log = false;
@@ -1888,6 +1911,7 @@ impl Renderer {
             tonemap_bg_layout,
             tonemap_bg: None,
             tonemap_pipeline: None,
+            tonemap_pipeline_format: None,
             tonemap_uniform_buf,
 
             lum_bg_layout,
@@ -1948,6 +1972,7 @@ impl Renderer {
             scene_sky_zenith,
             cloud_speed,
             cloud_mode,
+            cloud_scale,
             scene_sky_turbidity,
             scene_sky_albedo,
             sky_debug_log,
@@ -2056,6 +2081,10 @@ impl Renderer {
         self.cloud_mode = mode.min(1);
     }
 
+    pub fn set_cloud_scale(&mut self, scale: f32) {
+        self.cloud_scale = scale.clamp(0.25, 8.0);
+    }
+
     /// Hosek-Wilkie turbidity (1..10). Higher = hazier/more orange sky.
     pub fn set_sky_turbidity(&mut self, turbidity: f32) {
         self.scene_sky_turbidity = turbidity.clamp(1.0, 10.0);
@@ -2145,24 +2174,7 @@ impl Renderer {
     /// Подключает поверхность окна.
     pub fn set_surface(&mut self, surface: wgpu::Surface<'static>, width: u32, height: u32) {
         let caps = surface.get_capabilities(&self.adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| *f == wgpu::TextureFormat::Rgba16Float)
-            .or_else(|| {
-                caps.formats
-                    .iter()
-                    .copied()
-                    .find(|f| *f == wgpu::TextureFormat::Bgra8Unorm)
-            })
-            .or_else(|| {
-                caps.formats
-                    .iter()
-                    .copied()
-                    .find(|f| *f == wgpu::TextureFormat::Rgba8Unorm)
-            })
-            .unwrap_or(caps.formats[0]);
+        let format = pick_surface_format(&caps);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -2244,7 +2256,9 @@ impl Renderer {
     }
 
     fn ensure_tonemap_pipeline(&mut self, surface_format: wgpu::TextureFormat) {
-        if self.tonemap_pipeline.is_some() {
+        if self.tonemap_pipeline.is_some()
+            && self.tonemap_pipeline_format == Some(surface_format)
+        {
             return;
         }
         let shader = self
@@ -2296,6 +2310,7 @@ impl Renderer {
                 cache: None,
             });
         self.tonemap_pipeline = Some(pipeline);
+        self.tonemap_pipeline_format = Some(surface_format);
     }
 
     fn ensure_lum_pipeline(&mut self) {
@@ -2484,6 +2499,7 @@ impl Renderer {
         self.debug_pipeline = None;
         self.debug_pipeline_occluded = None;
         self.tonemap_pipeline = None;
+        self.tonemap_pipeline_format = None;
         self.lum_pipeline = None;
         self.postfx.reload_shader_sources(crate::postfx::PostFxShaders {
             bloom_threshold: self.shaders.bloom_threshold.clone(),
@@ -3863,18 +3879,20 @@ impl Renderer {
             })
     }
 
+    /// `skinned_layout`: group-0 bind group includes bone palette (must match [`Self::pass_mesh`] bind setup).
     fn ensure_shader_mesh_pipeline(
         &mut self,
         shaders: &ShaderRegistry,
         shader_id: ShaderId,
         format: wgpu::TextureFormat,
+        skinned_layout: bool,
     ) -> &wgpu::RenderPipeline {
-        let key = (shader_id, format);
+        let key = (shader_id, format, skinned_layout);
         if !self.shader_mesh_pipelines.contains_key(&key) {
             let def = shaders
                 .get(shader_id)
                 .expect("MeshDraw shader_id not in ShaderRegistry");
-            let skinned = def.uses_skinned_mesh_vertex();
+            let skinned = skinned_layout && def.uses_skinned_mesh_vertex();
             let lm_surface = !skinned && def.group1_uses_lightmap_array();
             let extended = !skinned && def.uses_extended_mesh_vertex();
             let p = self.build_shader_mesh_pipeline(
@@ -3900,7 +3918,7 @@ impl Renderer {
             if let Some(def) = shaders.get(shader_id) {
                 if def.uses_skinned_mesh_vertex() {
                     return self
-                        .ensure_shader_mesh_pipeline(shaders, shader_id, format)
+                        .ensure_shader_mesh_pipeline(shaders, shader_id, format, true)
                         .clone();
                 }
             }
@@ -4003,7 +4021,7 @@ impl Renderer {
                     .lightmap_styles
                     .get(i)
                     .copied()
-                    .unwrap_or([255.0, 255.0, 255.0, 255.0]),
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]),
                 _pad: [0.0, 0.0],
             });
         }
@@ -4337,7 +4355,7 @@ impl Renderer {
                     .lightmap_styles
                     .get(i)
                     .copied()
-                    .unwrap_or([255.0, 255.0, 255.0, 255.0]),
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]),
                 _pad: [0.0, 0.0],
             }));
         }
@@ -4596,7 +4614,11 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+            view_formats: if format == ALBEDO_TEX_FORMAT {
+                &[ALBEDO_TEX_FORMAT][..]
+            } else {
+                &[]
+            },
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         (tex, view)
@@ -4640,7 +4662,7 @@ impl Renderer {
             "pbr tex",
             w,
             h,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
+            ALBEDO_TEX_FORMAT,
         );
         self.upload_rgba_with_mip_chain(&tex, pixels, w, h);
         let slot = self.next_texture_slot;
@@ -4771,7 +4793,7 @@ impl Renderer {
 
     /// Загружает текстуру для меша на GPU (slot — номер слота текстуры).
     pub fn upload_mesh_texture(&mut self, slot: MeshTexture, pixels: &[u8], w: u32, h: u32) {
-        let (tex, view) = self.create_sampled_texture_2d("mesh texture", w, h, TEX_FORMAT);
+        let (tex, view) = self.create_sampled_texture_2d("mesh texture", w, h, ALBEDO_TEX_FORMAT);
         self.upload_rgba_with_mip_chain(&tex, pixels, w, h);
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh texture bg"),
@@ -4824,11 +4846,11 @@ impl Renderer {
         prof.width = frame_width();
         prof.height = frame_height();
 
-        let pipeline = match self.pipelines.get(&format) {
+        let pipeline = match self.pipelines.get(&self.hdr_format) {
             Some(p) => p.clone(),
             None => {
-                let p = self.build_pipeline(format);
-                self.pipelines.insert(format, p.clone());
+                let p = self.build_pipeline(self.hdr_format);
+                self.pipelines.insert(self.hdr_format, p.clone());
                 p
             }
         };
@@ -4851,7 +4873,8 @@ impl Renderer {
         let mut frame_ctx = FrameCtx {
             snapshot,
             hdr_view: view,
-            format,
+            hdr_format: self.hdr_format,
+            surface_format: format,
             surface_view,
             shaders,
             prof: &mut prof,
