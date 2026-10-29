@@ -10,6 +10,7 @@ type ClientImguiFrameFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type ClientShutdownFn = unsafe extern "C" fn();
 type ClientAudioWorldSceneFn = unsafe extern "C" fn(u64);
 type ClientSceneFlushedFn = unsafe extern "C" fn();
+type ClientComposeSkyFn = unsafe extern "C" fn(*mut u8, *mut crate::scene::SkySceneCompose);
 
 pub struct ClientDll {
     _lib: libloading::Library,
@@ -20,6 +21,7 @@ pub struct ClientDll {
     imgui_frame_fn: Option<ClientImguiFrameFn>,
     audio_world_scene_fn: Option<ClientAudioWorldSceneFn>,
     scene_flushed_fn: Option<ClientSceneFlushedFn>,
+    compose_sky_fn: Option<ClientComposeSkyFn>,
     shutdown_fn: ClientShutdownFn,
 }
 
@@ -53,6 +55,11 @@ impl ClientDll {
                 .ok()
                 .map(|s| *s)
         };
+        let compose_sky_fn = unsafe {
+            lib.get::<ClientComposeSkyFn>(b"client_compose_sky")
+                .ok()
+                .map(|s| *s)
+        };
         let shutdown_fn = unsafe { *lib.get::<ClientShutdownFn>(b"client_shutdown")? };
         Ok(Self {
             _lib: lib,
@@ -63,6 +70,7 @@ impl ClientDll {
             imgui_frame_fn,
             audio_world_scene_fn,
             scene_flushed_fn,
+            compose_sky_fn,
             shutdown_fn,
         })
     }
@@ -101,6 +109,10 @@ impl ClientDll {
 
     pub fn audio_world_scene_fn(&self) -> Option<ClientAudioWorldSceneFn> {
         self.audio_world_scene_fn
+    }
+
+    pub fn compose_sky_fn(&self) -> Option<ClientComposeSkyFn> {
+        self.compose_sky_fn
     }
 
     pub unsafe fn scene_flushed(&self) {

@@ -348,7 +348,7 @@ impl UiPass {
         self.ensure_pipeline(device, format);
         self.sync_textures(device, queue, frame);
         if let Some(p) = prof.as_mut() {
-            p.record_pass("rmlui textures", lap_ms(&mut lap));
+                lap_ms(&mut lap);
         }
 
         self.gpu_vert_scratch.clear();
@@ -432,7 +432,7 @@ impl UiPass {
             );
         }
         if let Some(p) = prof.as_mut() {
-            p.record_pass("rmlui draw", lap_ms(&mut lap));
+                lap_ms(&mut lap);
         }
     }
 }

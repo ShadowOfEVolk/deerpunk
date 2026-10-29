@@ -1442,7 +1442,7 @@ impl Host {
         lines.push(format!("Visible occluders {}", s.visible_occluders));
         lines.push(format!("Occluded objects {}", s.occluded_objects));
 
-        let listed_encode = p.passes_cpu_ms();
+        let listed_encode = p.graph_nodes_cpu_ms();
         let encode_gap = (p.total_encode_ms - listed_encode).max(0.0);
         if level >= 2 {
             lines.push(format!(
@@ -1454,7 +1454,7 @@ impl Host {
         }
         if level >= 2 {
             lines.push(format!(
-                "  encode listed {:.2} + other {:.2} | finish {:.2} queue_submit {:.2}",
+                "  graph listed {:.2} + other {:.2} | finish {:.2} queue_submit {:.2}",
                 listed_encode, encode_gap, p.encoder_finish_ms, p.queue_submit_ms
             ));
             lines.push(format!(
@@ -1472,17 +1472,29 @@ impl Host {
             ));
         }
         if level >= 2 {
-            for pass in &p.passes {
-                lines.push(format!("  {:<22} {:.2} ms", pass.name, pass.ms));
-            }
-            if !p.graph_nodes.is_empty() {
-                lines.push("graph:".into());
-                for node in &p.graph_nodes {
-                    lines.push(format!("  {:<22} {:.2} ms", node.name, node.ms));
-                }
-            }
+            let specs = client.renderer().forward_graph_describe();
+            lines.extend(deerpunk_engine_renderer::frame::format_graph_speeds_lines(
+                p, &specs,
+            ));
         }
         if level >= 3 {
+            let eg = &p.extract_gpu;
+            lines.push(format!(
+                "  extract: body {:.2} serial {:.2} post {:.2} ms | mat {:.2} ms draws {}+{}",
+                eg.extractor_ms,
+                eg.cull_serial_ms,
+                eg.post_ms,
+                eg.resolve_ms,
+                eg.mesh_draws,
+                eg.skinned_draws,
+            ));
+            lines.push(format!(
+                "  extract cache: rebuild {} xform {} hit {} frustum_skip {}",
+                eg.extract_static_rebuild,
+                eg.extract_xform_only,
+                eg.extract_cache_hit,
+                eg.extract_frustum_skip,
+            ));
             lines.push(format!(
                 "  {}x{}  mesh {} tris~{}  spr {} hud {} terr {} lights {}",
                 p.width,
@@ -1494,6 +1506,24 @@ impl Host {
                 p.terrain_draws,
                 p.point_lights
             ));
+            lines.push(format!(
+                "  cull: frustum {:.2} assemble {:.2} gather {:.2} ms (wall {:.2})",
+                p.prep_cull_frustum_ms,
+                p.prep_cull_assemble_ms,
+                p.prep_cull_gather_ms,
+                p.prep_cull_ms,
+            ));
+            let m = &p.mesh_stats;
+            if m.uniforms_ms > 0.0 || m.mesh_for_draw_ms > 0.0 || m.draw_encode_ms > 0.0 {
+                lines.push(format!(
+                    "  mesh node: uni {:.2} gpu_cache {:.2} draw {:.2} ms | up {} hit {}",
+                    m.uniforms_ms,
+                    m.mesh_for_draw_ms,
+                    m.draw_encode_ms,
+                    p.mesh_gpu_uploads,
+                    p.mesh_gpu_cached
+                ));
+            }
             if p.debug_verts > 0 {
                 lines.push(format!("  debug verts {}", p.debug_verts));
             }
@@ -1962,11 +1992,12 @@ impl Host {
             }
 
             let view_ent = self.client_engine.as_mut().unwrap().rep.view_entity();
+            let early_cull = self.cvar.get_usize_or("cl_extract_early_cull", 1) != 0;
             let scene = {
                 let _g = system_profiler::scope("frame.extract");
                 let extract_start = std::time::Instant::now();
                 let (client, registry) = self.split_client_registry();
-                let mut scene = client.extract_scene_view(registry, view_ent);
+                let mut scene = client.extract_scene_view(registry, view_ent, early_cull);
                 scene.cull =
                     deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
                 let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;

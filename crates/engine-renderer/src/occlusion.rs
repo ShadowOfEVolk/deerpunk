@@ -80,6 +80,11 @@ impl MeshOcclusion {
         self.enabled
     }
 
+    /// GPU occlusion hides draws after warmup; when false, all draws pass.
+    pub fn filters_draws(&self) -> bool {
+        self.enabled && self.warmup_frames == 0
+    }
+
     pub fn last_stats(&self) -> (u32, u32) {
         (self.last_queried, self.last_occluded)
     }

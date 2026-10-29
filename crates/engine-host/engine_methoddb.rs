@@ -1052,7 +1052,7 @@ impl crate::Host {
         #[cfg(any(feature = "client", feature = "full"))]
         {
             if let Some(client) = self.client_engine.as_mut() {
-                client.mesh_adopt_entity(&self.mesh_registry, entity);
+                client.mesh_adopt_entity(&mut self.mesh_registry, entity);
                 client.rep.track_static_entity(entity);
             }
             0
@@ -1091,7 +1091,7 @@ impl crate::Host {
                 &uri,
             ) {
                 Ok(()) => {
-                    ce.mesh_adopt_entity(&self.mesh_registry, entity);
+                    ce.mesh_adopt_entity(&mut self.mesh_registry, entity);
                     let mesh_comp = ce.world.component_init::<Mesh3D>();
                     if let Some(mesh3d) = ce.world.get::<Mesh3D>(entity, mesh_comp) {
                         let detail = self
@@ -1346,6 +1346,7 @@ impl crate::Host {
 impl crate::Host {
     #[methoddb::bind(name = "get")]
     pub fn api_client_world_get(&self, entity: u64, comp: u64) -> *mut c_void {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "client_world::get");
         let Some(world) = self.client_engine.as_ref().map(|c| &c.world) else {
             return std::ptr::null_mut();
         };
@@ -1366,10 +1367,19 @@ impl crate::Host {
         size: usize,
     ) {
         let Some(ce) = self.client_engine.as_mut() else {
+            log::error!("[client_world] set entity {entity:#x} comp {comp:#x}: client engine not initialized");
             return;
         };
-        if data.is_null() || size == 0 {
-            return;
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "client_world::set");
+        deerpunk_engine_common::ecs_validate::assert_entity_alive(&ce.world, entity, "client_world::set");
+        if data.is_null() {
+            panic!("[client_world] set entity {entity:#x} comp {comp:#x}: null data pointer");
+        }
+        if size == 0 {
+            panic!(
+                "[client_world] set entity {entity:#x} comp {comp:#x}: payload size is 0 \
+                 (zero-sized component type?)"
+            );
         }
         if size == std::mem::size_of::<SkinnedMesh3D>() {
             crate::mesh_components::set_skinned_raw(
@@ -1380,6 +1390,7 @@ impl crate::Host {
                 data,
                 size,
             );
+            ce.mesh_adopt_entity(&mut self.mesh_registry, entity);
             return;
         }
         if size == std::mem::size_of::<Mesh3D>() {
@@ -1391,7 +1402,7 @@ impl crate::Host {
                 data,
                 size,
             );
-            ce.mesh_adopt_entity(&self.mesh_registry, entity);
+            ce.mesh_adopt_entity(&mut self.mesh_registry, entity);
             return;
         }
         ce.world.set_raw(entity, comp, data, size);
@@ -1399,6 +1410,7 @@ impl crate::Host {
 
     #[methoddb::bind(name = "has")]
     pub fn api_client_world_has(&self, entity: u64, comp: u64) -> bool {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "client_world::has");
         self.client_engine
             .as_ref()
             .map(|c| c.world.has(entity, comp))
@@ -1424,11 +1436,21 @@ impl crate::Host {
     #[methoddb::bind(name = "destroy")]
     pub fn api_client_world_destroy(&mut self, entity: u64) {
         if let Some(ce) = self.client_engine.as_mut() {
-            // Drop mesh-owning components; the per-frame MeshRegistry sweep
-            // reclaims the slots once no entity references them.
+            ce.mesh_release_entity(&mut self.mesh_registry, entity);
             ce.drop_heap_mesh_components(&mut self.mesh_registry, entity);
             ce.world.destroy(entity);
         }
+    }
+
+    #[methoddb::bind(name = "remove")]
+    pub fn api_client_world_remove(&mut self, entity: u64, comp: u64) {
+        let Some(ce) = self.client_engine.as_mut() else {
+            log::error!("[client_world] remove entity {entity:#x} comp {comp:#x}: client engine not initialized");
+            return;
+        };
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "client_world::remove");
+        deerpunk_engine_common::ecs_validate::assert_entity_alive(&ce.world, entity, "client_world::remove");
+        ce.world.remove(entity, comp);
     }
 
     #[methoddb::bind(name = "component_register")]

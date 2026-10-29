@@ -17,6 +17,7 @@ pub mod wad {
     pub use deerpunk_engine_resource::wad::*;
 }
 pub mod world;
+pub mod ecs_validate;
 
 pub mod coord;
 pub mod events;

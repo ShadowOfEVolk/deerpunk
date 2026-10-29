@@ -306,6 +306,7 @@ impl World {
     }
 
     pub fn get_raw(&self, entity: EntityId, comp: ComponentId) -> *const std::ffi::c_void {
+        crate::ecs_validate::assert_component_id(comp, "get_raw");
         unsafe { sys::ecs_get_id(self.inner, entity, comp) }
     }
 
@@ -325,6 +326,12 @@ impl World {
         data: *const std::ffi::c_void,
         size: usize,
     ) {
+        crate::ecs_validate::assert_component_id(comp, "set_raw");
+        crate::ecs_validate::assert_entity_alive(self, entity, "set_raw");
+        crate::ecs_validate::assert_set_payload(size, "set_raw");
+        if data.is_null() {
+            panic!("ECS set_raw: null data pointer");
+        }
         unsafe { sys::ecs_set_id(self.inner, entity, comp, size, data) }
     }
 
@@ -353,6 +360,7 @@ impl World {
     }
 
     pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {
+        crate::ecs_validate::assert_component_id(comp, "has");
         unsafe { sys::ecs_has_id(self.inner, entity, comp) }
     }
 
@@ -374,6 +382,8 @@ impl World {
     }
 
     pub fn remove(&self, entity: EntityId, comp: ComponentId) {
+        crate::ecs_validate::assert_component_id(comp, "remove");
+        crate::ecs_validate::assert_entity_alive(self, entity, "remove");
         unsafe { sys::ecs_remove_id(self.inner, entity, comp) }
     }
 

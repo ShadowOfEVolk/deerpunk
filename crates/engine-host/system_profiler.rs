@@ -231,10 +231,11 @@ fn build_snapshot(state: &ProfilerState) -> Value {
             "width": p.width,
             "height": p.height,
             "mesh_draws": p.mesh_draws,
-            "passes": p.passes.iter().map(|pass| {
+            "graph_nodes": p.graph_nodes.iter().map(|node| {
                 json!({
-                    "name": pass.name,
-                    "ms": round_ms(pass.ms as f64),
+                    "name": node.name,
+                    "ms": round_ms(node.ms as f64),
+                    "skipped": node.skipped,
                 })
             }).collect::<Vec<_>>(),
         })

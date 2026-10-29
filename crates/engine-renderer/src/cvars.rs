@@ -113,7 +113,7 @@ deerpunk_engine_common::cvar_def!(
 deerpunk_engine_common::cvar_def!(
     "r_cull_cell_size",
     "32",
-    "Spatial grid cell size for frustum broad-phase (world units)",
+    "Spatial grid cell size for frustum broad-phase (legacy; octree ignores, kept for compat)",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(

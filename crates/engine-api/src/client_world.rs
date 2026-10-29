@@ -19,6 +19,7 @@ pub struct ClientWorldApi {
     has_fn: extern "C" fn(*mut u8, u64, u64) -> bool,
     spawn_fn: extern "C" fn(*mut u8) -> u64,
     destroy_fn: extern "C" fn(*mut u8, u64),
+    remove_fn: extern "C" fn(*mut u8, u64, u64),
     is_alive_fn: extern "C" fn(*mut u8, u64) -> bool,
     component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
     query_fn: extern "C" fn(
@@ -44,6 +45,7 @@ impl ClientWorldApi {
             has_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:has")) },
             spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:spawn")) },
             destroy_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:destroy")) },
+            remove_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:remove")) },
             is_alive_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:is_alive")) },
             component_register_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client_world:component_register"))
@@ -60,15 +62,22 @@ impl ClientWorldApi {
         (self.destroy_fn)(self.ctx, entity);
     }
 
+    pub fn remove(&self, entity: EntityId, comp: ComponentId) {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::remove");
+        (self.remove_fn)(self.ctx, entity, comp);
+    }
+
     pub fn is_alive(&self, entity: EntityId) -> bool {
         (self.is_alive_fn)(self.ctx, entity)
     }
 
     pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::has");
         (self.has_fn)(self.ctx, entity, comp)
     }
 
     pub fn get<T: Copy>(&self, entity: EntityId, comp: ComponentId) -> Option<T> {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::get");
         let ptr = (self.get_fn)(self.ctx, entity, comp);
         if ptr.is_null() {
             None
@@ -87,10 +96,18 @@ impl ClientWorldApi {
     }
 
     pub fn set_raw(&self, entity: EntityId, comp: ComponentId, ptr: *const std::ffi::c_void, size: usize) {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::set_raw");
+        deerpunk_engine_common::ecs_validate::assert_set_payload(size, "ClientWorldApi::set_raw");
+        if ptr.is_null() {
+            panic!("ClientWorldApi::set_raw: null data pointer");
+        }
         (self.set_fn)(self.ctx, entity, comp, ptr, size);
     }
 
     pub fn set<T>(&self, entity: EntityId, comp: ComponentId, value: T) {
+        deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::set");
+        let size = std::mem::size_of::<T>();
+        deerpunk_engine_common::ecs_validate::assert_set_payload(size, "ClientWorldApi::set");
         let ptr = &value as *const T as *const std::ffi::c_void;
         let size = std::mem::size_of::<T>();
         self.set_raw(entity, comp, ptr, size);
@@ -100,7 +117,7 @@ impl ClientWorldApi {
     pub fn component_register(&self, desc: &ComponentRegisterDesc) -> Result<ComponentId, String> {
         let id = (self.component_register_fn)(self.ctx, desc);
         if id == 0 {
-            Err("client component_register failed".into())
+            Err("client component_register returned 0 (see host log / panic above)".into())
         } else {
             Ok(id)
         }
@@ -112,6 +129,12 @@ impl ClientWorldApi {
         size: usize,
         align: usize,
     ) -> Result<ComponentId, String> {
+        if size == 0 {
+            return Err(format!(
+                "register_component \"{name}\": size must be > 0 \
+                 (zero-sized types need at least one byte, e.g. `_tag: u8`)"
+            ));
+        }
         let desc = ComponentRegisterDesc::new(
             name,
             size,

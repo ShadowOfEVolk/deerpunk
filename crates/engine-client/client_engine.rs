@@ -266,47 +266,43 @@ impl ClientEngine {
         };
         let sd = self.renderer.scene_sun_dir();
         let amb = self.renderer.scene_ambient();
-        let sun = glam::Vec3::new(sd[0], sd[1], sd[2]).normalize_or(glam::Vec3::Z);
-
+        let zenith_default = self.renderer.scene_sky_zenith();
         let g = self.gamelib_sky;
-        let mut params = g.map(|sky| sky.params).unwrap_or([0.0f32; 32]);
-        let horizon = g.map(|sky| sky.horizon).unwrap_or([amb[0], amb[1], amb[2]]);
-        let zenith = g
-            .map(|sky| sky.zenith)
-            .unwrap_or_else(|| self.renderer.scene_sky_zenith());
-        if params[31] <= 0.0 {
-            let z = sd[2].clamp(-1.0, 1.0);
-            params[31] = smoothstep_sky(-0.35, 0.12, z);
-        }
-
-        scene.geometry.sky = Some(SkyDraw {
-            scene_sun: sd,
-            sun_dir: sun.to_array(),
+        let mut io = crate::scene::SkySceneCompose {
             camera_pos,
-            params,
-            sky_color: horizon,
-            zenith,
-        });
-        let display = horizon.map(|c| c.clamp(0.0, 1.0).powf(1.0 / 2.2));
-        scene.clear = [display[0], display[1], display[2], 1.0];
-
-        if self.renderer.sky_debug_log() {
-            println!(
-                "[sky:extract] sun=[{:.4}, {:.4}, {:.4}, {:.4}] horizon=[{:.4}, {:.4}, {:.4}] zenith=[{:.4}, {:.4}, {:.4}] glow={:.3} day_fade={:.3}",
-                sd[0],
-                sd[1],
-                sd[2],
-                sd[3],
-                horizon[0],
-                horizon[1],
-                horizon[2],
-                zenith[0],
-                zenith[1],
-                zenith[2],
-                amb[3],
-                params[31],
-            );
+            scene_sun: sd,
+            ambient: amb,
+            zenith_default,
+            wrote: 0,
+            clear: [0.0; 4],
+            sun_dir: [0.0; 3],
+            params: [0.0; 32],
+            sky_color: [0.0; 3],
+            zenith: [0.0; 3],
+        };
+        if let Some(ref dll) = self.dll {
+            if let Some(compose) = dll.compose_sky_fn() {
+                io.wrote = 0;
+                unsafe {
+                    compose(self as *mut Self as *mut u8, &mut io);
+                }
+                if io.wrote != 0 {
+                    crate::scene::apply_compose(scene, &io);
+                    return;
+                }
+            }
         }
+        crate::scene::fill_procedural_sky_default(
+            scene,
+            camera_pos,
+            sd,
+            amb,
+            zenith_default,
+            g.map(|s| s.params),
+            g.map(|s| s.horizon),
+            g.map(|s| s.zenith),
+            self.renderer.sky_debug_log(),
+        );
     }
 
     /// Animate HL lightstyle table and push scales to the renderer.
@@ -321,7 +317,7 @@ impl ClientEngine {
 
     pub fn mesh_adopt_entity(
         &mut self,
-        meshes: &deerpunk_engine_common::resource::MeshRegistry,
+        meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
         entity: u64,
     ) {
         self.mesh_lifecycle
@@ -330,7 +326,7 @@ impl ClientEngine {
 
     pub fn mesh_release_entity(
         &mut self,
-        meshes: &deerpunk_engine_common::resource::MeshRegistry,
+        meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
         entity: u64,
     ) {
         self.mesh_lifecycle
@@ -444,14 +440,6 @@ impl ClientEngine {
         if self.extractor.is_some() {
             self.init_extractor();
         }
-    }
-
-    pub fn sync_mesh_gpu_owners(
-        &mut self,
-        meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
-    ) {
-        self.mesh_lifecycle
-            .sync_from_world(meshes, &mut self.world, &mut self.renderer);
     }
 
     pub fn fallback_mesh(&self) -> &Arc<Mesh> {
@@ -805,7 +793,7 @@ impl ClientEngine {
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
     ) -> RenderScene {
-        self.extract_scene_view(meshes, None)
+        self.extract_scene_view(meshes, None, true)
     }
 
     /// Extract with optional view entity (server `SetView` net pawn).
@@ -813,13 +801,16 @@ impl ClientEngine {
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
         view_entity: Option<u64>,
+        early_cull: bool,
     ) -> RenderScene {
-        self.sync_mesh_gpu_owners(meshes);
-        let fallback = self.fallback_mesh.clone();
         let mut extract_gpu = deerpunk_engine_renderer::SceneExtractGpuStats::default();
+
+        let fallback = self.fallback_mesh.clone();
+        let aspect = deerpunk_engine_common::frame::frame_width() as f32
+            / deerpunk_engine_common::frame::frame_height().max(1) as f32;
         let mut scene = self
             .extractor
-            .as_ref()
+            .as_mut()
             .map(|e| {
                 e.extract(
                     &self.world,
@@ -831,13 +822,18 @@ impl ClientEngine {
                     &self.renderer.queue,
                     &fallback,
                     &mut extract_gpu,
+                    aspect,
+                    early_cull,
                 )
             })
             .unwrap_or_else(RenderScene::new);
-        self.renderer.note_extract_gpu_stats(extract_gpu);
+        let post_start = std::time::Instant::now();
         scene.game_time = self.time;
         self.fill_bone_palettes(&mut scene);
         self.fill_procedural_sky(&mut scene, view_entity);
+        extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
+
+        self.renderer.note_extract_gpu_stats(extract_gpu);
         scene
     }
 
@@ -1048,7 +1044,9 @@ impl ClientEngine {
         let mut snapshots = scene
             .map(|s| s.build_snapshots(aspect, &mut self.cull_scratch))
             .unwrap_or_default();
-        let cull_ms = snap_start.elapsed().as_secs_f32() * 1000.0;
+        let build_snap_ms = snap_start.elapsed().as_secs_f32() * 1000.0;
+        let frustum_ms = self.cull_scratch.last_frustum_ms;
+        let assemble_ms = self.cull_scratch.last_assemble_ms;
 
         // Audio: listener from the primary view, then per-frame backend update.
         let audio_start = std::time::Instant::now();
@@ -1061,7 +1059,10 @@ impl ClientEngine {
         }
         let audio_ms = audio_start.elapsed().as_secs_f32() * 1000.0;
 
-        self.renderer.note_prep_breakdown(ui_ms, cull_ms, audio_ms);
+        self.renderer
+            .note_prep_breakdown(ui_ms, build_snap_ms, audio_ms);
+
+        let mut gather_ms = 0.0f32;
         let _ = prep_start;
 
         let mut rendered_surface = false;
@@ -1084,7 +1085,9 @@ impl ClientEngine {
             snapshot.hud.clear();
             snapshot.terrain_splat_draws.clear();
             if let Some(sc) = scene {
+                let gather_start = std::time::Instant::now();
                 sc.gather_visible_draws(snap, &mut snapshot.mesh_draws, &mut snapshot.skinned_mesh_draws);
+                gather_ms += gather_start.elapsed().as_secs_f32() * 1000.0;
             } else {
                 snapshot.mesh_draws.clear();
                 snapshot.skinned_mesh_draws.clear();
@@ -1115,6 +1118,8 @@ impl ClientEngine {
             first = false;
             rendered_surface = true;
         }
+        self.renderer
+            .note_cull_detail(frustum_ms, assemble_ms, gather_ms);
         for snap in snapshots.drain(..) {
             if !snap.frustum_culled {
                 continue;

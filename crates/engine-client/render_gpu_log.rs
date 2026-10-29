@@ -9,15 +9,6 @@ fn level(cvar: &CvarSystem) -> usize {
     cvar.get_usize_or("r_loggpu", 0)
 }
 
-fn pass_ms(profile: &RenderFrameProfile, name: &str) -> f32 {
-    profile
-        .passes
-        .iter()
-        .find(|p| p.name == name)
-        .map(|p| p.ms)
-        .unwrap_or(0.0)
-}
-
 /// Call once per presented frame after the renderer has encoded the scene.
 pub fn log_frame(cvar: &CvarSystem, profile: &RenderFrameProfile) {
     let lvl = level(cvar);
@@ -33,9 +24,9 @@ pub fn log_frame(cvar: &CvarSystem, profile: &RenderFrameProfile) {
         }
     }
 
-    let mesh_cache_ms = pass_ms(profile, "mesh gpu cache");
+    let mesh_node_ms = profile.graph_node_ms("mesh");
     log::info!(
-        "[render] gpu extract: mat up={} hit={} draws={}+{} terr={} resolve {:.2} ms (scene extract {:.2} ms) | mesh up={} hit={} cache {:.2} ms",
+        "[render] gpu extract: mat up={} hit={} draws={}+{} terr={} resolve {:.2} ms (scene extract {:.2} ms) | mesh up={} hit={} mesh node {:.2} ms",
         eg.material_uploads,
         eg.material_cached,
         eg.mesh_draws,
@@ -45,6 +36,6 @@ pub fn log_frame(cvar: &CvarSystem, profile: &RenderFrameProfile) {
         profile.extract_ms,
         profile.mesh_gpu_uploads,
         profile.mesh_gpu_cached,
-        mesh_cache_ms,
+        mesh_node_ms,
     );
 }

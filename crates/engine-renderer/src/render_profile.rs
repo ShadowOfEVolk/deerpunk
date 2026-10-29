@@ -1,17 +1,12 @@
 //! Per-frame render breakdown for `r_speeds` (CPU command encoding).
 
-/// One recorded render pass (matches `wgpu::RenderPassDescriptor::label` where set).
-#[derive(Clone, Debug)]
-pub struct PassTiming {
-    pub name: String,
-    pub ms: f32,
-}
-
-/// Render-graph node summary (when a [`crate::render_graph::RenderGraph`] drives the frame).
+/// One render-graph node (forward frame registration order).
 #[derive(Clone, Debug, Default)]
 pub struct GraphNodeTiming {
     pub name: String,
     pub ms: f32,
+    /// `true` when the node ran but did no GPU work (e.g. `clear_hdr` with procedural sky).
+    pub skipped: bool,
 }
 
 /// Per-frame mesh draw routing (shader id, LM-array bind layout, draw count).
@@ -35,6 +30,20 @@ pub struct SceneExtractGpuStats {
     pub terrain_draws: u32,
     /// Time in `resolve_gpu` only, ms.
     pub resolve_ms: f32,
+    /// `RenderExtractor::extract` queries + `MeshDraw` build (excludes cull serial), ms.
+    pub extractor_ms: f32,
+    /// `SceneGeometry::refresh_cull_serial`, ms.
+    pub cull_serial_ms: f32,
+    /// `fill_bone_palettes` + `fill_procedural_sky`, ms.
+    pub post_ms: f32,
+    /// Per-entity draw cache: full static rebuild (mesh/material change).
+    pub extract_static_rebuild: u32,
+    /// Cache hit: only transform / bounds updated.
+    pub extract_xform_only: u32,
+    /// Cache hit: unchanged entity, reused as-is.
+    pub extract_cache_hit: u32,
+    /// Skipped before push (early frustum in extract).
+    pub extract_frustum_skip: u32,
 }
 
 /// Mesh path diagnostics (`r_speeds 3`).
@@ -54,6 +63,10 @@ pub struct MeshEncodeStats {
     pub sample_material_id: u32,
     pub sample_has_bsp_mesh: bool,
     pub shader_bins: Vec<MeshShaderBin>,
+    /// CPU inside graph node `mesh` (`r_speeds 3`).
+    pub uniforms_ms: f32,
+    pub mesh_for_draw_ms: f32,
+    pub draw_encode_ms: f32,
 }
 
 /// GoldSrc-style `r_speeds` block (DIP / binds / lights / cull).
@@ -114,6 +127,12 @@ pub struct RenderFrameProfile {
     pub prep_snapshot_ms: f32,
     /// [`RenderScene::build_snapshots`] only (frustum cull), ms.
     pub prep_cull_ms: f32,
+    /// Frustum index pass inside `build_snapshots`, ms.
+    pub prep_cull_frustum_ms: f32,
+    /// Matrix inverse + snapshot clones in `build_snapshots`, ms.
+    pub prep_cull_assemble_ms: f32,
+    /// `gather_visible_draws` into GPU snapshot, ms.
+    pub prep_cull_gather_ms: f32,
     /// [`ClientEngine::audio_tick`] inside snap bucket, ms.
     pub prep_audio_ms: f32,
     /// Host `frame_ui` + ImGui NewFrame callback (inside present path), ms.
@@ -138,9 +157,7 @@ pub struct RenderFrameProfile {
     pub mesh_gpu_uploads: u32,
     /// Draws that reused an already-uploaded mesh.
     pub mesh_gpu_cached: u32,
-    /// Imperative engine passes in frame order (`label: Some("… pass")`).
-    pub passes: Vec<PassTiming>,
-    /// Future: per-node timings when encoding goes through `RenderGraph::run`.
+    /// Forward [`crate::render_graph::RenderGraph`] node timings (registration order).
     pub graph_nodes: Vec<GraphNodeTiming>,
     pub total_encode_ms: f32,
 
@@ -159,18 +176,16 @@ pub struct RenderFrameProfile {
 }
 
 impl RenderFrameProfile {
-    /// CPU time between lap checkpoints while recording commands (not GPU, not `encoder.finish`).
-    pub fn record_pass(&mut self, name: &'static str, ms: f32) {
-        if ms >= 0.01 {
-            self.passes.push(PassTiming {
-                name: name.to_string(),
-                ms,
-            });
-        }
+    pub fn graph_nodes_cpu_ms(&self) -> f32 {
+        self.graph_nodes.iter().map(|n| n.ms).sum()
     }
 
-    pub fn passes_cpu_ms(&self) -> f32 {
-        self.passes.iter().map(|p| p.ms).sum()
+    pub fn graph_node_ms(&self, name: &str) -> f32 {
+        self.graph_nodes
+            .iter()
+            .find(|n| n.name == name)
+            .map(|n| n.ms)
+            .unwrap_or(0.0)
     }
 }
 

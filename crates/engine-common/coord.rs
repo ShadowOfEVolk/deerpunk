@@ -243,3 +243,17 @@ pub fn mat4_inverse(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     }
     inverse
 }
+
+/// Rebase `inv(view*proj)` so unprojected points are camera-relative (stable at large world XY).
+pub fn inv_view_proj_camera_relative(
+    inv_view_proj: [[f32; 4]; 4],
+    camera_world: [f32; 3],
+) -> [[f32; 4]; 4] {
+    let t: [[f32; 4]; 4] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [-camera_world[0], -camera_world[1], -camera_world[2], 1.0],
+    ];
+    mat4_mul(&t, &inv_view_proj)
+}

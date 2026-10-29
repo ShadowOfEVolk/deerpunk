@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::c_void;
 
 use wgpu::TextureFormat;
 
@@ -76,6 +77,9 @@ pub struct NodeContext<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub inputs: HashMap<ResId, &'a wgpu::TextureView>,
     pub outputs: HashMap<ResId, &'a wgpu::TextureView>,
+    /// Per-frame state for pass dispatch (`GraphFrameUserData` in forward graph).
+    pub user_data: *mut c_void,
+    pub node_name: &'static str,
 }
 
 pub type NodeExecute = Box<dyn Fn(&mut NodeContext<'_>) + Send + Sync>;
@@ -172,59 +176,108 @@ impl RenderGraph {
         Ok(order)
     }
 
-    pub fn run(
+    /// Record graph nodes into `encoder` without submitting (topological order from `compile()`).
+    pub fn execute_on_encoder(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        surface_view: &wgpu::TextureView,
-    ) -> Result<(), GraphError> {
+        encoder: &mut wgpu::CommandEncoder,
+        external: &HashMap<ResId, wgpu::TextureView>,
+        user_data: *mut c_void,
+    ) -> Result<Vec<&'static str>, GraphError> {
         let order = self.compile()?;
+        self.execute_on_encoder_with_order(
+            device,
+            queue,
+            encoder,
+            external,
+            user_data,
+            &order,
+        )
+    }
+
+    /// Forward / aliased-external frames: run nodes in **registration order** (no topological sort).
+    ///
+    /// When several nodes read/write the same [`Resource::External`] id (e.g. one HDR target),
+    /// `compile()` would see false cycles (sprites → mesh → sprites). Use this for that case.
+    pub fn execute_on_encoder_in_order(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        external: &HashMap<ResId, wgpu::TextureView>,
+        user_data: *mut c_void,
+    ) -> Result<Vec<&'static str>, GraphError> {
+        let order: Vec<usize> = (0..self.nodes.len()).collect();
+        self.execute_on_encoder_with_order(
+            device,
+            queue,
+            encoder,
+            external,
+            user_data,
+            &order,
+        )
+    }
+
+    fn execute_on_encoder_with_order(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        external: &HashMap<ResId, wgpu::TextureView>,
+        user_data: *mut c_void,
+        order: &[usize],
+    ) -> Result<Vec<&'static str>, GraphError> {
         let mut acquired: Vec<(ResId, wgpu::Texture)> = Vec::new();
         let mut view_storage: HashMap<ResId, wgpu::TextureView> = HashMap::new();
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render_graph"),
-            });
+        for (id, view) in external {
+            if self.resources.contains_key(id) {
+                view_storage.insert(*id, view.clone());
+            }
+        }
 
-        for &node_idx in &order {
+        let mut executed = Vec::with_capacity(order.len());
+        for &node_idx in order {
             let node = &self.nodes[node_idx];
+            executed.push(node.name);
 
-            let input_data: Vec<(ResId, wgpu::TextureView)> = node.inputs.iter().map(|input_id| {
-                if *input_id == self.input {
-                    (*input_id, surface_view.clone())
-                } else if let Some(view) = view_storage.get(input_id) {
-                    (*input_id, view.clone())
-                } else {
-                    panic!("missing texture for input {}", input_id.0);
-                }
-            }).collect();
-
-            let mut new_views: Vec<(ResId, wgpu::TextureView)> = Vec::new();
             for output_id in &node.outputs {
-                if *output_id == self.output {
-                    view_storage.insert(*output_id, surface_view.clone());
-                } else if !view_storage.contains_key(output_id) {
-                    let params = match self.resources.get(output_id) {
-                        Some(Resource::Texture { format, width, height }) => Some((*format, *width, *height)),
-                        _ => None,
-                    };
-                    let (format, width, height) = params
-                        .ok_or(GraphError::MissingTexture(*output_id))?;
-                    let tex =
-                        self.texture_pool.acquire(device, format, width, height);
-                    let view =
-                        tex.create_view(&wgpu::TextureViewDescriptor::default());
-                    new_views.push((*output_id, view));
+                if view_storage.contains_key(output_id) {
+                    continue;
+                }
+                if let Some(view) = external.get(output_id) {
+                    view_storage.insert(*output_id, view.clone());
+                    continue;
+                }
+                if let Some(Resource::Texture {
+                    format,
+                    width,
+                    height,
+                }) = self.resources.get(output_id)
+                {
+                    let tex = self.texture_pool.acquire(device, *format, *width, *height);
+                    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                    view_storage.insert(*output_id, view);
                     acquired.push((*output_id, tex));
                 }
             }
-            for (id, view) in new_views {
-                view_storage.insert(id, view);
+
+            for input_id in &node.inputs {
+                if view_storage.contains_key(input_id) {
+                    continue;
+                }
+                if let Some(view) = external.get(input_id) {
+                    view_storage.insert(*input_id, view.clone());
+                } else {
+                    return Err(GraphError::MissingTexture(*input_id));
+                }
             }
 
-            let input_views: HashMap<ResId, &wgpu::TextureView> = input_data.iter()
-                .map(|(id, view)| (*id, view))
+            let input_views: HashMap<ResId, &wgpu::TextureView> = node
+                .inputs
+                .iter()
+                .filter_map(|id| view_storage.get(id).map(|v| (*id, v)))
                 .collect();
 
             let mut output_views: HashMap<ResId, &wgpu::TextureView> = HashMap::new();
@@ -237,20 +290,47 @@ impl RenderGraph {
             let mut ctx = NodeContext {
                 device,
                 queue,
-                encoder: &mut encoder,
+                encoder,
                 inputs: input_views,
                 outputs: output_views,
+                user_data,
+                node_name: node.name,
             };
 
             (node.execute)(&mut ctx);
         }
 
-        queue.submit(std::iter::once(encoder.finish()));
-
         for (_, tex) in acquired {
             self.texture_pool.release(tex);
         }
 
+        Ok(executed)
+    }
+
+    pub fn run(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_view: &wgpu::TextureView,
+    ) -> Result<(), GraphError> {
+        let mut external = HashMap::new();
+        external.insert(self.input, surface_view.clone());
+        external.insert(self.output, surface_view.clone());
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render_graph"),
+            });
+
+        self.execute_on_encoder(
+            device,
+            queue,
+            &mut encoder,
+            &external,
+            std::ptr::null_mut(),
+        )?;
+
+        queue.submit(std::iter::once(encoder.finish()));
         Ok(())
     }
 

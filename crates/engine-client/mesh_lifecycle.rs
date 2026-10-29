@@ -1,6 +1,6 @@
-//! Tracks which ECS entities own GPU mesh content refs (`Mesh::content_id`).
+//! Per-entity mesh registry + GPU pool refs. Updated on `client_world:set` / destroy only.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use deerpunk_engine_common::components::mesh3d::Mesh3D;
 use deerpunk_engine_common::components::SkinnedMesh3D;
@@ -12,9 +12,10 @@ use deerpunk_engine_renderer::Renderer;
 pub struct MeshGpuLifecycle {
     mesh3d: Option<ComponentId>,
     skinned: Option<ComponentId>,
-    mesh_query: Option<deerpunk_engine_common::world::QueryId>,
-    skinned_query: Option<deerpunk_engine_common::world::QueryId>,
+    /// Last known GPU mesh content id per entity (renderer pool).
     entity_content: HashMap<EntityId, u64>,
+    /// Last registry handle we attached for this entity.
+    entity_mesh_handle: HashMap<EntityId, MeshHandle>,
 }
 
 impl MeshGpuLifecycle {
@@ -22,9 +23,8 @@ impl MeshGpuLifecycle {
         Self {
             mesh3d: None,
             skinned: None,
-            mesh_query: None,
-            skinned_query: None,
             entity_content: HashMap::new(),
+            entity_mesh_handle: HashMap::new(),
         }
     }
 
@@ -37,25 +37,16 @@ impl MeshGpuLifecycle {
             .get_or_insert_with(|| world.component_init::<SkinnedMesh3D>())
     }
 
-    fn ensure_mesh_query(&mut self, world: &mut World) -> deerpunk_engine_common::world::QueryId {
-        if let Some(q) = self.mesh_query {
-            return q;
+    fn mesh_handle_on_entity(
+        world: &World,
+        mesh3d: ComponentId,
+        skinned: ComponentId,
+        entity: EntityId,
+    ) -> MeshHandle {
+        if world.has(entity, skinned) {
+            return Self::handle_skinned(world, skinned, entity);
         }
-        let q = world.query_prepare("Mesh3D");
-        self.mesh_query = Some(q);
-        q
-    }
-
-    fn ensure_skinned_query(
-        &mut self,
-        world: &mut World,
-    ) -> deerpunk_engine_common::world::QueryId {
-        if let Some(q) = self.skinned_query {
-            return q;
-        }
-        let q = world.query_prepare("SkinnedMesh3D");
-        self.skinned_query = Some(q);
-        q
+        Self::handle_on_entity(world, mesh3d, entity)
     }
 
     fn handle_on_entity(world: &World, comp: ComponentId, entity: EntityId) -> MeshHandle {
@@ -76,70 +67,60 @@ impl MeshGpuLifecycle {
         m.mesh
     }
 
-    fn allocator_id_skinned(
-        meshes: &MeshRegistry,
-        world: &World,
-        comp: ComponentId,
-        entity: EntityId,
-    ) -> u32 {
-        let ptr = world.get_raw(entity, comp);
-        if ptr.is_null() {
-            return 0;
-        }
-        let m = unsafe { &*(ptr as *const SkinnedMesh3D) };
-        meshes
-            .get(m.mesh)
-            .map(|mesh| mesh.allocator_id)
-            .unwrap_or(0)
-    }
-
-    fn content_id_skinned(
-        meshes: &MeshRegistry,
-        world: &World,
-        comp: ComponentId,
-        entity: EntityId,
-    ) -> u64 {
-        let ptr = world.get_raw(entity, comp);
-        if ptr.is_null() {
-            return 0;
-        }
-        let m = unsafe { &*(ptr as *const SkinnedMesh3D) };
-        meshes.content_id(m.mesh)
-    }
-
-    fn allocator_id_on_entity(
+    fn gpu_ids_for_entity(
         meshes: &MeshRegistry,
         world: &World,
         mesh3d: ComponentId,
+        skinned: ComponentId,
         entity: EntityId,
-    ) -> u32 {
+    ) -> (u64, u32) {
+        if world.has(entity, skinned) {
+            let ptr = world.get_raw(entity, skinned);
+            if ptr.is_null() {
+                return (0, 0);
+            }
+            let m = unsafe { &*(ptr as *const SkinnedMesh3D) };
+            let id = meshes.content_id(m.mesh);
+            let alloc = meshes.get(m.mesh).map(|mesh| mesh.allocator_id).unwrap_or(0);
+            return (id, alloc);
+        }
         let ptr = world.get_raw(entity, mesh3d);
         if ptr.is_null() {
-            return 0;
+            return (0, 0);
         }
         let m = unsafe { &*(ptr as *const Mesh3D) };
-        meshes
-            .get(m.mesh)
-            .map(|mesh| mesh.allocator_id)
-            .unwrap_or(0)
+        let id = meshes.content_id(m.mesh);
+        let alloc = meshes.get(m.mesh).map(|mesh| mesh.allocator_id).unwrap_or(0);
+        (id, alloc)
     }
 
-    fn content_id_on_entity(
-        meshes: &MeshRegistry,
+    fn reconcile_registry_handle(
+        &mut self,
+        meshes: &mut MeshRegistry,
         world: &World,
-        mesh3d: ComponentId,
         entity: EntityId,
-    ) -> u64 {
-        let ptr = world.get_raw(entity, mesh3d);
-        if ptr.is_null() {
-            return 0;
+    ) {
+        let mesh3d = self.mesh3d_id(world);
+        let skinned = self.skinned_id(world);
+        let new_handle = Self::mesh_handle_on_entity(world, mesh3d, skinned, entity);
+        let prev = self.entity_mesh_handle.get(&entity).copied();
+        if prev == Some(new_handle) {
+            return;
         }
-        let m = unsafe { &*(ptr as *const Mesh3D) };
-        meshes.content_id(m.mesh)
+        if let Some(old) = prev {
+            if old.is_valid() {
+                meshes.detach(old);
+            }
+        }
+        if new_handle.is_valid() {
+            meshes.attach(new_handle);
+            self.entity_mesh_handle.insert(entity, new_handle);
+        } else {
+            self.entity_mesh_handle.remove(&entity);
+        }
     }
 
-    /// Entity now has (or changed) `Mesh3D` — bump GPU refcount for its content id.
-    pub fn adopt_entity(
+    fn reconcile_gpu_content(
         &mut self,
         meshes: &MeshRegistry,
         world: &World,
@@ -147,8 +128,9 @@ impl MeshGpuLifecycle {
         entity: EntityId,
     ) {
         let mesh3d = self.mesh3d_id(world);
-        let new_id = Self::content_id_on_entity(meshes, world, mesh3d, entity);
-        let allocator_id = Self::allocator_id_on_entity(meshes, world, mesh3d, entity);
+        let skinned = self.skinned_id(world);
+        let (new_id, allocator_id) =
+            Self::gpu_ids_for_entity(meshes, world, mesh3d, skinned, entity);
         let old = self.entity_content.get(&entity).copied().unwrap_or(0);
         if old == new_id {
             return;
@@ -164,14 +146,31 @@ impl MeshGpuLifecycle {
         }
     }
 
-    /// Entity removed from the world — release its mesh content ref.
-    pub fn release_entity(
+    /// Entity mesh component installed or replaced (`client_world:set` Mesh3D / SkinnedMesh3D).
+    pub fn adopt_entity(
         &mut self,
-        meshes: &MeshRegistry,
+        meshes: &mut MeshRegistry,
         world: &World,
         renderer: &mut Renderer,
         entity: EntityId,
     ) {
+        self.reconcile_registry_handle(meshes, world, entity);
+        self.reconcile_gpu_content(meshes, world, renderer, entity);
+    }
+
+    /// Entity removed — drop registry + GPU refs for this entity only.
+    pub fn release_entity(
+        &mut self,
+        meshes: &mut MeshRegistry,
+        world: &World,
+        renderer: &mut Renderer,
+        entity: EntityId,
+    ) {
+        if let Some(h) = self.entity_mesh_handle.remove(&entity) {
+            if h.is_valid() {
+                meshes.detach(h);
+            }
+        }
         if let Some(id) = self.entity_content.remove(&entity) {
             if id != 0 {
                 renderer.mesh_release(id);
@@ -180,12 +179,7 @@ impl MeshGpuLifecycle {
         }
         let mesh3d = self.mesh3d_id(world);
         let skinned = self.skinned_id(world);
-        let id = Self::content_id_on_entity(meshes, world, mesh3d, entity);
-        if id != 0 {
-            renderer.mesh_release(id);
-            return;
-        }
-        let id = Self::content_id_skinned(meshes, world, skinned, entity);
+        let (id, _) = Self::gpu_ids_for_entity(meshes, world, mesh3d, skinned, entity);
         if id != 0 {
             renderer.mesh_release(id);
         }
@@ -193,103 +187,16 @@ impl MeshGpuLifecycle {
 
     pub fn reset(&mut self, renderer: &mut Renderer) {
         self.entity_content.clear();
+        self.entity_mesh_handle.clear();
         self.mesh3d = None;
         self.skinned = None;
-        self.mesh_query = None;
-        self.skinned_query = None;
         renderer.reset_mesh_gpu();
     }
 
-    /// Drop cached queries / entity→mesh map without touching the GPU pool (caller resets renderer).
     pub fn reset_tracking(&mut self) {
         self.entity_content.clear();
+        self.entity_mesh_handle.clear();
         self.mesh3d = None;
         self.skinned = None;
-        self.mesh_query = None;
-        self.skinned_query = None;
-    }
-
-    /// Reconcile GPU refs with entities that currently have `Mesh3D`.
-    fn reconcile_entity(
-        &mut self,
-        ent: EntityId,
-        new_id: u64,
-        allocator_id: u32,
-        renderer: &mut Renderer,
-    ) {
-        let old = self.entity_content.get(&ent).copied().unwrap_or(0);
-        if old != new_id {
-            if old != 0 {
-                renderer.mesh_release(old);
-            }
-            if new_id != 0 {
-                renderer.mesh_retain(new_id, allocator_id);
-                self.entity_content.insert(ent, new_id);
-            } else {
-                self.entity_content.remove(&ent);
-            }
-        } else if new_id != 0 && !self.entity_content.contains_key(&ent) {
-            renderer.mesh_retain(new_id, allocator_id);
-            self.entity_content.insert(ent, new_id);
-        }
-    }
-
-    pub fn sync_from_world(
-        &mut self,
-        meshes: &mut MeshRegistry,
-        world: &mut World,
-        renderer: &mut Renderer,
-    ) {
-        let q = self.ensure_mesh_query(world);
-        let sq = self.ensure_skinned_query(world);
-        let mesh3d = self.mesh3d_id(world);
-        let skinned = self.skinned_id(world);
-        let mut live_entities = HashSet::new();
-        let mut live_handles: HashSet<usize> = HashSet::new();
-        if let Some(batches) = world.query_batches(q) {
-            for batch in batches {
-                let entities =
-                    unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                for &ent in entities {
-                    live_entities.insert(ent);
-                    let h = Self::handle_on_entity(world, mesh3d, ent);
-                    if h.is_valid() {
-                        live_handles.insert(h.0);
-                    }
-                    let new_id = Self::content_id_on_entity(meshes, world, mesh3d, ent);
-                    let allocator_id = Self::allocator_id_on_entity(meshes, world, mesh3d, ent);
-                    self.reconcile_entity(ent, new_id, allocator_id, renderer);
-                }
-            }
-        }
-        if let Some(batches) = world.query_batches(sq) {
-            for batch in batches {
-                let entities =
-                    unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                for &ent in entities {
-                    live_entities.insert(ent);
-                    let h = Self::handle_skinned(world, skinned, ent);
-                    if h.is_valid() {
-                        live_handles.insert(h.0);
-                    }
-                    let new_id = Self::content_id_skinned(meshes, world, skinned, ent);
-                    let allocator_id = Self::allocator_id_skinned(meshes, world, skinned, ent);
-                    self.reconcile_entity(ent, new_id, allocator_id, renderer);
-                }
-            }
-        }
-        for ent in self
-            .entity_content
-            .keys()
-            .copied()
-            .collect::<Vec<_>>()
-        {
-            if !live_entities.contains(&ent) {
-                self.release_entity(meshes, world, renderer, ent);
-            }
-        }
-        // Reclaim registry slots that no entity references. Must run before
-        // RenderExtractor::extract so the renderer never sees a stale handle.
-        meshes.sweep(&live_handles);
     }
 }

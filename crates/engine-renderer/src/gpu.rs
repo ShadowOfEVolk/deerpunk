@@ -23,9 +23,13 @@ use wgpu::util::DeviceExt;
 use crate::asset_inventory::{AssetEntry, AssetKind, ASSET_ID_MATERIAL, ASSET_ID_MESH};
 use crate::bone_gpu::{GpuBoneBlock, GPU_BONE_BLOCK_SIZE};
 use crate::font::{build_font_atlas, ATLAS_H, ATLAS_W};
+use crate::frame::context::FrameCtx;
 use crate::mesh_allocator::{MESH_INDEX_SIZE, MESH_VERTEX_SIZE, SKINNED_MESH_VERTEX_SIZE};
-use crate::render_profile::{FrameDrawAccum, FrameSpeedsHud, lap_ms, RenderFrameProfile};
+use crate::render_profile::{FrameDrawAccum, FrameSpeedsHud, RenderFrameProfile};
 use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
+
+#[path = "passes/mod.rs"]
+mod passes;
 
 /// `vsync=true` → FIFO (ждёт vblank). `false` → без ожидания vblank, если драйвер умеет.
 fn select_present_mode(caps: &wgpu::SurfaceCapabilities, vsync: bool) -> wgpu::PresentMode {
@@ -146,7 +150,7 @@ const MESH_UNIFORM_SLOTS_INIT: u64 = 512;
 /// Формат всех наших текстур и offscreen-таргета (без sRGB — байты как были
 /// в CPU-пикспмапе, чтобы картинка совпадала с прежним рендерером).
 const TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 pub struct ShaderSources {
     pub sprite: String,
@@ -239,7 +243,7 @@ pub struct GpuMesh {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct MeshUniform {
+pub(crate) struct MeshUniform {
     view_proj: [[f32; 4]; 4],
     model: [[f32; 4]; 4],
     material_data: [u32; 4],
@@ -249,7 +253,7 @@ struct MeshUniform {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct MeshBatchKey {
+pub(crate) struct MeshBatchKey {
     shader_id: u32,
     lm_surface: bool,
     material_id: u32,
@@ -260,11 +264,11 @@ struct MeshBatchKey {
     buffer_id: u32,
 }
 
-const MAX_POINT_LIGHTS: usize = 32;
+pub(crate) const MAX_POINT_LIGHTS: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct GpuPointLight {
+pub(crate) struct GpuPointLight {
     position: [f32; 3],
     range: f32,
     color: [f32; 3],
@@ -278,7 +282,7 @@ struct GpuPointLight {
 /// `sun_dir` / `ambient` are scene-level lighting (moved out of per-material SSBO).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct LightsUniform {
+pub(crate) struct LightsUniform {
     count: u32,
     scene_time_bits: u32,
     _p1: u32,
@@ -326,7 +330,7 @@ struct SpriteSlot {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct SkyUniform {
+pub(crate) struct SkyUniform {
     inv_view_proj: [[f32; 4]; 4],
     view_proj: [[f32; 4]; 4],
     sun_dir: [f32; 4],
@@ -348,7 +352,7 @@ const _: () = {
 /// Matches `gamedir/shaders/debug.wgsl` (view/proj only — not the sky dome).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct DebugViewUniform {
+pub(crate) struct DebugViewUniform {
     inv_view_proj: [[f32; 4]; 4],
     view_proj: [[f32; 4]; 4],
     sun_dir: [f32; 4],
@@ -356,11 +360,11 @@ struct DebugViewUniform {
     params: [[f32; 4]; 8],
 }
 
-const SKY_UNIFORM_RING: usize = 2;
+pub(crate) const SKY_UNIFORM_RING: usize = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct CloudUniform {
+pub(crate) struct CloudUniform {
     inv_view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     sun_dir: [f32; 4],
@@ -587,13 +591,18 @@ pub struct Renderer {
     mesh_gpu: crate::mesh_gpu_pool::MeshGpuPool,
     /// Staging for batched per-draw `MeshUniform` uploads (one `write_buffer` per frame).
     mesh_uniform_scratch: Vec<u8>,
-    /// Indirect commands for world-space chunk multi-draw batches.
+    /// Indirect commands for world-space multi-draw batches.
     mesh_indirect_buf: wgpu::Buffer,
     /// Some adapters cannot execute indirect draw commands. Keep the normal
     /// per-draw path available on those devices.
     multi_draw_indirect_supported: bool,
     /// Reused draw order for mesh pass (sort by shader / material to cut pipeline binds).
     mesh_draw_order: Vec<usize>,
+    /// Per-frame lazy GPU mesh handles (index = snapshot draw index).
+    mesh_pass_static_handles: Vec<Option<crate::mesh_allocator::MeshHandle>>,
+    mesh_pass_skinned_handles: Vec<Option<crate::mesh_allocator::MeshHandle>>,
+    /// Reused indirect command list for multi-draw batches.
+    mesh_indirect_cmd_scratch: Vec<wgpu::util::DrawIndexedIndirectArgs>,
     mesh_occlusion: crate::occlusion::MeshOcclusion,
     frame_occlusion_queries: bool,
     /// Inspector asset inventory (textures / arrays / meshes). Materials rebuilt on query.
@@ -628,6 +637,9 @@ pub struct Renderer {
     /// Log Hosek `SkyEnvironment` each extract when true (`r_sky_debug`).
     sky_debug_log: bool,
 
+    /// Forward frame pass graph (HDR → surface).
+    forward_graph: crate::render_graph::RenderGraph,
+
     /// Last frame CPU encode breakdown (`r_speeds`).
     last_profile: RenderFrameProfile,
     pending_extract_ms: f32,
@@ -635,6 +647,9 @@ pub struct Renderer {
     pending_prep_ui_ms: f32,
     pending_prep_snapshot_ms: f32,
     pending_prep_cull_ms: f32,
+    pending_prep_cull_frustum_ms: f32,
+    pending_prep_cull_assemble_ms: f32,
+    pending_prep_cull_gather_ms: f32,
     pending_prep_audio_ms: f32,
     pending_extract_gpu: crate::render_profile::SceneExtractGpuStats,
     /// Per-encode counters (reset at start of mesh gpu cache).
@@ -1911,6 +1926,9 @@ impl Renderer {
             mesh_indirect_buf,
             multi_draw_indirect_supported,
             mesh_draw_order: Vec::new(),
+            mesh_pass_static_handles: Vec::new(),
+            mesh_pass_skinned_handles: Vec::new(),
+            mesh_indirect_cmd_scratch: Vec::new(),
             mesh_occlusion: crate::occlusion::MeshOcclusion::new(),
             frame_occlusion_queries: false,
             asset_meta: HashMap::new(),
@@ -1933,12 +1951,16 @@ impl Renderer {
             scene_sky_turbidity,
             scene_sky_albedo,
             sky_debug_log,
+            forward_graph: crate::frame::graph::build_forward_graph(),
             last_profile: RenderFrameProfile::default(),
             pending_extract_ms: 0.0,
             pending_prep_ms: 0.0,
             pending_prep_ui_ms: 0.0,
             pending_prep_snapshot_ms: 0.0,
             pending_prep_cull_ms: 0.0,
+            pending_prep_cull_frustum_ms: 0.0,
+            pending_prep_cull_assemble_ms: 0.0,
+            pending_prep_cull_gather_ms: 0.0,
             pending_prep_audio_ms: 0.0,
             pending_extract_gpu: crate::render_profile::SceneExtractGpuStats::default(),
             frame_mesh_gpu_uploads: 0,
@@ -1963,6 +1985,12 @@ impl Renderer {
         self.pending_prep_ms = ui_ms + cull_ms + audio_ms;
     }
 
+    pub fn note_cull_detail(&mut self, frustum_ms: f32, assemble_ms: f32, gather_ms: f32) {
+        self.pending_prep_cull_frustum_ms = frustum_ms;
+        self.pending_prep_cull_assemble_ms = assemble_ms;
+        self.pending_prep_cull_gather_ms = gather_ms;
+    }
+
     /// Material GPU resolve stats from [`RenderExtractor`] (`r_loggpu`).
     pub fn note_extract_gpu_stats(&mut self, stats: crate::render_profile::SceneExtractGpuStats) {
         self.pending_extract_gpu = stats;
@@ -1971,6 +1999,19 @@ impl Renderer {
     /// Last frame render breakdown (updated each `encode_frame`).
     pub fn frame_profile(&self) -> &RenderFrameProfile {
         &self.last_profile
+    }
+
+    pub(crate) fn depth_view_ref(&self) -> Option<&wgpu::TextureView> {
+        self.depth_view.as_ref()
+    }
+
+    pub(crate) fn forward_graph_mut(&mut self) -> &mut crate::render_graph::RenderGraph {
+        &mut self.forward_graph
+    }
+
+    /// Forward graph topology for `r_speeds` (node order = GPU queue order).
+    pub fn forward_graph_describe(&self) -> Vec<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
+        self.forward_graph.describe_nodes()
     }
 
     /// Set scene-level directional + ambient lighting.
@@ -3084,6 +3125,11 @@ impl Renderer {
         }
     }
 
+    /// Depth target for mesh / terrain / debug (required by forward graph `ResId::DEPTH`).
+    pub(crate) fn ensure_depth_for_frame(&mut self) {
+        self.ensure_depth(frame_width(), frame_height());
+    }
+
     fn ensure_debug_pipelines(&mut self, format: wgpu::TextureFormat) {
         if self.debug_pipeline.is_some() && self.debug_pipeline_occluded.is_some() {
             return;
@@ -3387,7 +3433,7 @@ impl Renderer {
             })
     }
 
-    fn build_sky_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    pub(crate) fn build_sky_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -3434,7 +3480,7 @@ impl Renderer {
             })
     }
 
-    fn build_cloud_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    pub(crate) fn build_cloud_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -4055,6 +4101,56 @@ impl Renderer {
         self.mesh_gpu
             .handle(content_id)
             .expect("mesh upload missing after needs_upload")
+    }
+
+    /// Hot path when GPU data is already resident (no upload bookkeeping beyond stats).
+    pub(crate) fn mesh_resolve_for_draw(
+        &mut self,
+        mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    ) -> crate::mesh_allocator::MeshHandle {
+        let content_id = mesh.content_id();
+        assert_ne!(content_id, 0, "Mesh.content_id unset");
+        assert!(
+            self.mesh_gpu.is_retained(content_id),
+            "mesh content_id={content_id} not retained (entity lifecycle)"
+        );
+        if !self.mesh_gpu.needs_upload(content_id) {
+            if let Some(h) = self.mesh_gpu.handle(content_id) {
+                self.frame_mesh_gpu_cached += 1;
+                return h;
+            }
+        }
+        self.mesh_for_draw(mesh)
+    }
+
+    pub(crate) fn mesh_static_handle_at(
+        &mut self,
+        i: usize,
+        mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    ) -> crate::mesh_allocator::MeshHandle {
+        if self.mesh_pass_static_handles[i].is_none() {
+            self.mesh_pass_static_handles[i] = Some(self.mesh_resolve_for_draw(mesh));
+        }
+        self.mesh_pass_static_handles[i].expect("mesh_static_handle_at")
+    }
+
+    pub(crate) fn mesh_skinned_handle_at(
+        &mut self,
+        j: usize,
+        mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    ) -> crate::mesh_allocator::MeshHandle {
+        if self.mesh_pass_skinned_handles[j].is_none() {
+            self.mesh_pass_skinned_handles[j] = Some(self.mesh_resolve_for_draw(mesh));
+        }
+        self.mesh_pass_skinned_handles[j].expect("mesh_skinned_handle_at")
+    }
+
+    pub(crate) fn mesh_static_handle_cached(&self, i: usize) -> crate::mesh_allocator::MeshHandle {
+        self.mesh_pass_static_handles[i].expect("static mesh handle not resolved")
+    }
+
+    pub(crate) fn mesh_skinned_handle_cached(&self, j: usize) -> crate::mesh_allocator::MeshHandle {
+        self.mesh_pass_skinned_handles[j].expect("skinned mesh handle not resolved")
     }
 
     fn allocator_for_mesh(
@@ -4694,6 +4790,7 @@ impl Renderer {
         self.mesh_user_bgs.insert(slot.0, bg);
     }
 
+
     fn encode_frame(
         &mut self,
         snapshot: &RenderSnapshot,
@@ -4712,6 +4809,9 @@ impl Renderer {
         prof.prep_ui_ms = self.pending_prep_ui_ms;
         prof.prep_snapshot_ms = self.pending_prep_snapshot_ms;
         prof.prep_cull_ms = self.pending_prep_cull_ms;
+        prof.prep_cull_frustum_ms = self.pending_prep_cull_frustum_ms;
+        prof.prep_cull_assemble_ms = self.pending_prep_cull_assemble_ms;
+        prof.prep_cull_gather_ms = self.pending_prep_cull_gather_ms;
         prof.prep_audio_ms = self.pending_prep_audio_ms;
         prof.extract_gpu = self.pending_extract_gpu;
         self.frame_mesh_gpu_uploads = 0;
@@ -4724,14 +4824,6 @@ impl Renderer {
         prof.width = frame_width();
         prof.height = frame_height();
 
-        self.upload_sprites(snapshot);
-        prof.record_pass("upload sprites", lap_ms(&mut lap));
-        self.material_allocator.flush(&self.queue);
-        if self.material_allocator.generation != self.material_bg_gen {
-            self.material_bg_gen = self.material_allocator.generation;
-            self.invalidate_material_bgs();
-        }
-        prof.record_pass("flush materials", lap_ms(&mut lap));
         let pipeline = match self.pipelines.get(&format) {
             Some(p) => p.clone(),
             None => {
@@ -4756,1128 +4848,18 @@ impl Renderer {
                 label: Some("frame encoder"),
             });
 
-        // --- Pass 0: sky background (clear + fullscreen triangle) ---
-        let hdr_fmt = self.hdr_format;
-        if let Some(sky) = &snapshot.sky {
-            let mut params = [[0.0f32; 4]; 8];
-            for (i, v) in sky.params.iter().enumerate() {
-                params[i / 4][i % 4] = *v;
-            }
-            let uniform = SkyUniform {
-                inv_view_proj: snapshot.inv_view_proj,
-                view_proj: snapshot.view_proj,
-                sun_dir: sky.scene_sun,
-                camera_pos: [
-                    snapshot.camera_pos[0],
-                    snapshot.camera_pos[1],
-                    snapshot.camera_pos[2],
-                    1.0,
-                ],
-                params,
-                sky_color: [
-                    sky.sky_color[0],
-                    sky.sky_color[1],
-                    sky.sky_color[2],
-                    self.scene_ambient[3],
-                ],
-                zenith: [
-                    sky.zenith[0],
-                    sky.zenith[1],
-                    sky.zenith[2],
-                    0.0,
-                ],
-            };
-            if self.sky_debug_log {
-                println!(
-                    "[sky:gpu] sun=[{:.3},{:.3},{:.3}] horizon=[{:.3},{:.3},{:.3}] zenith=[{:.3},{:.3},{:.3}] glow={:.3} day_fade={:.3}",
-                    uniform.sun_dir[0],
-                    uniform.sun_dir[1],
-                    uniform.sun_dir[2],
-                    uniform.sky_color[0],
-                    uniform.sky_color[1],
-                    uniform.sky_color[2],
-                    uniform.zenith[0],
-                    uniform.zenith[1],
-                    uniform.zenith[2],
-                    uniform.sky_color[3],
-                    sky.params[31],
-                );
-            }
-            let sky_slot = (self.sky_uniform_ring as usize + 1) % SKY_UNIFORM_RING;
-            self.sky_uniform_ring = sky_slot as u8;
-            self.queue.write_buffer(
-                &self.sky_globals_bufs[sky_slot],
-                0,
-                bytemuck::bytes_of(&uniform),
-            );
+        let mut frame_ctx = FrameCtx {
+            snapshot,
+            hdr_view: view,
+            format,
+            surface_view,
+            shaders,
+            prof: &mut prof,
+            draw_acc: &mut draw_acc,
+            lap: &mut lap,
+        };
 
-            if !self.sky_pipelines.contains_key(&hdr_fmt) {
-                let p = self.build_sky_pipeline(hdr_fmt);
-                self.sky_pipelines.insert(hdr_fmt, p);
-            }
-            let pipeline = self.sky_pipelines.get(&hdr_fmt).unwrap();
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("sky pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: snapshot.clear[0] as f64,
-                            g: snapshot.clear[1] as f64,
-                            b: snapshot.clear[2] as f64,
-                            a: snapshot.clear[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            draw_acc.note_pipeline();
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.sky_globals_bgs[sky_slot], &[]);
-            pass.draw(0..3, 0..1);
-            draw_acc.note_draw_verts(3);
-            prof.record_pass("sky pass", lap_ms(&mut lap));
-        } else {
-            lap_ms(&mut lap);
-        }
-        // No sky: clear HDR so mesh/sprites don't Load undefined texels (indoor BSP).
-
-        // --- Pass 0.5: volumetric clouds (after sky, before 3D) ---
-        if let Some(sky) = &snapshot.sky {
-            let cloud_uniform = CloudUniform {
-                inv_view_proj: snapshot.inv_view_proj,
-                camera_pos: [
-                    snapshot.camera_pos[0],
-                    snapshot.camera_pos[1],
-                    snapshot.camera_pos[2],
-                    0.0,
-                ],
-                sun_dir: sky.scene_sun,
-                params: [
-                    0.38,
-                    self.cloud_mode as f32,
-                    200.0,
-                    self.cloud_speed,
-                ],
-                time: [snapshot.game_time, 0.0, 0.0, 0.0],
-                sky_color: [
-                    sky.sky_color[0],
-                    sky.sky_color[1],
-                    sky.sky_color[2],
-                    self.scene_ambient[3],
-                ],
-            };
-            self.queue.write_buffer(
-                &self.cloud_uniform_buf,
-                0,
-                bytemuck::bytes_of(&cloud_uniform),
-            );
-
-            if !self.cloud_pipelines.contains_key(&hdr_fmt) {
-                let p = self.build_cloud_pipeline(hdr_fmt);
-                self.cloud_pipelines.insert(hdr_fmt, p);
-            }
-            let pipeline = self.cloud_pipelines.get(&hdr_fmt).unwrap();
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("cloud pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            draw_acc.note_pipeline();
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.cloud_bg, &[]);
-            pass.draw(0..3, 0..1);
-            draw_acc.note_draw_verts(3);
-            prof.record_pass("clouds pass", lap_ms(&mut lap));
-        } else {
-            lap_ms(&mut lap);
-        }
-
-        if snapshot.sky.is_none() {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear hdr"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: snapshot.clear[0] as f64,
-                            g: snapshot.clear[1] as f64,
-                            b: snapshot.clear[2] as f64,
-                            a: snapshot.clear[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            drop(pass);
-            prof.record_pass("clear hdr", lap_ms(&mut lap));
-        }
-
-        // --- Pass 1: 3D scene (clear + draw) ---
-        let gpu_insts = self.build_instances_from(&snapshot.instances);
-        self.write_buffers(&gpu_insts, snapshot.view_proj);
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("3d pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            draw_acc.note_pipeline();
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &self.globals_bg, &[]);
-            Self::draw_batched(
-                &mut pass,
-                &snapshot.instances,
-                &self.sprite_bg,
-                &self.map_bg,
-                &self.font_bg,
-                &mut draw_acc,
-            );
-        }
-        prof.record_pass("3d pass", lap_ms(&mut lap));
-
-        // --- Mesh draws (static + GPU-skinned, single depth pass) ---
-        let static_count = snapshot.mesh_draws.len();
-        let skinned_count = snapshot.skinned_mesh_draws.len();
-        if static_count > 0 || skinned_count > 0 {
-            let mesh_align = 256u64;
-            let mesh_uniform_size = ((std::mem::size_of::<MeshUniform>() as u64 + mesh_align - 1)
-                / mesh_align)
-                * mesh_align;
-
-            let resolved_static: Vec<u32> = snapshot
-                .mesh_draws
-                .iter()
-                .map(|md| md.material_id)
-                .collect();
-            let resolved_skinned: Vec<u32> = snapshot
-                .skinned_mesh_draws
-                .iter()
-                .map(|sd| sd.material_id)
-                .collect();
-
-            let fullbright_flag = if self.fullbright { 1u32 } else { 0u32 };
-            let lightmap_flag = if self.lightmap_only { 1u32 } else { 0u32 };
-            let draw_count = static_count + skinned_count;
-            self.ensure_mesh_uniform_slots(draw_count as u64);
-            for palette in &snapshot.bone_palettes {
-                self.ensure_skinned_bone_bind_group(palette.handle, &palette.matrices);
-            }
-            let slab_bytes = (mesh_uniform_size * draw_count as u64) as usize;
-            assert!(
-                slab_bytes as u64 <= self.mesh_globals_buf.size(),
-                "mesh uniform upload {} bytes > mesh_globals_buf {} ({} draws)",
-                slab_bytes,
-                self.mesh_globals_buf.size(),
-                draw_count
-            );
-            self.mesh_uniform_scratch.resize(slab_bytes, 0);
-            for (i, md) in snapshot.mesh_draws.iter().enumerate() {
-                let uniform = MeshUniform {
-                    view_proj: snapshot.view_proj,
-                    model: md.model_mat,
-                    material_data: [
-                        resolved_static[i],
-                        md.uniform_aux,
-                        fullbright_flag,
-                        lightmap_flag,
-                    ],
-                    camera_pos: snapshot.camera_pos,
-                    _pad_cam: 0.0,
-                };
-                let off = (i as u64 * mesh_uniform_size) as usize;
-                let uniform_bytes = bytemuck::bytes_of(&uniform);
-                self.mesh_uniform_scratch[off..off + uniform_bytes.len()]
-                    .copy_from_slice(uniform_bytes);
-            }
-            for (j, sd) in snapshot.skinned_mesh_draws.iter().enumerate() {
-                let i = static_count + j;
-                let uniform = MeshUniform {
-                    view_proj: snapshot.view_proj,
-                    model: sd.model_mat,
-                    material_data: [resolved_skinned[j], 0, fullbright_flag, lightmap_flag],
-                    camera_pos: snapshot.camera_pos,
-                    _pad_cam: 0.0,
-                };
-                let off = (i as u64 * mesh_uniform_size) as usize;
-                let uniform_bytes = bytemuck::bytes_of(&uniform);
-                self.mesh_uniform_scratch[off..off + uniform_bytes.len()]
-                    .copy_from_slice(uniform_bytes);
-            }
-            self.queue.write_buffer(
-                &self.mesh_globals_buf,
-                0,
-                &self.mesh_uniform_scratch[..slab_bytes],
-            );
-            prof.record_pass("mesh uniforms", lap_ms(&mut lap));
-
-            let static_handles: Vec<_> = snapshot
-                .mesh_draws
-                .iter()
-                .map(|md| self.mesh_for_draw(&md.mesh))
-                .collect();
-            let skinned_handles: Vec<_> = snapshot
-                .skinned_mesh_draws
-                .iter()
-                .map(|sd| self.mesh_for_draw(&sd.mesh))
-                .collect();
-            prof.record_pass("mesh gpu cache", lap_ms(&mut lap));
-            prof.mesh_gpu_uploads = self.frame_mesh_gpu_uploads;
-            prof.mesh_gpu_cached = self.frame_mesh_gpu_cached;
-
-            {
-                let mut lights = LightsUniform::zeroed();
-                let n = snapshot.point_lights.len().min(MAX_POINT_LIGHTS);
-                lights.count = n as u32;
-                lights.scene_time_bits = snapshot.game_time.to_bits();
-                // Scene-level lighting (set via set_scene_lighting).
-                lights.sun_dir = self.scene_sun_dir;
-                lights.ambient = self.scene_ambient;
-                for (i, pl) in snapshot.point_lights.iter().take(n).enumerate() {
-                    lights.lights[i] = GpuPointLight {
-                        position: pl.position,
-                        range: pl.range.max(1.0),
-                        color: pl.color,
-                        intensity: pl.intensity,
-                    };
-                }
-                self.queue
-                    .write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
-            }
-
-            self.ensure_depth(frame_width(), frame_height());
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("mesh pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: self.depth_view.as_ref().unwrap(),
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_bind_group(3, &self.lights_bg, &[]);
-
-            let mut shader_bins: std::collections::HashMap<(u32, bool), (u32, u64)> =
-                std::collections::HashMap::new();
-            let mut sample_set = false;
-
-            self.mesh_draw_order.clear();
-            self.mesh_draw_order.extend(0..snapshot.mesh_draws.len());
-            self.mesh_draw_order.sort_unstable_by_key(|&i| {
-                let md = &snapshot.mesh_draws[i];
-                let lm = shaders
-                    .get(md.shader_id)
-                    .map(|d| d.group1_uses_lightmap_array())
-                    .unwrap_or(false);
-                (
-                    md.shader_id,
-                    lm as u8,
-                    md.material_id,
-                    md.texture.0,
-                    md.normal.0,
-                    md.orm.0,
-                    md.lightmap_gpu,
-                )
-            });
-
-            let mut last_mesh_pipeline: Option<(u32, bool)> = None;
-
-            let draw_order = std::mem::take(&mut self.mesh_draw_order);
-            let mut batch_groups: HashMap<MeshBatchKey, Vec<usize>> = HashMap::new();
-            let mut batch_for_index = vec![None; snapshot.mesh_draws.len()];
-            for &i in &draw_order {
-                let md = &snapshot.mesh_draws[i];
-                if !self.multi_draw_indirect_supported
-                    || !md.batchable
-                    || !self.mesh_occlusion.draw_visible_static(i, md)
-                {
-                    continue;
-                }
-                let handle = static_handles[i];
-                let lm_surface = shaders
-                    .get(md.shader_id)
-                    .map(|d| d.group1_uses_lightmap_array())
-                    .unwrap_or(false);
-                let key = MeshBatchKey {
-                    shader_id: md.shader_id,
-                    lm_surface,
-                    material_id: resolved_static[i],
-                    texture: md.texture.0,
-                    normal: md.normal.0,
-                    orm: md.orm.0,
-                    lightmap_gpu: md.lightmap_gpu,
-                    buffer_id: handle.buffer_id,
-                };
-                batch_for_index[i] = Some(key);
-                batch_groups.entry(key).or_default().push(i);
-            }
-            for group in batch_groups.values() {
-                if group.len() < 2 {
-                    for &i in group {
-                        batch_for_index[i] = None;
-                    }
-                }
-            }
-            let indirect_command_count = batch_groups
-                .values()
-                .filter(|group| group.len() >= 2)
-                .map(|group| group.len())
-                .sum::<usize>();
-            if indirect_command_count > 0 {
-                self.ensure_mesh_indirect_capacity(indirect_command_count);
-            }
-            let indirect_command_stride =
-                std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
-            let mut indirect_offset = 0u64;
-            let mut emitted_batches = std::collections::HashSet::new();
-            for i in draw_order {
-                let md = &snapshot.mesh_draws[i];
-                if !self.mesh_occlusion.draw_visible_static(i, md) {
-                    continue;
-                }
-                if let Some(key) = batch_for_index[i] {
-                    if emitted_batches.insert(key) {
-                        let group = batch_groups
-                            .get(&key)
-                            .expect("batch key missing from mesh groups");
-                        let representative = group[0];
-                        let rep = &snapshot.mesh_draws[representative];
-                        let offset = (representative as u64 * mesh_uniform_size) as u32;
-                        pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
-
-                        let pipeline = self
-                            .ensure_shader_mesh_pipeline(shaders, key.shader_id, format)
-                            .clone();
-                        let bind1 = if key.lm_surface {
-                            self.ensure_albedo_lightmap_bg(key.texture, key.lightmap_gpu)
-                        } else {
-                            self.mesh_bind_group(MeshTexture::slot(key.texture)).clone()
-                        };
-                        let bind2 = self
-                            .ensure_material_bg(
-                                key.material_id,
-                                MeshTexture::slot(key.normal),
-                                MeshTexture::slot(key.orm),
-                            )
-                            .clone();
-                        let pipe_key = (key.shader_id, key.lm_surface);
-                        if last_mesh_pipeline != Some(pipe_key) {
-                            draw_acc.note_pipeline();
-                            pass.set_pipeline(&pipeline);
-                            last_mesh_pipeline = Some(pipe_key);
-                        }
-                        pass.set_bind_group(1, &bind1, &[]);
-                        pass.set_bind_group(2, &bind2, &[]);
-                        let vb = self.mesh_pool.vertex_buffer(key.buffer_id);
-                        let ib = self.mesh_pool.index_buffer(key.buffer_id);
-                        pass.set_vertex_buffer(0, vb.slice(..));
-                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-
-                        let mut commands = Vec::with_capacity(group.len());
-                        let mut total_indices = 0u32;
-                        for &group_index in group {
-                            let group_md = &snapshot.mesh_draws[group_index];
-                            let group_handle = static_handles[group_index];
-                            let start = group_md.first_index;
-                            let count = if group_md.index_count == 0 {
-                                group_handle.idx_count
-                            } else {
-                                group_md
-                                    .index_count
-                                    .min(group_handle.idx_count.saturating_sub(start))
-                            };
-                            if count == 0 {
-                                continue;
-                            }
-                            total_indices = total_indices.saturating_add(count);
-                            commands.push(wgpu::util::DrawIndexedIndirectArgs {
-                                index_count: count,
-                                instance_count: 1,
-                                first_index: group_handle.idx_offset.saturating_add(start),
-                                base_vertex: group_handle.vert_offset as i32,
-                                first_instance: 0,
-                            });
-                        }
-                        if !commands.is_empty() {
-                            self.queue.write_buffer(
-                                &self.mesh_indirect_buf,
-                                indirect_offset,
-                                bytemuck::cast_slice(&commands),
-                            );
-                            pass.multi_draw_indexed_indirect(
-                                &self.mesh_indirect_buf,
-                                indirect_offset,
-                                commands.len() as u32,
-                            );
-                            indirect_offset += commands.len() as u64 * indirect_command_stride;
-                            draw_acc.note_draw_indexed(total_indices);
-                            prof.mesh_index_count += total_indices as u64;
-                            let ms = &mut prof.mesh_stats;
-                            ms.draws_submitted += commands.len() as u32;
-                            ms.tris_drawn += total_indices as u64;
-                            if key.lm_surface {
-                                ms.lm_array_layout_draws += commands.len() as u32;
-                                if key.lightmap_gpu == 0 {
-                                    ms.lm_array_with_gpu_id_zero += commands.len() as u32;
-                                }
-                            } else {
-                                ms.albedo_2d_layout_draws += commands.len() as u32;
-                            }
-                            if key.texture == MeshTexture::WHITE.0 {
-                                ms.albedo_white_slot_draws += commands.len() as u32;
-                            }
-                            let bin = shader_bins
-                                .entry((key.shader_id, key.lm_surface))
-                                .or_insert((0, 0));
-                            bin.0 += commands.len() as u32;
-                            bin.1 += total_indices as u64;
-                            if !sample_set {
-                                sample_set = true;
-                                ms.sample_shader_id = key.shader_id;
-                                ms.sample_shader_path =
-                                    shaders.path_for_id(key.shader_id).unwrap_or("?").to_string();
-                                ms.sample_lm_array = key.lm_surface;
-                                ms.sample_albedo_slot = key.texture;
-                                ms.sample_lightmap_gpu = key.lightmap_gpu;
-                                ms.sample_material_id = key.material_id;
-                                ms.sample_has_bsp_mesh = Self::mesh_has_bsp_surface_data(&rep.mesh);
-                            }
-                        }
-                    }
-                    continue;
-                }
-                assert!(
-                    md.shader_id != 0,
-                    "mesh draw {i}: shader_id=0 (material_id={})",
-                    md.material_id
-                );
-                let handle = static_handles[i];
-                let material_id = resolved_static[i];
-                let offset = (i as u64 * mesh_uniform_size) as u32;
-                pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
-
-                let lm_surface = shaders
-                    .get(md.shader_id)
-                    .map(|d| d.group1_uses_lightmap_array())
-                    .unwrap_or(false);
-                let bsp_mesh = Self::mesh_has_bsp_surface_data(&md.mesh);
-
-                let pipeline = self
-                    .ensure_shader_mesh_pipeline(shaders, md.shader_id, format)
-                    .clone();
-                let bind1 = if lm_surface {
-                    let albedo_slot = md.texture.0;
-                    let lm_id = md.lightmap_gpu;
-                    self.ensure_albedo_lightmap_bg(albedo_slot, lm_id)
-                } else {
-                    self.mesh_bind_group(md.texture).clone()
-                };
-                let bind2 = self
-                    .ensure_material_bg(material_id, md.normal, md.orm)
-                    .clone();
-                let pipe_key = (md.shader_id, lm_surface);
-                if last_mesh_pipeline != Some(pipe_key) {
-                    draw_acc.note_pipeline();
-                    pass.set_pipeline(&pipeline);
-                    last_mesh_pipeline = Some(pipe_key);
-                }
-                pass.set_bind_group(1, &bind1, &[]);
-                pass.set_bind_group(2, &bind2, &[]);
-                let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
-                let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-                pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
-                pass.set_index_buffer(
-                    ib.slice(self.mesh_pool.index_byte_range(handle)),
-                    wgpu::IndexFormat::Uint32,
-                );
-                let start = md.first_index;
-                let count = if md.index_count == 0 {
-                    handle.idx_count
-                } else {
-                    md.index_count.min(handle.idx_count.saturating_sub(start))
-                };
-                if count > 0 {
-                    prof.mesh_index_count += count as u64;
-                    pass.draw_indexed(start..start + count, 0, 0..1);
-                    draw_acc.note_draw_indexed(count);
-
-                    let ms = &mut prof.mesh_stats;
-                    ms.tris_drawn += count as u64;
-                    ms.draws_submitted += 1;
-                    if lm_surface {
-                        ms.lm_array_layout_draws += 1;
-                        if md.lightmap_gpu == 0 {
-                            ms.lm_array_with_gpu_id_zero += 1;
-                        }
-                    } else {
-                        ms.albedo_2d_layout_draws += 1;
-                    }
-                    if md.texture.0 == MeshTexture::WHITE.0 {
-                        ms.albedo_white_slot_draws += 1;
-                    }
-                    let bin = shader_bins
-                        .entry((md.shader_id, lm_surface))
-                        .or_insert((0, 0));
-                    bin.0 += 1;
-                    bin.1 += count as u64;
-
-                    if !sample_set {
-                        sample_set = true;
-                        ms.sample_shader_id = md.shader_id;
-                        ms.sample_shader_path =
-                            shaders.path_for_id(md.shader_id).unwrap_or("?").to_string();
-                        ms.sample_lm_array = lm_surface;
-                        ms.sample_albedo_slot = md.texture.0;
-                        ms.sample_lightmap_gpu = md.lightmap_gpu;
-                        ms.sample_material_id = material_id;
-                        ms.sample_has_bsp_mesh = bsp_mesh;
-                    }
-                }
-            }
-
-            let mut last_skinned_shader: Option<ShaderId> = None;
-            for (j, sd) in snapshot.skinned_mesh_draws.iter().enumerate() {
-                if !self.mesh_occlusion.draw_visible_skinned(j, sd) {
-                    continue;
-                }
-                if last_skinned_shader != Some(sd.shader_id) {
-                    let pipeline =
-                        self.ensure_skinned_draw_pipeline(shaders, sd.shader_id, format);
-                    draw_acc.note_pipeline();
-                    pass.set_pipeline(&pipeline);
-                    last_skinned_shader = Some(sd.shader_id);
-                }
-                let handle = skinned_handles[j];
-                let material_id = resolved_skinned[j];
-                let i = static_count + j;
-                let offset = (i as u64 * mesh_uniform_size) as u32;
-                let bone_bg = self
-                    .skinned_mesh_globals_bgs
-                    .get(&sd.bone_buffer)
-                    .expect("bone palette missing — upload bone_palettes before draw");
-                pass.set_bind_group(0, bone_bg, &[offset]);
-                let bind1 = self.mesh_bind_group(sd.texture).clone();
-                let bind2 = self
-                    .ensure_material_bg(material_id, sd.normal, sd.orm)
-                    .clone();
-                pass.set_bind_group(1, &bind1, &[]);
-                pass.set_bind_group(2, &bind2, &[]);
-                let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
-                let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-                pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
-                pass.set_index_buffer(
-                    ib.slice(self.mesh_pool.index_byte_range(handle)),
-                    wgpu::IndexFormat::Uint32,
-                );
-                let count = handle.idx_count;
-                if count > 0 {
-                    prof.mesh_index_count += count as u64;
-                    pass.draw_indexed(0..count, 0, 0..1);
-                    draw_acc.note_draw_indexed(count);
-                    let ms = &mut prof.mesh_stats;
-                    ms.tris_drawn += count as u64;
-                    ms.draws_submitted += 1;
-                    ms.albedo_2d_layout_draws += 1;
-                }
-            }
-
-            prof.mesh_stats.shader_bins = shader_bins
-                .into_iter()
-                .map(|((shader_id, lm_array_layout), (draws, tris))| {
-                    crate::render_profile::MeshShaderBin {
-                        shader_id,
-                        lm_array_layout,
-                        draws,
-                        tris,
-                    }
-                })
-                .collect();
-        }
-        if static_count > 0 || skinned_count > 0 {
-            if let Some(depth_view) = self.depth_view.as_ref() {
-                self.frame_occlusion_queries = self.mesh_occlusion.encode_queries(
-                    &self.device,
-                    &self.queue,
-                    &mut encoder,
-                    snapshot,
-                    depth_view,
-                    view,
-                    format,
-                    DEPTH_FORMAT,
-                );
-            }
-        }
-        prof.record_pass("mesh pass", lap_ms(&mut lap));
-
-        // --- Terrain splat pass ---
-        if !snapshot.terrain_splat_draws.is_empty() {
-            if !self.terrain_splat_pipelines.contains_key(&format) {
-                let p = self.build_terrain_splat_pipeline(format);
-                self.terrain_splat_pipelines.insert(format, p);
-            }
-
-            let uniform_size = 128u64;
-            let vp: [[f32; 4]; 4] = snapshot.view_proj;
-
-            for (i, td) in snapshot.terrain_splat_draws.iter().enumerate() {
-                let model = td.model_mat;
-                let mvp =
-                    glam::Mat4::from_cols_array_2d(&vp) * glam::Mat4::from_cols_array_2d(&model);
-                let uniform = MeshUniform {
-                    view_proj: mvp.to_cols_array_2d(),
-                    model,
-                    material_data: [0, 0, 0, 0],
-                    camera_pos: snapshot.camera_pos,
-                    _pad_cam: 0.0,
-                };
-                self.queue.write_buffer(
-                    &self.mesh_globals_buf,
-                    i as u64 * uniform_size,
-                    bytemuck::bytes_of(&uniform),
-                );
-            }
-
-            let terrain_handles: Vec<_> = snapshot
-                .terrain_splat_draws
-                .iter()
-                .map(|td| self.mesh_for_draw(&td.mesh))
-                .collect();
-
-            let pipeline = self.terrain_splat_pipelines.get(&format).unwrap();
-
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("terrain splat pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: self.depth_view.as_ref().unwrap(),
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            draw_acc.note_pipeline();
-            pass.set_pipeline(pipeline);
-
-            for (i, td) in snapshot.terrain_splat_draws.iter().enumerate() {
-                let handle = terrain_handles[i];
-                let offset = (i as u64 * uniform_size) as u32;
-                pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
-
-                let layer_views: [&wgpu::TextureView; 4] = std::array::from_fn(|j| {
-                    self.texture_views
-                        .get(&td.layers[j].0)
-                        .unwrap_or(&self.white_tex_view)
-                });
-                let splat_view = self
-                    .texture_views
-                    .get(&td.splat_map.0)
-                    .unwrap_or(&self.white_tex_view);
-                let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("terrain splat bg"),
-                    layout: &self.terrain_splat_bg_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(layer_views[0]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(layer_views[1]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(layer_views[2]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(layer_views[3]),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::TextureView(splat_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: wgpu::BindingResource::Sampler(&self.repeat_sampler),
-                        },
-                    ],
-                });
-                pass.set_bind_group(1, &bg, &[]);
-
-                let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
-                let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-                pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
-                pass.set_index_buffer(
-                    ib.slice(self.mesh_pool.index_byte_range(handle)),
-                    wgpu::IndexFormat::Uint32,
-                );
-                pass.draw_indexed(0..handle.idx_count, 0, 0..1);
-                draw_acc.note_draw_indexed(handle.idx_count);
-            }
-        }
-        prof.record_pass("terrain splat pass", lap_ms(&mut lap));
-
-        // --- Debug lines pass ---
-        {
-            let inv_vp = deerpunk_engine_common::coord::mat4_inverse(snapshot.view_proj);
-            let debug_view = DebugViewUniform {
-                inv_view_proj: inv_vp,
-                view_proj: snapshot.view_proj,
-                sun_dir: [0.0; 4],
-                camera_pos: [
-                    snapshot.camera_pos[0],
-                    snapshot.camera_pos[1],
-                    snapshot.camera_pos[2],
-                    1.0,
-                ],
-                params: [[0.0; 4]; 8],
-            };
-            self.queue.write_buffer(
-                &self.debug_globals_buf,
-                0,
-                bytemuck::bytes_of(&debug_view),
-            );
-
-            let verts = crate::debug_draw::collect_vertices(snapshot, 1.5, 120000);
-            if !verts.is_empty() {
-                self.ensure_depth(frame_width(), frame_height());
-                self.ensure_debug_pipelines(format);
-
-                self.queue
-                    .write_buffer(&self.debug_vertex_buf, 0, bytemuck::cast_slice(&verts));
-                let vcount = verts.len() as u32;
-                let depth_view = self.depth_view.as_ref().unwrap();
-
-                // 1) Behind geometry — dim (depth test: farther than scene).
-                if let Some(ref pipeline) = self.debug_pipeline_occluded {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("debug occluded"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: depth_view,
-                            depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: None,
-                        }),
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    draw_acc.note_pipeline();
-                    pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, &self.debug_globals_bg, &[]);
-                    pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
-                    pass.draw(0..vcount, 0..1);
-                    draw_acc.note_draw_verts(vcount);
-                }
-
-                // 2) In front / on surface — full color.
-                if let Some(ref pipeline) = self.debug_pipeline {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("debug visible"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: depth_view,
-                            depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: None,
-                        }),
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    draw_acc.note_pipeline();
-                    pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, &self.debug_globals_bg, &[]);
-                    pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
-                    pass.draw(0..vcount, 0..1);
-                    draw_acc.note_draw_verts(vcount);
-                }
-                prof.debug_verts = vcount;
-            }
-        }
-        prof.record_pass("debug pass", lap_ms(&mut lap));
-
-        // --- Storm pass: DISABLED (pipeline format mismatch: hdr_format vs surface format) ---
-        // if let Some(ref storm_data) = snapshot.storm {
-        // if !storm_data.infected.is_empty() {
-        //     // Upload infected bitmap to GPU texture
-        //     self.queue.write_texture(
-        //         wgpu::TexelCopyTextureInfo {
-        //             texture: &self.storm_texture,
-        //             mip_level: 0,
-        //             origin: wgpu::Origin3d::ZERO,
-        //             aspect: wgpu::TextureAspect::All,
-        //         },
-        //         &storm_data.infected,
-        //         wgpu::TexelCopyBufferLayout {
-        //             offset: 0,
-        //             bytes_per_row: Some(64),
-        //             rows_per_image: Some(64),
-        //         },
-        //         wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
-        //     );
-        //
-        //     // Upload storm uniform
-        //     let uniform = StormUniform {
-        //         inv_view_proj: snapshot.inv_view_proj,
-        //         camera_pos: [0.0; 4],
-        //         params: [64.0, 4.0, snapshot.game_time, 0.0], // map_size=64, tile_meters=4.0
-        //     };
-        //     self.queue.write_buffer(&self.storm_uniform_buf, 0, bytemuck::bytes_of(&uniform));
-        //
-        //     // Rebuild bind group (texture view may have changed)
-        //     self.storm_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //         label: Some("storm bg"),
-        //         layout: &self.storm_bg_layout,
-        //         entries: &[
-        //             wgpu::BindGroupEntry {
-        //                 binding: 0,
-        //                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-        //                     buffer: &self.storm_uniform_buf,
-        //                     offset: 0,
-        //                     size: None,
-        //                 }),
-        //             },
-        //             wgpu::BindGroupEntry {
-        //                 binding: 1,
-        //                 resource: wgpu::BindingResource::TextureView(&self.storm_view),
-        //             },
-        //             wgpu::BindGroupEntry {
-        //                 binding: 2,
-        //                 resource: wgpu::BindingResource::Sampler(&self.storm_sampler),
-        //             },
-        //         ],
-        //     });
-        //
-        //     let format = self.hdr_format;
-        //     if !self.storm_pipelines.contains_key(&format) {
-        //         let p = self.build_storm_pipeline(format);
-        //         self.storm_pipelines.insert(format, p);
-        //     }
-        //     let pipeline = self.storm_pipelines.get(&format).unwrap();
-        //
-        //     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        //         label: Some("storm pass"),
-        //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        //             view,
-        //             depth_slice: None,
-        //             resolve_target: None,
-        //             ops: wgpu::Operations {
-        //                 load: wgpu::LoadOp::Load,
-        //                 store: wgpu::StoreOp::Store,
-        //             },
-        //         })],
-        //         depth_stencil_attachment: None,
-        //         timestamp_writes: None,
-        //         occlusion_query_set: None,
-        //         multiview_mask: None,
-        //     });
-        //     pass.set_pipeline(pipeline);
-        //     pass.set_bind_group(0, &self.storm_bg, &[]);
-        //     pass.draw(0..3, 0..1);
-        // }
-        // }
-
-        // --- Pass 2: HUD overlay (load, no clear) ---
-        if !snapshot.hud.is_empty() {
-            let gpu_hud = self.build_instances_from(&snapshot.hud);
-            self.write_hud_buffers(&gpu_hud, hud_vp);
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("hud pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            draw_acc.note_pipeline();
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &self.hud_globals_bg, &[]);
-            Self::draw_batched(
-                &mut pass,
-                &snapshot.hud,
-                &self.sprite_bg,
-                &self.map_bg,
-                &self.font_bg,
-                &mut draw_acc,
-            );
-        }
-        prof.record_pass("hud pass", lap_ms(&mut lap));
-
-        // --- Luminance pass: HDR → 64x64 log-lum (`r_exposure -1` auto-exposure only) ---
-        if self.auto_exposure_enabled() {
-            if let (Some(lum_view), Some(hdr_view)) =
-                (self.lum_view.clone(), self.hdr_view.clone())
-            {
-            self.ensure_lum_pipeline();
-            let pipeline = self.lum_pipeline.as_ref().unwrap();
-            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("luminance bg"),
-                layout: &self.lum_bg_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&hdr_view),
-                }],
-            });
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("luminance pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &lum_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            draw_acc.note_pipeline();
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bg, &[]);
-            pass.draw(0..3, 0..1);
-            draw_acc.note_draw_verts(3);
-            prof.record_pass("luminance pass", lap_ms(&mut lap));
-            }
-        } else {
-            lap_ms(&mut lap);
-        }
-
-        // --- Bloom → tonemap → grain → surface ---
-        if let Some(surface_view) = surface_view {
-            self.ensure_tonemap_pipeline(format);
-            let hdr_view_ref = self.hdr_view.as_ref().expect("HDR texture not initialized");
-            let w = frame_width();
-            let h = frame_height();
-            let exposure = self.exposure;
-            let tonemap_mode = self.tonemap_mode;
-            let game_time = snapshot.game_time;
-            let pipeline = self.tonemap_pipeline.as_ref().unwrap().clone();
-            self.postfx.encode_tonemap_chain(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                hdr_view_ref,
-                w,
-                h,
-                format,
-                surface_view,
-                &pipeline,
-                &self.tonemap_uniform_buf,
-                exposure,
-                tonemap_mode,
-                game_time,
-                Some(&mut prof),
-            );
-            lap_ms(&mut lap);
-
-            // UI overlay (RmlUi geometry) on LDR surface
-            if let Some(ui) = self.pending_ui.take() {
-                let device = &self.device;
-                let queue = &self.queue;
-                let ui_pass = &mut self.ui_pass;
-                ui_pass.encode(device, queue, &mut encoder, surface_view, format, &ui, Some(&mut prof));
-                lap_ms(&mut lap);
-            } else {
-                lap_ms(&mut lap);
-            }
-        }
+        crate::frame::executor::run_frame_graph(self, &mut frame_ctx, &mut encoder, &pipeline, hud_vp);
 
         prof.total_encode_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         let frustum_occluded = if snapshot.frustum_culled {

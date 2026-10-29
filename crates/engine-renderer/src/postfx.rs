@@ -767,6 +767,9 @@ impl PostFx {
         self.ensure_frame_binds(device, hdr_view, tonemap_uniform_buf);
         let binds = self.frame_binds.as_ref().unwrap();
 
+        // POSTFX OFF: bloom + grain disabled (commented).
+        let use_bloom = false;
+        /*
         let use_bloom = self.bloom_enabled && self.bloom_intensity > 0.001;
         if use_bloom {
             let a = self.bloom_a_view.as_ref().unwrap().clone();
@@ -851,13 +854,14 @@ impl PostFx {
                 pass.draw(0..3, 0..1);
             }
             if let Some(p) = prof.as_mut() {
-                p.record_pass("postfx bloom", lap_ms(&mut lap));
+                lap_ms(&mut lap);
             } else {
                 lap_ms(&mut lap);
             }
         } else {
             lap_ms(&mut lap);
         }
+        */
 
         let globals = TonemapGlobals {
             screen: [w as f32, h as f32],
@@ -878,6 +882,7 @@ impl PostFx {
             &binds.tonemap_hdr
         };
 
+        /* POSTFX grain off
         if self.grain_enabled && self.grain_strength > 0.001 {
             let ldr_view = self.ldr_view.as_ref().unwrap().clone();
             let tonemap_ldr = self.tonemap_ldr_pipeline.as_ref().unwrap().clone();
@@ -903,7 +908,7 @@ impl PostFx {
                 pass.draw(0..3, 0..1);
             }
             if let Some(p) = prof.as_mut() {
-                p.record_pass("postfx tonemap", lap_ms(&mut lap));
+                lap_ms(&mut lap);
             }
 
             let frame_idx = (game_time * GRAIN_FPS).floor();
@@ -939,8 +944,10 @@ impl PostFx {
                 pass.draw(0..3, 0..1);
             }
             if let Some(p) = prof.as_mut() {
-                p.record_pass("postfx grain", lap_ms(&mut lap));
+                lap_ms(&mut lap);
             }
+        } */
+        if false {
         } else {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("tonemap pass"),
@@ -962,7 +969,7 @@ impl PostFx {
             pass.set_bind_group(0, tonemap_bg, &[]);
             pass.draw(0..3, 0..1);
             if let Some(p) = prof.as_mut() {
-                p.record_pass("postfx tonemap", lap_ms(&mut lap));
+                lap_ms(&mut lap);
             }
         }
     }

@@ -35,7 +35,9 @@ pub mod infobox;
 pub mod mesh_alloc_debug;
 pub mod bone_buffer_pool;
 pub mod mesh_lifecycle;
+pub mod render_extract_cache;
 pub mod render_extractor;
+pub mod scene;
 pub mod ui_controller;
 
 pub use ui_controller::UiController;

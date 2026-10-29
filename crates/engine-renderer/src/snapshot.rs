@@ -497,6 +497,15 @@ pub struct SceneGeometry {
     pub terrain_splat_draws: Vec<TerrainSplatDraw>,
     pub sky: Option<SkyDraw>,
     pub point_lights: Vec<PointLightDraw>,
+    /// Hash of mesh + skinned draw keys/bounds; bump via [`Self::refresh_cull_serial`].
+    pub cull_serial: u64,
+}
+
+impl SceneGeometry {
+    /// Recompute [`Self::cull_serial`] once per extract (O(n); cull uses O(1) compare).
+    pub fn refresh_cull_serial(&mut self) {
+        self.cull_serial = crate::cull::scene_geometry_cull_serial(self);
+    }
 }
 
 impl Default for SceneGeometry {
@@ -508,6 +517,7 @@ impl Default for SceneGeometry {
             terrain_splat_draws: Vec::new(),
             sky: None,
             point_lights: Vec::new(),
+            cull_serial: 0,
         }
     }
 }
@@ -584,13 +594,13 @@ impl RenderScene {
         aspect: f32,
         scratch: &mut CullScratch,
     ) -> Vec<CameraRenderSnapshot> {
+        scratch.reset_build_timing();
         self.cameras
             .iter()
             .map(|cam| {
                 let view = cam.view_matrix();
                 let projection = cam.projection_matrix(aspect);
                 let view_proj = projection * view;
-                let inv_view_proj = view_proj.inverse();
                 let cull_cam = CullCamera {
                     view_proj,
                     view,
@@ -600,11 +610,14 @@ impl RenderScene {
                     aspect,
                 };
 
+                let frustum_start = std::time::Instant::now();
+                let cull_serial = self.geometry.cull_serial;
                 let (frustum_culled, cull_stats, visible_mesh, visible_skinned) =
                     if self.cull.enabled {
                         let (mt, mv) = cull_mesh_indices(
                             &self.geometry.mesh_draws,
                             &cull_cam,
+                            cull_serial,
                             self.cull.cell_size,
                             scratch,
                         );
@@ -612,10 +625,12 @@ impl RenderScene {
                         let (st, sv) = cull_skinned_indices(
                             &self.geometry.skinned_mesh_draws,
                             &cull_cam,
+                            cull_serial,
                             self.cull.cell_size,
                             scratch,
                         );
                         let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
+                        scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
                         (
                             true,
                             CullStats {
@@ -630,6 +645,7 @@ impl RenderScene {
                     } else {
                         let n = self.geometry.mesh_draws.len() as u32;
                         let s = self.geometry.skinned_mesh_draws.len() as u32;
+                        scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
                         (
                             false,
                             CullStats {
@@ -643,7 +659,9 @@ impl RenderScene {
                         )
                     };
 
-                CameraRenderSnapshot {
+                let assemble_start = std::time::Instant::now();
+                let inv_view_proj = view_proj.inverse();
+                let snap = CameraRenderSnapshot {
                     view,
                     projection,
                     view_proj,
@@ -658,7 +676,9 @@ impl RenderScene {
                     game_time: self.game_time,
                     target: cam.target.clone(),
                     cull_stats,
-                }
+                };
+                scratch.last_assemble_ms += assemble_start.elapsed().as_secs_f32() * 1000.0;
+                snap
             })
             .collect()
     }

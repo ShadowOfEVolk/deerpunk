@@ -18,6 +18,10 @@ use deerpunk_engine_renderer::snapshot::{
 use deerpunk_engine_renderer::world_bounds;
 use deerpunk_engine_renderer::SceneExtractGpuStats;
 
+use crate::render_extract_cache::{
+    static_mesh_key, static_skinned_key, MeshDrawExtractCache,
+};
+
 pub struct RenderExtractor {
     q_cameras: QueryId,
     q_draw_materials: QueryId,
@@ -26,6 +30,7 @@ pub struct RenderExtractor {
     q_skinned: QueryId,
     char_id: ComponentId,
     mesh_draw_aux_id: ComponentId,
+    mesh_cache: MeshDrawExtractCache,
 }
 
 impl RenderExtractor {
@@ -39,15 +44,20 @@ impl RenderExtractor {
         let _ = world.component_init::<PointLight>();
         let char_id = world.component_init::<CharacterController>();
         let mesh_draw_aux_id = world.component_init::<MeshDrawAux>();
+        let _ = world.component_init::<deerpunk_engine_common::components::MeshDrawHidden>();
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
-            q_draw_materials: world.query_prepare("TransformComponent, Mesh3D, DrawMaterial"),
+            q_draw_materials: world
+                .query_prepare("TransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden"),
             q_terrain_splat: world
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
-            q_skinned: world.query_prepare("TransformComponent, SkinnedMesh3D, DrawMaterial"),
+            q_skinned: world.query_prepare(
+                "TransformComponent, SkinnedMesh3D, DrawMaterial, !MeshDrawHidden",
+            ),
             char_id,
             mesh_draw_aux_id,
+            mesh_cache: MeshDrawExtractCache::new(),
         }
     }
 
@@ -57,7 +67,7 @@ impl RenderExtractor {
     /// `material_allocator` — shared GPU SSBO (same buffer the renderer binds).
     /// `device` / `queue` — for lazy GPU upload of new materials.
     pub fn extract(
-        &self,
+        &mut self,
         world: &World,
         meshes: &MeshRegistry,
         view_entity: Option<u64>,
@@ -67,6 +77,8 @@ impl RenderExtractor {
         queue: &wgpu::Queue,
         _fallback_mesh: &Arc<deerpunk_engine_common::resource::mesh::Mesh>,
         gpu_stats: &mut SceneExtractGpuStats,
+        aspect: f32,
+        early_cull: bool,
     ) -> RenderScene {
         let fallback_mesh = _fallback_mesh.clone();
         let resolve = |ent: u64,
@@ -88,6 +100,8 @@ impl RenderExtractor {
             fallback_mesh.clone()
         };
         let mut scene = RenderScene::new();
+        let extract_body_start = std::time::Instant::now();
+        self.mesh_cache.begin_frame();
 
         if let Some(batches) = world.query_batches(self.q_cameras) {
             for batch in batches {
@@ -134,6 +148,16 @@ impl RenderExtractor {
             }
         }
 
+        let extract_frustum = if early_cull {
+            scene
+                .cameras
+                .first()
+                .map(|c| MeshDrawExtractCache::frustum_from_camera(c, aspect))
+        } else {
+            None
+        };
+        let frustum_ref = extract_frustum.as_ref();
+
         if let Some(batches) = world.query_batches(self.q_draw_materials) {
             for batch in batches {
                 let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
@@ -155,40 +179,6 @@ impl RenderExtractor {
                     let m = &meshes[i];
                     let dm = &draw_mats[i];
 
-                    let model = glam::Mat4::from_scale_rotation_translation(
-                        t.scale, t.rotation, t.position,
-                    );
-                    let model_mat = model.to_cols_array_2d();
-                    let mesh = resolve(ent, m.mesh);
-                    let world_bounds = world_bounds(model, &mesh);
-
-                    let (texture, normal, orm) = match material_store.get(dm.handle) {
-                        Some(e) => (e.albedo, e.normal, e.orm),
-                        None => (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE),
-                    };
-                    let t0 = std::time::Instant::now();
-                    let material_id = material_store.resolve_gpu_tracked(
-                        dm.handle,
-                        material_allocator,
-                        device,
-                        queue,
-                        Some(gpu_stats),
-                    );
-                    gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
-
-                    let (shader_id, lightmap_gpu) = material_store
-                        .get(dm.handle)
-                        .map(|e| (e.shader, e.lightmap_id))
-                        .unwrap_or((0, 0));
-
-                    if shader_id == 0 {
-                        panic!(
-                        "DrawMaterial entity {ent:#x} handle {:?}: shader not loaded (shader_id=0)",
-                        dm.handle
-                    );
-                        continue;
-                    }
-
                     let uniform_aux = if self.mesh_draw_aux_id != 0 {
                         let ptr = world.get_raw(ent, self.mesh_draw_aux_id);
                         if ptr.is_null() {
@@ -199,32 +189,65 @@ impl RenderExtractor {
                     } else {
                         0
                     };
-                    let batchable = m.mesh.is_valid()
-                        && mesh.allocator_id != 0
-                        && t.position == glam::Vec3::ZERO
-                        && t.rotation == glam::Quat::IDENTITY
-                        && t.scale == glam::Vec3::ONE
-                        && uniform_aux == 0;
+                    let static_key = static_mesh_key(m, dm, uniform_aux);
+                    let ent_copy = ent;
+                    let dm_handle = dm.handle;
+                    self.mesh_cache.push_mesh(
+                        ent,
+                        t,
+                        m,
+                        static_key,
+                        || {
+                            let mesh = resolve(ent_copy, m.mesh);
+                            let (texture, normal, orm) = match material_store.get(dm_handle) {
+                                Some(e) => (e.albedo, e.normal, e.orm),
+                                None => {
+                                    (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE)
+                                }
+                            };
+                            let t0 = std::time::Instant::now();
+                            let material_id = material_store.resolve_gpu_tracked(
+                                dm_handle,
+                                material_allocator,
+                                device,
+                                queue,
+                                Some(gpu_stats),
+                            );
+                            gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
 
-                    gpu_stats.mesh_draws += 1;
-                    scene.geometry.mesh_draws.push(MeshDraw {
-                        mesh,
-                        model_mat,
-                        batchable,
-                        material_id,
-                        texture,
-                        normal,
-                        orm,
-                        sun_dir: [0.0, 0.0, 1.0, 0.0],
-                        ambient: [0.0; 4],
-                        shader_id,
-                        lightmap_gpu,
-                        first_index: 0,
-                        index_count: 0,
-                        world_bounds,
-                        entity_id: ent,
-                        uniform_aux,
-                    });
+                            let (shader_id, lightmap_gpu) = material_store
+                                .get(dm_handle)
+                                .map(|e| (e.shader, e.lightmap_id))
+                                .unwrap_or((0, 0));
+
+                            if shader_id == 0 {
+                                panic!(
+                                    "DrawMaterial entity {ent_copy:#x} handle {:?}: shader not loaded (shader_id=0)",
+                                    dm_handle
+                                );
+                            }
+
+                            Some(MeshDraw {
+                                mesh,
+                                model_mat: [[0.0; 4]; 4],
+                                batchable: false,
+                                material_id,
+                                texture,
+                                normal,
+                                orm,
+                                sun_dir: [0.0, 0.0, 1.0, 0.0],
+                                ambient: [0.0; 4],
+                                shader_id,
+                                lightmap_gpu,
+                                first_index: 0,
+                                index_count: 0,
+                                world_bounds: deerpunk_engine_renderer::Aabb::default(),
+                                entity_id: ent_copy,
+                                uniform_aux,
+                            })
+                        },
+                        frustum_ref,
+                    );
                 }
             }
         }
@@ -295,39 +318,48 @@ impl RenderExtractor {
                     if sm.bone_buffer == 0 {
                         continue;
                     }
-                    let model = glam::Mat4::from_scale_rotation_translation(
-                        t.scale, t.rotation, t.position,
+                    let static_key = static_skinned_key(sm.mesh, dm, sm.bone_buffer);
+                    let ent_copy = ent;
+                    let dm_handle = dm.handle;
+                    let bone_buffer = sm.bone_buffer;
+                    self.mesh_cache.push_skinned(
+                        ent,
+                        t,
+                        static_key,
+                        || {
+                            let mesh = resolve(ent_copy, sm.mesh);
+                            let (texture, normal, orm) = match material_store.get(dm_handle) {
+                                Some(e) => (e.albedo, e.normal, e.orm),
+                                None => {
+                                    (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE)
+                                }
+                            };
+                            let t0 = std::time::Instant::now();
+                            let material_id = material_store.resolve_gpu_tracked(
+                                dm_handle,
+                                material_allocator,
+                                device,
+                                queue,
+                                Some(gpu_stats),
+                            );
+                            gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
+                            let shader_id =
+                                material_store.get(dm_handle).map(|e| e.shader).unwrap_or(0);
+                            Some(SkinnedMeshDraw {
+                                mesh,
+                                model_mat: [[0.0; 4]; 4],
+                                material_id,
+                                texture,
+                                normal,
+                                orm,
+                                shader_id,
+                                bone_buffer,
+                                world_bounds: deerpunk_engine_renderer::Aabb::default(),
+                                entity_id: ent_copy,
+                            })
+                        },
+                        frustum_ref,
                     );
-                    let model_mat = model.to_cols_array_2d();
-                    let mesh = resolve(ent, sm.mesh);
-                    let world_bounds = world_bounds(model, &mesh);
-                    let (texture, normal, orm) = match material_store.get(dm.handle) {
-                        Some(e) => (e.albedo, e.normal, e.orm),
-                        None => (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE),
-                    };
-                    let t0 = std::time::Instant::now();
-                    let material_id = material_store.resolve_gpu_tracked(
-                        dm.handle,
-                        material_allocator,
-                        device,
-                        queue,
-                        Some(gpu_stats),
-                    );
-                    gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
-                    let shader_id = material_store.get(dm.handle).map(|e| e.shader).unwrap_or(0);
-                    gpu_stats.skinned_draws += 1;
-                    scene.geometry.skinned_mesh_draws.push(SkinnedMeshDraw {
-                        mesh,
-                        model_mat,
-                        material_id,
-                        texture,
-                        normal,
-                        orm,
-                        shader_id,
-                        bone_buffer: sm.bone_buffer,
-                        world_bounds,
-                        entity_id: ent,
-                    });
                 }
             }
         }
@@ -353,6 +385,22 @@ impl RenderExtractor {
                 }
             }
         }
+
+        gpu_stats.extractor_ms = extract_body_start.elapsed().as_secs_f32() * 1000.0;
+        gpu_stats.extract_static_rebuild = self.mesh_cache.static_rebuild;
+        gpu_stats.extract_xform_only = self.mesh_cache.xform_only;
+        gpu_stats.extract_cache_hit = self.mesh_cache.full_hit;
+        gpu_stats.extract_frustum_skip = self.mesh_cache.frustum_skip;
+
+        scene.geometry.mesh_draws = self.mesh_cache.take_mesh_out();
+        scene.geometry.skinned_mesh_draws = self.mesh_cache.take_skinned_out();
+        gpu_stats.mesh_draws = scene.geometry.mesh_draws.len() as u32;
+        gpu_stats.skinned_draws = scene.geometry.skinned_mesh_draws.len() as u32;
+        self.mesh_cache.finish_frame();
+
+        let serial_start = std::time::Instant::now();
+        scene.geometry.refresh_cull_serial();
+        gpu_stats.cull_serial_ms = serial_start.elapsed().as_secs_f32() * 1000.0;
 
         scene
     }
