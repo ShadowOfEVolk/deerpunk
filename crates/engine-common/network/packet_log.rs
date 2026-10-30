@@ -75,6 +75,7 @@ pub fn clc_label(cmd: u8) -> &'static str {
         Some(CLC::Nop) => "CLC::Nop",
         Some(CLC::Bad) => "CLC::Bad",
         Some(CLC::UserCmd) => "CLC::UserCmd",
+        Some(CLC::ClientCommand) => "CLC::ClientCommand",
         None => "CLC::?",
     }
 }
@@ -136,6 +137,12 @@ pub fn format_clc_line(packet: &[u8]) -> String {
     let payload_len = packet.len().saturating_sub(1);
     match CLC::from_u8(cmd) {
         Some(CLC::UserCmd) => format!("{} payload={}", clc_label(cmd), payload_len),
+        Some(CLC::ClientCommand) => {
+            let payload = &packet[1..];
+            let text = deerpunk_engine_network::decode_client_command_payload(payload)
+                .unwrap_or("<bad>");
+            format!("{} \"{}\"", clc_label(cmd), text)
+        }
         _ => {
             if payload_len == 0 {
                 clc_label(cmd).to_string()

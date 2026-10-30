@@ -151,6 +151,52 @@ impl crate::Host {
         0
     }
 
+    #[methoddb::bind(name = "send_client_command")]
+    pub fn api_net_send_client_command(&mut self, line: &str) -> i32 {
+        #[cfg(not(any(feature = "client", feature = "full")))]
+        {
+            let _ = line;
+            return -1;
+        }
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            let Some(packet) = deerpunk_engine_common::network::encode_client_command_clc(line) else {
+                return -1;
+            };
+            self.send_clc_packet(packet);
+            0
+        }
+    }
+
+    #[methoddb::bind(name = "pop_client_command")]
+    pub fn api_net_pop_client_command(
+        &mut self,
+        out_slot: *mut f32,
+        out_buf: *mut u8,
+        out_buf_len: usize,
+    ) -> i32 {
+        if self.server_engine.is_none() {
+            return -1;
+        }
+        if out_slot.is_null() || out_buf.is_null() {
+            return -1;
+        }
+        let engine = self.server_mut();
+        let Some((slot, line)) = engine.pending_client_commands.first().cloned() else {
+            return 0;
+        };
+        let bytes = line.as_bytes();
+        if bytes.len() > out_buf_len {
+            return -2;
+        }
+        engine.pending_client_commands.remove(0);
+        unsafe {
+            *out_slot = slot as f32;
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, bytes.len());
+        }
+        bytes.len() as i32
+    }
+
     #[methoddb::bind(name = "player_net_id")]
     pub fn api_net_player_net_id(&self, slot: u32) -> u32 {
         #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]

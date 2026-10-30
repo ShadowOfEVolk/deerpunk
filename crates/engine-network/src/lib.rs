@@ -12,6 +12,7 @@ pub mod session;
 pub mod sound_event;
 pub mod user_message;
 pub mod move_ack;
+pub mod client_command;
 pub mod usercmd;
 
 pub use component_types::ComponentType;
@@ -30,6 +31,7 @@ pub use user_message::{
     encode_set_view, UserMessageRpc, UM_DEST_BROADCAST,
 };
 pub use move_ack::UserCmdAckRpc;
+pub use client_command::{decode_payload as decode_client_command_payload, encode_clc_packet as encode_client_command_clc, MAX_CLIENT_COMMAND_LEN};
 pub use usercmd::{
     UserCmd, AXIS_COUNT, AXIS_FORWARD, AXIS_RESERVED, AXIS_SIDE, AXIS_UP, BUTTON_ATTACK,
     BUTTON_BACK, BUTTON_DUCK, BUTTON_FORWARD, BUTTON_JUMP, BUTTON_MOVELEFT, BUTTON_MOVERIGHT,

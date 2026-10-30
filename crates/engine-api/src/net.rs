@@ -24,6 +24,8 @@ type ServerActivatedFn = extern "C" fn(*mut u8) -> i32;
 type InGameFn = extern "C" fn(*mut u8) -> i32;
 type SetPlayerEntityFn = extern "C" fn(*mut u8, u32, u64) -> i32;
 type SendUsercmdFn = extern "C" fn(*mut u8, *const u8, usize) -> i32;
+type SendClientCommandFn = extern "C" fn(*mut u8, *const u8, usize) -> i32;
+type PopClientCommandFn = extern "C" fn(*mut u8, *mut f32, *mut u8, usize) -> i32;
 type GetUsercmdFn = extern "C" fn(*mut u8, u32, *mut u8, usize) -> i32;
 type MoveSnapshotFn = extern "C" fn(*mut u8, *mut f32, usize, *mut u64) -> i32;
 /// yaw, pitch, roll, eye_height, fov_y (radians where angular).
@@ -61,6 +63,8 @@ pub struct NetApi {
     in_game_fn: InGameFn,
     set_player_entity_fn: SetPlayerEntityFn,
     send_usercmd_fn: SendUsercmdFn,
+    send_client_command_fn: SendClientCommandFn,
+    pop_client_command_fn: PopClientCommandFn,
     get_usercmd_fn: GetUsercmdFn,
     move_snapshot_fn: MoveSnapshotFn,
     local_entity_fn: LocalEntityFn,
@@ -98,6 +102,12 @@ impl NetApi {
                 std::mem::transmute(resolve(r, "v1:players:set_entity"))
             },
             send_usercmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:send_usercmd")) },
+            send_client_command_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:net:send_client_command"))
+            },
+            pop_client_command_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:net:pop_client_command"))
+            },
             get_usercmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:players:get_usercmd")) },
             move_snapshot_fn: unsafe { std::mem::transmute(resolve(r, "v1:move:snapshot")) },
             local_entity_fn: unsafe {
@@ -188,6 +198,35 @@ impl NetApi {
             1 => Ok(UsercmdSend::Throttled),
             _ => Err("net.send_usercmd failed".into()),
         }
+    }
+
+    /// Client → server gamelib command (`CLC::ClientCommand`), e.g. `selectslot 3`.
+    pub fn send_client_command(&self, line: &str) -> Result<(), String> {
+        let bytes = line.as_bytes();
+        let rc = (self.send_client_command_fn)(self.ctx, bytes.as_ptr(), bytes.len());
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("net.send_client_command failed: {line}"))
+        }
+    }
+
+    /// Server: drain one queued client command (FIFO).
+    pub fn pop_client_command(&self) -> Option<(u32, String)> {
+        use deerpunk_engine_network::MAX_CLIENT_COMMAND_LEN;
+        let mut slot = 0.0f32;
+        let mut buf = [0u8; MAX_CLIENT_COMMAND_LEN];
+        let n = (self.pop_client_command_fn)(
+            self.ctx,
+            &mut slot,
+            buf.as_mut_ptr(),
+            buf.len(),
+        );
+        if n <= 0 {
+            return None;
+        }
+        let line = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
+        Some((slot as u32, line))
     }
 
     pub fn usercmd_ack(&self) -> u32 {

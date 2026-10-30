@@ -68,6 +68,8 @@ pub enum CLC {
     /// UserCmd blob (see [`super::usercmd::UserCmd`]).
     /// Format: `[u8; 64]` payload.
     UserCmd = 2,
+    /// UTF-8 command line for the server gamelib (see [`super::client_command`]).
+    ClientCommand = 3,
 }
 
 impl CLC {
@@ -76,6 +78,7 @@ impl CLC {
             0 => Some(Self::Nop),
             1 => Some(Self::Bad),
             2 => Some(Self::UserCmd),
+            3 => Some(Self::ClientCommand),
             _ => None,
         }
     }

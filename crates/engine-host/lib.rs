@@ -51,6 +51,7 @@ pub use deerpunk_engine_common::world;
 
 pub use crate::cmd::CmdCallback;
 use deerpunk_engine_common::network::protocol::{CLC, SVC};
+use deerpunk_engine_common::network::decode_client_command_payload;
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::{UserCmd, UserCmdAckRpc};
@@ -1644,6 +1645,20 @@ impl Host {
                 };
                 engine.players.set_usercmd(slot, ucmd);
             }
+            CLC::ClientCommand => {
+                let engine = self.server_mut();
+                if engine.enabled && !engine.slots_play.accepts_usercmd(slot) {
+                    return;
+                }
+                let payload = &packet[1..];
+                let Some(line) = decode_client_command_payload(payload) else {
+                    log::warn!("[sv] bad ClientCommand from slot={slot}");
+                    return;
+                };
+                engine
+                    .pending_client_commands
+                    .push((slot, line.to_string()));
+            }
         }
     }
 
@@ -1655,6 +1670,33 @@ impl Host {
         for packet in self.loopback.receive_client_packets() {
             self.parse_client_message(slot, &packet);
         }
+    }
+
+    /// Client → server CLC (UserCmd, ClientCommand, …).
+    #[cfg(any(feature = "client", feature = "full"))]
+    pub(crate) fn send_clc_packet(&mut self, packet: Vec<u8>) {
+        let via = if self.client_net_active() {
+            "c2s udp"
+        } else {
+            "c2s local"
+        };
+        crate::net_packet_log::log_clc_out(&self.cvar, via, &packet);
+        if self.client_net_active() {
+            if !self.client_in_play() {
+                return;
+            }
+            self.client_engine.as_mut().unwrap().network.send_c2s(packet);
+            return;
+        }
+        let server_on = self
+            .server_thread
+            .as_ref()
+            .map(|s| s.is_enabled())
+            .unwrap_or_else(|| self.server_engine.as_ref().map(|e| e.enabled).unwrap_or(false));
+        if !self.client_in_play() || !server_on {
+            return;
+        }
+        self.loopback.send_client_packet(packet);
     }
 
     pub fn alloc_sound_id(&mut self) -> u32 {

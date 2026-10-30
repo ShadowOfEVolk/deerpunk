@@ -9,6 +9,7 @@ pub use deerpunk_engine_network::{
     BUTTON_ATTACK2, BUTTON_ATTACK3, BUTTON_DROP, BUTTON_SPEED, BUTTON_USE,
     decode_light_style, decode_map_name, decode_set_view, encode_light_style, encode_map_name,
     encode_set_view, UserMessageRpc, UM_DEST_BROADCAST,
+    decode_client_command_payload, encode_client_command_clc, MAX_CLIENT_COMMAND_LEN,
     SoundPlayRpc, SoundStopRpc, SND_FLAG_2D, SND_FLAG_LOOP, SND_FLAG_NET_ENTITY,
 };
 

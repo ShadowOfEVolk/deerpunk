@@ -5,5 +5,6 @@ edition = "2021"
 
 [dependencies]
 deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-network = { path = "../engine-network" }
 deerpunk-engine-ffi = { path = "../engine-ffi" }
 glam = "0.33"

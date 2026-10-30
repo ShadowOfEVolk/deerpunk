@@ -52,6 +52,8 @@ pub struct ServerEngine {
     pub network: ServerNet,
     /// Monotonic server sim tick (for UserCmdAck).
     pub sim_tick: u32,
+    /// Queued `CLC::ClientCommand` lines per player slot (drained by server gamelib).
+    pub pending_client_commands: Vec<(u32, String)>,
 }
 
 impl ServerEngine {
@@ -71,6 +73,7 @@ impl ServerEngine {
             slots_play: SlotPlayGate::default(),
             network: ServerNet::default(),
             sim_tick: 0,
+            pending_client_commands: Vec::new(),
         }
     }
 

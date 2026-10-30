@@ -742,6 +742,7 @@ version = "0.1.0"
 dependencies = [
  "deerpunk-engine-common",
  "deerpunk-engine-ffi",
+ "deerpunk-engine-network",
  "glam 0.33.3",
 ]
 
