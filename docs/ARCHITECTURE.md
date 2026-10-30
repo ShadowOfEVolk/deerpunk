@@ -1,214 +1,182 @@
-# Архитектура deerpunk
+# Architecture
 
-Закон слоёв движка. Новая фича должна попадать в один слой и один контракт.
-Если непонятно куда — сначала во внутренний Rust API, в ABI gamelib выносить только по необходимости.
+deerpunk splits **simulation** (server), **presentation** (client), and **GPU** (renderer) into separate crates. A single **host** process loads your game library and drives the frame loop.
 
-## Слои и crates
+## Crate map
 
-```
-bin (deerpunk)          — точка входа, грузит DLL, крутит Host::run
-crates/engine-host             — Host: склейка систем, MethodDB, загрузка ServerDll
-crates/engine-server           — серверная логика движка (без окна/GPU)
-crates/engine-client           — окно, ввод, extract сцены → snapshot
-crates/engine-renderer         — только GPU: snapshot → кадр (wgpu)
-crates/engine-common           — ядро: ECS World, физика, ресурсы, типы
-crates/engine-network          — wire: SVC/CLC, UserCmd, LAN, loopback (без Flecs)
-crates/engine-resource         — ResourceManager, mesh, WAD, встроенные loaders (file/wad/shader/texgen)
-crates/engine-api       — единственный safe ABI для game DLL (без линка на host)
-```
-
-Правило зависимостей:
-
-| Crate | Можно | Нельзя |
-|---|---|---|
-| `common` | math, flecs, rapier, serde | wgpu, window, imgui, host, client, renderer |
-| `server` | common | client, renderer, host |
-| `client` | common, renderer (snapshot API) | host internals, мутация мира вне extract |
-| `renderer` | common types + snapshot | host, server, flecs World, game DLL |
-| `host` | common, server, client (features) | прямой доступ из DLL к полям Host |
-| `engine-api` | POD / ABI типы | host, common, flecs, wgpu |
-
-Три контракта (не смешивать):
-
-1. **ABI gamelib** — `ServerInitData`, строки `v1:*`, POD-компоненты (`crates/engine-api` + trampolines в `host/engine_api`).
-2. **Внутренний Rust API** — `World`, `PhysicsWorld`, schedule (`crates/engine-common`, `crates/engine-host`).
-3. **Render contract** — `RenderScene` / `RenderSnapshot` (`crates/engine-renderer`). Renderer не знает про ECS.
-
----
-
-## Host
-
-`Host` (`crates/engine-host`) — процессный оркестратор. Не геймплей.
-
-Владеет:
-
-- `ServerEngine` — ECS-мир + физика (серверная сторона)
-- `ClientEngine` (feature `client`/`full`) — окно, ввод, рендер
-- `CmdSystem` / `CvarSystem` / `FileSystem`
-- `ResourceManager` — ассеты (см. [assets.md](assets.md))
-- `ServerDll` — загруженная game library
-
-Жизненный цикл:
-
-1. `Host::new` — создать подсистемы
-2. `initialize(gamedir)` — FS, cvar, cmd, `autoexec.cfg`, регистрация встроенных компонентов
-3. `load_server_dll` — передать DLL `ctx` (= указатель на Host) и resolver MethodDB
-4. `run` / `frame` — тик: DLL → симуляция мира → extract → render
-
-DLL видит Host только как opaque `*mut u8` (`ctx`). Наружу не отдаём `&mut Host` и не шарим внутренности common напрямую.
-
----
-
-## Client и Server
-
-Как в духе Quake/Xash, но пока в одном процессе.
-
-### Server (авторитетная симуляция)
-
-- `ServerEngine` + game **ServerDll**
-- Владеет сценой (Flecs `World`) и `PhysicsWorld`
-- Тик: `server_frame(dt)` в DLL, затем `World::simulate`
-- Сюда относится gameplay: сущности, правила, спавн, логика
-
-### Client (представление)
-
-- `ClientEngine`: окно (SDL/winit-слой в `App`), `Input`, `Renderer`, `RenderExtractor`
-- Читает мир только через extract → `RenderScene` → `RenderSnapshot`
-- Не содержит gameplay; не пишет правила игры в `renderer`
-
-Input: client → CLC `UserCmd` (slot), не прямое чтение клавиатуры сервером.
-Сеть (renet, SVC/CLC, prefab replication): см. [network.md](network.md).
-Listen-server — один процесс; remote clients — UDP `:28015`.
-
-```
-Host::run loop
-  → world.simulate
-  → ServerDll.server_frame (game)
-  → RenderExtractor.extract(World) → RenderScene
-  → ClientEngine.tick → Renderer (GPU)
+```mermaid
+flowchart TB
+    subgraph bin [Executable]
+        EXE[deerpunk]
+    end
+    subgraph host_layer [engine-host]
+        HOST[Host]
+        MDB[MethodDB]
+        DLL[Game library loader]
+    end
+    subgraph sim [Simulation]
+        SRV[engine-server]
+        COM[engine-common ECS + physics]
+    end
+    subgraph present [Presentation]
+        CL[engine-client]
+        REN[engine-renderer]
+    end
+    subgraph wire [Networking]
+        NET[engine-network]
+    end
+    EXE --> HOST
+    HOST --> MDB
+    HOST --> DLL
+    HOST --> SRV
+    HOST --> CL
+    HOST --> NET
+    CL --> REN
+    SRV --> COM
+    CL --> COM
+    DLL -.->|v1:* calls| MDB
 ```
 
----
+| Crate | Responsibility |
+|-------|----------------|
+| `engine-host` | Owns subsystems, loads game DLL, exposes MethodDB |
+| `engine-server` | Server tick, networking glue, no window |
+| `engine-client` | Window, input, scene extract, audio backend hook |
+| `engine-renderer` | wgpu: snapshots → HDR frame → tonemap |
+| `engine-common` | ECS world, components, physics, materials types |
+| `engine-network` | Packets, user cmds, replication messages |
+| `engine-resource` | Files, meshes, shaders, WAD loaders |
+| `engine-api` | Safe Rust API for game libraries |
 
-## ServerDll (gamelib)
+### Dependency rules
 
-Отдельная `cdylib` (`dlls/server.dll`) с игровым кодом. Движок не знает про конкретную игру.
+- **Game libraries** link only `engine-api` / SDK — never `engine-host` or `engine-common` directly.
+- **Renderer** consumes `RenderSnapshot` only; it does not query ECS.
+- **Client** reads the world through extractors; it does not run authoritative gameplay.
 
-Обязательные exports:
+Three contracts:
 
-| Символ | Назначение |
-|---|---|
-| `server_init` | принимает `ServerInitData { version, ctx, resolver }` |
-| `server_frame` | один кадр логики `(dt: f32)` |
-| `server_shutdown` | cleanup |
-
-Загрузка: `libloading` в `crates/engine-host/server_dll.rs`.
-
-Контракт для DLL:
-
-- не линковать `engine-host` / `engine-common`
-- ходить в движок только через `crates/engine-api` (resolve `v1:*` при init)
-- компоненты через FFI — `#[repr(C)]` + без внутренних указателей (`Vec`/`String`/`Box` в layout запрещены)
-- версия API (`SERVER_API_VERSION`) должна совпадать с host
-
-Hot-reload — цель архитектуры; сейчас есть load, полный unload/reinit ещё не закон.
+1. **MethodDB ABI** — string methods + opaque `ctx` ([api.md](api.md)).
+2. **Internal Rust API** — `World`, schedules, physics inside the host.
+3. **Render contract** — `RenderScene` / mesh draws / cameras ([assets.md](assets.md)).
 
 ---
 
-## MethodDB
+## Startup sequence
 
-Единственный канал host → gamelib. Не фиксированный гигантский vtable, а таблица имён → fn ptr.
+```mermaid
+sequenceDiagram
+    participant EXE as Executable
+    participant Host
+    participant FS as gamedir / FS
+    participant DLL as Game library
+    participant Client as ClientEngine
 
-Как устроено:
+    EXE->>Host: Host::new
+    EXE->>Host: initialize(gamedir)
+    Host->>FS: mount gamedir, exec autoexec.cfg
+    Host->>Host: register built-in components
+    Host->>DLL: load_server_dll + server_init(resolver)
+    DLL->>Host: resolve v1:* methods
+    opt windowed client
+        Host->>Client: init window, renderer, audio
+        Host->>DLL: client_init(resolver)
+    end
+    loop Host::run
+        Host->>Host: frame(dt)
+    end
+```
 
-1. Host регистрирует trampolines через `inventory::submit! { EngineApiMethod { name: "v1:…", … } }`
-2. При загрузке DLL собирается `MethodDB` (hashmap)
-3. DLL получает `resolver(name) → *const ()`, резолвит нужные методы один раз, кеширует
-4. Каждый вызов: `(ctx, …args)` → trampoline → поле Host / `ServerEngine`
+Steps in plain language:
 
-Имена стабильны, с префиксом версии: `v1:world:get`, `v1:physics:spawn_dynamic_box`, …
-Ломающие изменения — только через `v2:` (или явный выпил `v1:`).
-
-Safe-обёртка для Rust-gamelib: `crates/engine-api`.
-
-Запрещено:
-
-- второй параллельный ABI (старый vtable, глобальный ENGINE_CTX, сырой `&mut World` в DLL)
-- оставлять stub-методы в MethodDB «на потом» — либо реализовать, либо не экспортировать
-
----
-
-## Основные системы
-
-### Сцена (ECS World)
-
-- Реализация: Flecs (`crates/engine-common/world.rs`), обёртка `World`
-- Живёт в `ServerEngine.world`
-- Сущности + компоненты по имени (DLL-safe), queries (`query_prepare` / `query_execute` / batches)
-- Встроенные компоненты регистрирует Host: `Transform`, `Mesh3D`, `Material`, `Camera`, …
-- Игровые компоненты регистрирует DLL через `v1:world:component_init_raw`
-- Симуляция кадра: `World::simulate(dt)` (Flecs progress + системы)
-
-Сцена = источник истины для объектов. Рендер и физика — потребители/спутники, не второй «мир объектов».
-
-### Физика
-
-- Rapier3D, обёртка `PhysicsWorld` в `crates/engine-common/physics`
-- Живёт рядом со сценой в `ServerEngine`
-- Связь entity ↔ rigid body через `body_map` / vehicle map
-- Стегории коллизий (terrain, tank, projectile, …)
-- Из gamelib — узкий MethodDB (`v1:physics:*`); остальное — внутренний API host/server
-
-Тик физики должен оставаться на серверной стороне. Клиент физику не авторитетит.
-
-### Рендер
-
-Три шага, жёстко разделённые:
-
-1. **ECS** — компоненты `Mesh3D`, `Material`, `Camera`, transform…
-2. **Extract** (`crates/engine-client/render_extractor.rs`) — queries → `RenderScene` (камеры, mesh draws, terrain…)
-3. **GPU** (`crates/engine-renderer`) — `RenderSnapshot` → passes (sky, meshes, HDR tonemap, …)
-
-**UI** (`crates/engine-ui` / RmlUi): document = UI unit. Client собирает `UiFrame` (геометрия), renderer рисует отдельным **ui pass** после tonemap (alpha blend). Не blit CPU-framebuffer.
-
-Renderer не импортирует Flecs и не читает `World`. Любая новая отрисовка: сначала данные в snapshot-контракт, потом GPU-код.
-
-Режимы вывода: window surface, offscreen, shared memory (editor viewport).
-
-### Cmd (консоль команд)
-
-Quake-style командный буфер в `crates/engine-host/cmd.rs`.
-
-- Регистрация именованных команд (callbacks)
-- Буфер строк, исполнение по кадру / из конфига
-- `exec_config_file` (например `configs/autoexec.cfg`)
-- Связан с `CvarSystem` и `FileSystem` (указатели-refs внутри host)
-
-Cmd — язык управления движком и отладки, не замена MethodDB для gameplay API.
-
-### Cvar
-
-Конфигурационные переменные в `crates/engine-host/cvar.rs`.
-
-- Статические дефолты через `inventory::submit! { CvarDef { … } }`
-- Runtime map `name → string`, парсинг в f32/bool/usize
-- Примеры: `gamedir`, `sv_inspector_port`, `r_fullbright`
-
-Cvar меняет поведение и настройки; не хранит состояние игры (здоровье, инвентарь и т.п. — это компоненты сцены).
+1. **Create host** — allocate `ServerEngine`, optional `ClientEngine`, command/cvar systems, resource manager.
+2. **Initialize gamedir** — all content paths are relative to the game directory.
+3. **Load game library** — dynamic library with `server_init` / `client_init`.
+4. **Resolve API** — game code caches MethodDB function pointers.
+5. **Run loop** — simulation, replication, extract, render (see below).
 
 ---
 
-## Куда класть новое
+## Server vs client
 
-| Хочешь… | Куда |
-|---|---|
-| Тип/утилита без GPU и окна | `crates/engine-common` |
-| Геймплей / правила | ServerDll (+ при необходимости `v1:*`) |
-| Серверную систему движка | `crates/engine-server` или `ServerEngine` |
-| Ввод, окно, extract | `crates/engine-client` |
-| Шейдер / GPU pass | `crates/engine-renderer` + поле в snapshot |
-| Вызов из game DLL | trampoline + `engine-api`, имя `v1:domain:name` |
-| Консоль / конфиг | cmd / cvar на Host |
-| Загрузка ассетов / лоадеры | `ResourceManager` + [assets.md](assets.md) |
+| | Server | Client |
+|---|--------|--------|
+| **World** | Authoritative ECS + physics | Replica + `client_world` for local FX |
+| **Code entry** | `server_frame` | `client_frame`, `client_pre_render`, … |
+| **Input** | Reads `UserCmd` per player slot | Samples keyboard/mouse → sends `UserCmd` |
+| **Rendering** | May call renderer for dedicated tools | Full window, cameras, UI |
+| **Truth** | Decides gameplay outcomes | Predicts locally, accepts corrections |
 
-Критерий: через месяц по этому файлу должно быть очевидно, в какой crate идёт изменение, и что gamelib по-прежнему ходит только через MethodDB.
+In a **listen server**, host runs server and client in one process: server simulates, client draws and sends cmds to localhost.
+
+```mermaid
+flowchart LR
+    subgraph server_side [Server side]
+        UC[UserCmd in]
+        SIM[server_frame + physics]
+        REP[Replication out]
+    end
+    subgraph client_side [Client side]
+        IN[Input]
+        PRED[Prediction optional]
+        EXT[Render extract]
+        GPU[Renderer]
+    end
+    IN --> UC
+    SIM --> REP
+    REP --> PRED
+    PRED --> EXT
+    EXT --> GPU
+```
+
+The client **must not** treat local-only actions as authoritative for other players. Use server decisions delivered via replication or user messages.
+
+---
+
+## Frame loop
+
+```mermaid
+flowchart TD
+    A[Poll input / network] --> B[Apply incoming packets]
+    B --> C[server_frame dt]
+    C --> D[World simulate / physics step]
+    D --> E[Replication + user messages]
+    E --> F[client_pre_render]
+    F --> G[Build RenderScene extract]
+    G --> H[ClientEngine tick audio / UI]
+    H --> I[Renderer execute graph]
+    I --> J[Present / post FX]
+    J --> K[client_post_frame]
+```
+
+- **Extract** runs on the client: entities with `TransformComponent`, `Mesh3D`, `DrawMaterial`, cameras, lights → flat draw lists.
+- **HDR pipeline**: lighting accumulates in linear space; tonemapping is a dedicated pass (exposure controlled via renderer cvars on the host).
+
+---
+
+## Game library (gamelib)
+
+Your game ships as a **`cdylib`**:
+
+- **Server exports** — init, frame, shutdown for rules, spawning, damage, etc.
+- **Client exports** — rendering hooks, prediction, UI, local effects.
+
+The engine does not embed game rules. It only provides systems through MethodDB.
+
+Component types used in replication must match on server and client (same size, alignment, field order). Register components before spawn.
+
+---
+
+## MethodDB (summary)
+
+All cross-boundary calls use **`v1:namespace:method`** resolved at init. Implementations live in `engine-host` (see [api.md](api.md) for the full list).
+
+Do not expose `Host` struct pointers to game code — only `ctx: *mut u8` passed into each callback.
+
+---
+
+## Related documents
+
+- [api.md](api.md) — MethodDB namespaces and methods  
+- [network.md](network.md) — packets, replication, user messages  
+- [assets.md](assets.md) — materials, meshes, gamedir layout  

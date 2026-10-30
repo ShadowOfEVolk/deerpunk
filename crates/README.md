@@ -30,4 +30,4 @@ Folders are prefixed so engine vs gamelib SDK are easy to tell apart.
 
 Gamelib crates should depend on `deerpunk-sdk-common` (and `deerpunk-engine-ffi`), not on `engine-host` or `engine-common` directly.
 
-**Next split (planned):** `engine-world` (Flecs `World` + `layout_meta`). BSP и прочие game loaders — `register_loader` на `ResourceManager` из gamelib или будущий `engine-resource` submodule.
+**Next split (planned):** `engine-world` (ECS world + `layout_meta`). Additional game loaders register on `ResourceManager` from the game library or a future `engine-resource` submodule.

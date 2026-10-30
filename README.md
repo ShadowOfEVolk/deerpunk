@@ -1,21 +1,41 @@
-## About the Project and Its Current State
+# deerpunk
 
-**deerpunk is an experimental game engine currently in the prototyping stage.**
+Modular game engine: authoritative server simulation, client-side rendering, MethodDB API for game libraries.
 
-The project is built from scratch and serves as a playground for exploring technologies, testing ideas, and gradually shaping the architecture of a custom game engine.
+## Documentation
 
-The main goals of the project are:
-- Experimenting with game engine architecture and different approaches to implementing its subsystems.
-- Exploring rendering, physics, networking, and other core technologies.
-- Developing a modular foundation that allows individual components to evolve and be replaced over time.
-- Exploring compatibility with legacy GoldSrc asset formats and workflows.
+Start here: **[docs/README.md](docs/README.md)**
 
-At this stage, the project does not aim to maintain production-ready code quality. Sometimes I use the engine to experiment with technologies that interest me; other times, I implement systems in the simplest way possible, including naive implementations, to test a concept and revisit it later with a more complete solution.
+| Guide | Topic |
+|-------|--------|
+| [docs/api.md](docs/api.md) | MethodDB (`v1:*`) — methods, source files, scopes |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Host, client/server, frame loop |
+| [docs/network.md](docs/network.md) | Packets, replication, user messages |
+| [docs/assets.md](docs/assets.md) | gamedir, materials, meshes |
+| [docs/renderer.md](docs/renderer.md) | Renderer stages, culling, mesh memory |
 
-As a result, I do not currently devote sufficient attention to source code documentation, automated testing, implementation quality, or proper commit history. A significant portion of the project is being prototyped with the help of AI tools, which serve as my primary means of experimentation. The code and architectural decisions may contain simplifications, temporary implementations, and shortcomings that will be revisited or completely replaced in the future.
+## Building a game
 
-**At this stage, I do not recommend using deerpunk to develop games or treating its source code as an example of a well-engineered game engine.** If you are planning to develop a game, consider using an established game engine with proper documentation, tooling, and community support.
+1. Create a **game library** (`cdylib`) with `server_init` / `server_frame` (and client exports if you ship a windowed client).
+2. Link **`deerpunk_engine_api`** or the SDK crate — resolve engine services only through MethodDB names documented in [docs/api.md](docs/api.md).
+3. Point the executable at your **`gamedir`** (configs, shaders, materials, datapacks).
+4. Register console commands and cvars in init; drive simulation from `server_frame`.
 
-The repository is public primarily to facilitate certain integrations and streamline development. Its public availability does not mean that the project is ready for external study, use, or contributions. At this point, the source code is not intended to serve as a learning resource, and there is little value in studying it in its current state.
+## Repository layout
 
-That said, the sections below will provide an overview of deerpunk's architecture, core ideas, and intended direction. This overview reflects the current vision for the project rather than a finalized specification. The architecture, technical decisions, and feature set may change significantly as development progresses.
+```text
+crates/engine-host/      Host + MethodDB
+crates/engine-client/    Window, extract, audio hook
+crates/engine-server/    Server simulation glue
+crates/engine-renderer/  wgpu render graph
+crates/engine-api/       Safe API for game DLLs
+crates/engine-network/   Wire protocol
+```
+
+Game projects typically live in a separate repository and depend on engine paths or published crates.
+
+## Running
+
+Build the `deerpunk` binary from this repo, set `gamedir` to your game content directory, and place the compiled game library where the host expects (`dlls/` or paths in your game’s launcher config).
+
+See your game project for exact launch arguments and library names.
