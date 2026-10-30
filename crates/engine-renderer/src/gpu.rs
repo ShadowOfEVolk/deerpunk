@@ -2368,16 +2368,30 @@ impl Renderer {
         self.lum_pipeline = Some(pipeline);
     }
 
-    /// Пересобрать swapchain окна после resize.
-    pub fn resize_surface(&mut self, width: u32, height: u32) {
+    /// Пересобрать swapchain и все ресурсы кадра после resize окна.
+    pub fn resize_framebuffer(&mut self, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
         if let Some(config) = &mut self.surface_config {
-            config.width = width.max(1);
-            config.height = height.max(1);
+            config.width = w;
+            config.height = h;
             if let Some(surface) = &self.surface {
                 surface.configure(&self.device, config);
             }
         }
-        self.ensure_hdr_texture(width.max(1), height.max(1));
+        self.ensure_hdr_texture(w, h);
+        self.ensure_depth(w, h);
+        self.forward_graph_mut().pool_mut().clear();
+        self.postfx.invalidate_size();
+        self.offscreen = None;
+        self.skinned_mesh_globals_bgs.clear();
+        self.mesh_pass_static_handles.clear();
+        self.mesh_pass_skinned_handles.clear();
+    }
+
+    /// Alias for [`Self::resize_framebuffer`].
+    pub fn resize_surface(&mut self, width: u32, height: u32) {
+        self.resize_framebuffer(width, height);
     }
 
     /// Загрузить свежеиспечённую зону карты в GPU-текстуру.

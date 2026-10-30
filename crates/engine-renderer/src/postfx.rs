@@ -424,9 +424,23 @@ impl PostFx {
         let s = scale.clamp(2, 4);
         if self.bloom_downscale != s {
             self.bloom_downscale = s;
-            self.full_w = 0;
-            self.frame_binds = None;
+            self.invalidate_size();
         }
+    }
+
+    /// Drop size-dependent GPU targets (call on window resize).
+    pub fn invalidate_size(&mut self) {
+        self.full_w = 0;
+        self.full_h = 0;
+        self.frame_binds = None;
+        self.bloom_a = None;
+        self.bloom_a_view = None;
+        self.bloom_b = None;
+        self.bloom_b_view = None;
+        self.hdr_comp = None;
+        self.hdr_comp_view = None;
+        self.ldr = None;
+        self.ldr_view = None;
     }
 
     fn ensure_targets(&mut self, device: &wgpu::Device, w: u32, h: u32) {

@@ -40,6 +40,7 @@ pub struct App {
     video: sdl2::VideoSubsystem,
     event_pump: sdl2::EventPump,
     text_input_active: bool,
+    pending_resize: Option<(u32, u32)>,
 }
 
 impl App {
@@ -53,6 +54,7 @@ impl App {
 
         let window = video
             .window(title, width, height)
+            .resizable()
             .build()
             .expect("Failed to create SDL2 window");
 
@@ -64,7 +66,13 @@ impl App {
             video,
             event_pump,
             text_input_active: false,
+            pending_resize: None,
         }
+    }
+
+    /// Последний `WindowEvent::Resized` с прошлого опроса.
+    pub fn take_pending_resize(&mut self) -> Option<(u32, u32)> {
+        self.pending_resize.take()
     }
 
     pub fn set_text_input_active(&mut self, active: bool) {
@@ -103,6 +111,12 @@ impl App {
                 Event::Quit { .. } => return false,
                 Event::Window { win_event, .. } => match win_event {
                     sdl2::event::WindowEvent::Close => return false,
+                    sdl2::event::WindowEvent::Resized(w, h) => {
+                        self.pending_resize = Some((w.max(1) as u32, h.max(1) as u32));
+                    }
+                    sdl2::event::WindowEvent::SizeChanged(w, h) => {
+                        self.pending_resize = Some((w.max(1) as u32, h.max(1) as u32));
+                    }
                     _ => {}
                 },
                 Event::KeyDown {

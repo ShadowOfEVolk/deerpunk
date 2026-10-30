@@ -1,6 +1,7 @@
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-static FRAME_SIZE: OnceLock<(u32, u32)> = OnceLock::new();
+static FRAME_W: AtomicU32 = AtomicU32::new(0);
+static FRAME_H: AtomicU32 = AtomicU32::new(0);
 
 /// Размер кадра (16:9). Env: `FRAME_WIDTH`/`FRAME_HEIGHT`, `RTMP_RESOLUTION`, `RTMP_WIDTH`/`RTMP_HEIGHT`.
 pub fn output_frame_size() -> (u32, u32) {
@@ -34,13 +35,29 @@ pub fn output_frame_size() -> (u32, u32) {
     }
 }
 
-/// Размер буфера рендера (= размер TCP-кадра).
-pub fn frame_size() -> (u32, u32) {
-    *FRAME_SIZE.get_or_init(|| {
+fn ensure_frame_initialized() {
+    if FRAME_W.load(Ordering::Relaxed) == 0 {
         let (w, h) = output_frame_size();
+        set_frame_size(w, h);
         eprintln!("[frame] {w}x{h}");
-        (w, h)
-    })
+    }
+}
+
+/// Размер буфера рендера (= размер окна / TCP-кадра при стриме).
+pub fn frame_size() -> (u32, u32) {
+    ensure_frame_initialized();
+    (
+        FRAME_W.load(Ordering::Relaxed),
+        FRAME_H.load(Ordering::Relaxed),
+    )
+}
+
+/// Обновить размер кадра (resize окна, shared viewport). Вызывать до `resize_framebuffer`.
+pub fn set_frame_size(width: u32, height: u32) {
+    let w = width.max(1);
+    let h = height.max(1);
+    FRAME_W.store(w, Ordering::Relaxed);
+    FRAME_H.store(h, Ordering::Relaxed);
 }
 
 pub fn frame_width() -> u32 {

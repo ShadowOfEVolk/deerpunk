@@ -145,6 +145,7 @@ impl ClientEngine {
         let mut renderer = Renderer::new(load_shader_sources(resources), &instance, Some(&surface));
 
         let (w, h) = app.window_size();
+        deerpunk_engine_common::frame::set_frame_size(w, h);
         renderer.set_surface(surface, w, h);
 
         let shader_registry = ShaderRegistry::new();
@@ -443,7 +444,41 @@ impl ClientEngine {
 
     /// Poll OS events into [`Self::input`]. Returns `false` on quit.
     pub fn poll_events(&mut self) -> bool {
-        self.app.poll_events(&mut self.input)
+        if !self.app.poll_events(&mut self.input) {
+            return false;
+        }
+        if let Some((w, h)) = self.app.take_pending_resize() {
+            self.resize_window(w, h);
+        }
+        true
+    }
+
+    /// Swapchain + HDR/depth/postfx + logical frame size (see [`Renderer::resize_framebuffer`]).
+    pub fn resize_window(&mut self, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
+        deerpunk_engine_common::frame::set_frame_size(w, h);
+        self.renderer.resize_framebuffer(w, h);
+        if let Some(ui) = self.ui.as_ref() {
+            ui.resize(w, h);
+        }
+        log::info!("[client] window resized to {w}x{h}");
+    }
+
+    fn handle_surface_frame_error(&mut self, err: deerpunk_engine_renderer::FrameError) {
+        use deerpunk_engine_renderer::FrameError;
+        match err {
+            FrameError::SurfaceOutdated | FrameError::SurfaceLost => {
+                let (w, h) = self.app.window_size();
+                self.resize_window(w, h);
+            }
+            FrameError::SurfaceOccluded | FrameError::SurfaceTimeout => {}
+            FrameError::SurfaceValidation => {
+                log::warn!("[client] surface validation error — reconfiguring");
+                let (w, h) = self.app.window_size();
+                self.resize_window(w, h);
+            }
+        }
     }
 
     /// Apply gameinfo window title + icon (call after gamedir / gameinfo are known).
@@ -1094,16 +1129,19 @@ impl ClientEngine {
                 snapshot.debug_draw.clear();
             }
             if first && game_frame_fn.is_some() {
-                let _ = self.renderer.render_to_surface_with_game_frame(
+                if let Err(e) = self.renderer.render_to_surface_with_game_frame(
                     snapshot,
                     game_frame_fn,
                     game_frame_ctx,
                     &self.shader_registry,
-                );
-            } else {
-                let _ = self
-                    .renderer
-                    .render_to_surface(snapshot, &self.shader_registry);
+                ) {
+                    self.handle_surface_frame_error(e);
+                }
+            } else if let Err(e) = self
+                .renderer
+                .render_to_surface(snapshot, &self.shader_registry)
+            {
+                self.handle_surface_frame_error(e);
             }
             first = false;
             rendered_surface = true;
@@ -1125,16 +1163,19 @@ impl ClientEngine {
         if !rendered_surface {
             let snapshot = RenderSnapshot::new([0.08, 0.09, 0.12, 1.0]);
             if game_frame_fn.is_some() {
-                let _ = self.renderer.render_to_surface_with_game_frame(
+                if let Err(e) = self.renderer.render_to_surface_with_game_frame(
                     &snapshot,
                     game_frame_fn,
                     game_frame_ctx,
                     &self.shader_registry,
-                );
-            } else {
-                let _ = self
-                    .renderer
-                    .render_to_surface(&snapshot, &self.shader_registry);
+                ) {
+                    self.handle_surface_frame_error(e);
+                }
+            } else if let Err(e) = self
+                .renderer
+                .render_to_surface(&snapshot, &self.shader_registry)
+            {
+                self.handle_surface_frame_error(e);
             }
         }
         true
