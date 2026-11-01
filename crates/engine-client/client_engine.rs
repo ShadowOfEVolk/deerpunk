@@ -18,6 +18,8 @@ use deerpunk_engine_renderer::material_store::MaterialStore;
 use deerpunk_engine_renderer::shader_registry::ShaderRegistry;
 use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget, SkyDraw};
 
+use crate::camera_compose::pack_surface_camera;
+
 /// Per-frame sky colors from gamelib (Hosek on CPU).
 #[derive(Clone, Copy, Debug)]
 pub struct GamelibSkyPayload {
@@ -125,6 +127,8 @@ pub struct ClientEngine {
     gamelib_sky: Option<GamelibSkyPayload>,
     cull_scratch: CullScratch,
     surface_snapshot: RenderSnapshot,
+    /// Per-frame surface cameras (sorted by `order`) for compose.
+    camera_compose_scratch: Vec<RenderSnapshot>,
     /// Gamelib overlays merged into frame debug draw (block outline, etc.).
     game_debug: DebugDraw,
 }
@@ -197,7 +201,8 @@ impl ClientEngine {
             procedural_sky: false,
             gamelib_sky: None,
             cull_scratch: CullScratch::new(),
-            surface_snapshot: RenderSnapshot::new([0.08, 0.09, 0.12, 1.0]),
+            surface_snapshot: RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear),
+            camera_compose_scratch: Vec::new(),
             game_debug: DebugDraw::new(),
         }
     }
@@ -1062,13 +1067,24 @@ impl ClientEngine {
         let frustum_ms = self.cull_scratch.last_frustum_ms;
         let assemble_ms = self.cull_scratch.last_assemble_ms;
 
-        // Audio: listener from the primary view, then per-frame backend update.
+        let mut surface_snaps: Vec<_> = snapshots
+            .iter()
+            .filter(|s| matches!(s.target, RenderTarget::Surface))
+            .collect();
+        surface_snaps.sort_by_key(|s| (s.order, s.camera_pos[0].to_bits()));
+
+        // Audio: listener from lowest-order surface camera.
         let audio_start = std::time::Instant::now();
         {
-            let listener = snapshots
+            let listener = surface_snaps
                 .first()
                 .map(|s| listener_from_view(s.view))
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    snapshots
+                        .first()
+                        .map(|s| listener_from_view(s.view))
+                        .unwrap_or_default()
+                });
             self.audio_tick(listener);
         }
         let audio_ms = audio_start.elapsed().as_secs_f32() * 1000.0;
@@ -1080,72 +1096,41 @@ impl ClientEngine {
         let _ = prep_start;
 
         let mut rendered_surface = false;
-        let mut first = true;
-        for snap in &snapshots {
-            if !matches!(snap.target, RenderTarget::Surface) {
-                continue;
-            }
-            let snapshot = &mut self.surface_snapshot;
-            snapshot.clear = snap.clear;
-            snapshot.view_proj = snap.view_proj.to_cols_array_2d();
-            snapshot.inv_view_proj = snap.inv_view_proj.to_cols_array_2d();
-            snapshot.inv_view_proj_sky = snap.inv_view_proj_sky.to_cols_array_2d();
-            snapshot.camera_pos = snap.camera_pos;
-            snapshot.game_time = snap.game_time;
-            snapshot.instances.clear();
-            snapshot.hud.clear();
-            snapshot.terrain_splat_draws.clear();
+        if !surface_snaps.is_empty() {
+            self.camera_compose_scratch.clear();
             if let Some(sc) = scene {
-                let gather_start = std::time::Instant::now();
-                sc.gather_visible_draws(snap, &mut snapshot.mesh_draws, &mut snapshot.skinned_mesh_draws);
-                gather_ms += gather_start.elapsed().as_secs_f32() * 1000.0;
-                snapshot.viewmodel_mesh_draws.clone_from(&sc.geometry.viewmodel_mesh_draws);
-                snapshot.viewmodel_view_proj = sc
-                    .geometry
-                    .viewmodel_pass
-                    .as_ref()
-                    .map(|p| p.view_proj.to_cols_array_2d());
-                snapshot.viewmodel_camera_pos = sc
-                    .geometry
-                    .viewmodel_pass
-                    .as_ref()
-                    .map(|p| p.camera_pos)
-                    .unwrap_or(snap.camera_pos);
-            } else {
-                snapshot.mesh_draws.clear();
-                snapshot.skinned_mesh_draws.clear();
-                snapshot.viewmodel_mesh_draws.clear();
-                snapshot.viewmodel_view_proj = None;
+                for (i, cam) in surface_snaps.iter().enumerate() {
+                    let gather_start = std::time::Instant::now();
+                    let mut snap = RenderSnapshot::new(cam.color_load);
+                    pack_surface_camera(sc, cam, &mut snap);
+                    gather_ms += gather_start.elapsed().as_secs_f32() * 1000.0;
+                    if i == 0 {
+                        snap.debug_draw = std::mem::take(&mut self.pending_debug_draw.primitives);
+                    }
+                    self.camera_compose_scratch.push(snap);
+                }
             }
-            snapshot.bone_palettes.clone_from(&snap.bone_palettes);
-            snapshot.point_lights.clone_from(&snap.point_lights);
-            snapshot.cull_stats = snap.cull_stats;
-            snapshot.frustum_culled = snap.frustum_culled;
-            snapshot.sky = snap.sky;
-            snapshot.storm = None;
-            if first {
-                snapshot.debug_draw = std::mem::take(&mut self.pending_debug_draw.primitives);
-            } else {
-                snapshot.debug_draw.clear();
-            }
-            if first && game_frame_fn.is_some() {
-                if let Err(e) = self.renderer.render_to_surface_with_game_frame(
-                    snapshot,
+            let cam_refs: Vec<&RenderSnapshot> =
+                self.camera_compose_scratch.iter().collect();
+            let post = cam_refs.first().expect("surface_snaps non-empty");
+            if game_frame_fn.is_some() {
+                if let Err(e) = self.renderer.render_to_surface_compose_with_game_frame(
+                    &cam_refs,
+                    post,
                     game_frame_fn,
                     game_frame_ctx,
                     &self.shader_registry,
                 ) {
                     self.handle_surface_frame_error(e);
                 }
-            } else if let Err(e) = self
-                .renderer
-                .render_to_surface(snapshot, &self.shader_registry)
-            {
+            } else if let Err(e) = self.renderer.render_to_surface_compose(
+                &cam_refs,
+                post,
+                &self.shader_registry,
+            ) {
                 self.handle_surface_frame_error(e);
             }
-            first = false;
             rendered_surface = true;
-            break;
         }
         self.renderer
             .note_cull_detail(frustum_ms, assemble_ms, gather_ms);
@@ -1161,7 +1146,7 @@ impl ClientEngine {
             }
         }
         if !rendered_surface {
-            let snapshot = RenderSnapshot::new([0.08, 0.09, 0.12, 1.0]);
+            let snapshot = RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear);
             if game_frame_fn.is_some() {
                 if let Err(e) = self.renderer.render_to_surface_with_game_frame(
                     &snapshot,

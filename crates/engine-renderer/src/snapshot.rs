@@ -13,6 +13,7 @@ use crate::aabb::Aabb;
 use crate::cull::{
     cull_mesh_indices, cull_skinned_indices, CullCamera, CullScratch, CullStats, DEFAULT_CELL_SIZE,
 };
+use deerpunk_engine_common::components::render_layer::render_layer_visible;
 
 pub use deerpunk_engine_common::material::ShaderId;
 pub use deerpunk_engine_common::MeshTexture;
@@ -22,6 +23,8 @@ pub use deerpunk_engine_common::MeshTexture;
 pub struct MeshDraw {
     pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
     pub model_mat: [[f32; 4]; 4],
+    /// [`deerpunk_engine_common::components::render_layer`] mask — which cameras may draw this.
+    pub layer_mask: u32,
     /// The mesh is already in world space and can be submitted through the
     /// renderer's material/buffer multi-draw path.
     pub batchable: bool,
@@ -51,6 +54,7 @@ pub struct MeshDraw {
 pub struct SkinnedMeshDraw {
     pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
     pub model_mat: [[f32; 4]; 4],
+    pub layer_mask: u32,
     pub material_id: u32,
     pub texture: MeshTexture,
     pub normal: MeshTexture,
@@ -245,7 +249,10 @@ pub struct StormDraw {
 /// Полный снапшот кадра.
 #[derive(Clone)]
 pub struct RenderSnapshot {
-    /// Цвет очистки кадра (RGBA 0..1).
+    /// Color attachment load policy (clear vs keep existing). Clear color itself
+    /// is [`RenderScene::clear`] (scene-level, sky-driven).
+    pub color_load: deerpunk_engine_common::components::ColorLoad,
+    /// Scene-level clear color used when [`color_load`] is [`ColorLoad::Clear`].
     pub clear: [f32; 4],
     /// 3D-примитивы в мировых координатах (отрисовываются с view_proj камеры).
     pub instances: Vec<Instance>,
@@ -278,10 +285,10 @@ pub struct RenderSnapshot {
     /// Frustum cull stats for the active camera (when enabled).
     pub cull_stats: CullStats,
     pub frustum_culled: bool,
-    /// First-person overlay draws (viewmodel camera pass).
-    pub viewmodel_mesh_draws: Vec<MeshDraw>,
-    pub viewmodel_view_proj: Option<[[f32; 4]; 4]>,
-    pub viewmodel_camera_pos: [f32; 3],
+    /// [`cam_features`] bitmask copied from the active camera snapshot.
+    pub pass_mask: u32,
+    /// Depth attachment (target id + load policy) for this camera's passes.
+    pub depth: deerpunk_engine_common::components::DepthAttachment,
     /// BSP / map static lights visible this frame (gamelib may set).
     pub visible_world_lights: u32,
     /// PVS occluder volumes tested (reserved).
@@ -289,9 +296,10 @@ pub struct RenderSnapshot {
 }
 
 impl RenderSnapshot {
-    pub fn new(clear: [f32; 4]) -> Self {
+    pub fn new(color_load: deerpunk_engine_common::components::ColorLoad) -> Self {
         Self {
-            clear,
+            color_load,
+            clear: [0.0, 0.0, 0.0, 1.0],
             instances: Vec::new(),
             hud: Vec::new(),
             mesh_draws: Vec::new(),
@@ -324,9 +332,10 @@ impl RenderSnapshot {
             camera_pos: [0.0, 0.0, 0.0],
             cull_stats: CullStats::default(),
             frustum_culled: false,
-            viewmodel_mesh_draws: Vec::new(),
-            viewmodel_view_proj: None,
-            viewmodel_camera_pos: [0.0; 3],
+            pass_mask: cam_features::WORLD_DEFAULT,
+            depth: deerpunk_engine_common::components::DepthAttachment::owned(
+                deerpunk_engine_common::components::DepthTargetId(0),
+            ),
             visible_world_lights: 0,
             visible_occluders: 0,
         }
@@ -368,6 +377,7 @@ impl RenderSnapshot {
             world_bounds: bounds,
             entity_id: 0,
             uniform_aux: 0,
+            layer_mask: deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD,
         });
     }
 
@@ -401,6 +411,7 @@ impl RenderSnapshot {
             world_bounds: bounds,
             entity_id: 0,
             uniform_aux: 0,
+            layer_mask: deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD,
         });
     }
 }
@@ -439,6 +450,14 @@ pub enum RenderTarget {
     None,
 }
 
+/// Which scene passes a [`CameraDefinition`] runs (see [`deerpunk_engine_common::components::cam_pass`]).
+pub mod cam_features {
+    pub use deerpunk_engine_common::components::cam_pass::{
+        DEBUG, DEFAULT_OVERLAY, DEFAULT_WORLD as WORLD_DEFAULT, MESH, SKY, SPRITES_3D,
+        TERRAIN,
+    };
+}
+
 /// Определение камеры в сцене.
 #[derive(Clone)]
 pub struct CameraDefinition {
@@ -448,6 +467,16 @@ pub struct CameraDefinition {
     pub near: f32,
     pub far: f32,
     pub target: RenderTarget,
+    /// Draw [`MeshDraw::layer_mask`] / skinned layer must overlap this mask.
+    pub layer_mask: u32,
+    /// Sort key for surface targets (lower first).
+    pub order: u8,
+    /// [`cam_features`] bitmask — which render passes this camera runs.
+    pub pass_mask: u32,
+    /// Color attachment load policy for this camera.
+    pub color_load: deerpunk_engine_common::components::ColorLoad,
+    /// Depth attachment (target id + load policy).
+    pub depth: deerpunk_engine_common::components::DepthAttachment,
     pub dirty: bool,
 }
 
@@ -460,6 +489,13 @@ impl Default for CameraDefinition {
             near: 0.1,
             far: 1024.0,
             target: RenderTarget::Surface,
+            layer_mask: deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD,
+            order: 0,
+            pass_mask: cam_features::WORLD_DEFAULT,
+            color_load: deerpunk_engine_common::components::ColorLoad::Clear,
+            depth: deerpunk_engine_common::components::DepthAttachment::owned(
+                deerpunk_engine_common::components::DepthTargetId(0),
+            ),
             dirty: true,
         }
     }
@@ -467,14 +503,14 @@ impl Default for CameraDefinition {
 
 impl CameraDefinition {
     pub fn view_matrix(&self) -> glam::Mat4 {
-        let eye = glam::Vec3::from(self.position);
-        let forward = self.rotation * glam::Vec3::Y;
-        let up = self.rotation * glam::Vec3::Z;
-        glam::Mat4::look_to_rh(eye, forward, up)
+        deerpunk_engine_common::coord::view_matrix_z_up_rh(
+            glam::Vec3::from(self.position),
+            self.rotation,
+        )
     }
 
     pub fn projection_matrix(&self, aspect: f32) -> glam::Mat4 {
-        glam::Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far)
+        deerpunk_engine_common::coord::perspective_rh_wgpu(self.fov_y, aspect, self.near, self.far)
     }
 }
 
@@ -503,13 +539,7 @@ pub struct PointLightDraw {
     pub range: f32,
 }
 
-/// Геометрия сцены — всё что можно рендерить.
-#[derive(Clone, Copy, Debug)]
-pub struct ViewModelPass {
-    pub view_proj: glam::Mat4,
-    pub camera_pos: [f32; 3],
-}
-
+/// Геометрия сцены — всё что можно рендерить (shared; each camera culls by layer).
 #[derive(Clone)]
 pub struct SceneGeometry {
     pub mesh_draws: Vec<MeshDraw>,
@@ -518,9 +548,6 @@ pub struct SceneGeometry {
     pub terrain_splat_draws: Vec<TerrainSplatDraw>,
     pub sky: Option<SkyDraw>,
     pub point_lights: Vec<PointLightDraw>,
-    /// First-person overlay (separate lens; drawn after world mesh pass).
-    pub viewmodel_mesh_draws: Vec<MeshDraw>,
-    pub viewmodel_pass: Option<ViewModelPass>,
     /// Hash of mesh + skinned draw keys/bounds; bump via [`Self::refresh_cull_serial`].
     pub cull_serial: u64,
 }
@@ -541,8 +568,6 @@ impl Default for SceneGeometry {
             terrain_splat_draws: Vec::new(),
             sky: None,
             point_lights: Vec::new(),
-            viewmodel_mesh_draws: Vec::new(),
-            viewmodel_pass: None,
             cull_serial: 0,
         }
     }
@@ -567,10 +592,18 @@ pub struct CameraRenderSnapshot {
     pub bone_palettes: Vec<BonePaletteUpload>,
     pub point_lights: Vec<PointLightDraw>,
     pub sky: Option<SkyDraw>,
+    /// Scene-level clear color (driven by sky compositor). Used when
+    /// [`color_load`] is [`ColorLoad::Clear`].
     pub clear: [f32; 4],
+    pub color_load: deerpunk_engine_common::components::ColorLoad,
     pub game_time: f32,
     pub target: RenderTarget,
     pub cull_stats: CullStats,
+    /// Copied from [`CameraDefinition`] for multi-camera compose.
+    pub layer_mask: u32,
+    pub order: u8,
+    pub pass_mask: u32,
+    pub depth: deerpunk_engine_common::components::DepthAttachment,
 }
 
 /// Полная сцена рендеринга — камеры + геометрия.
@@ -629,18 +662,21 @@ impl RenderScene {
             .map(|cam| {
                 let view = cam.view_matrix();
                 let projection = cam.projection_matrix(aspect);
-                let view_proj = projection * view;
+                let view_proj_cull = projection * view;
+                let view_proj =
+                    deerpunk_engine_common::coord::view_proj_world_mesh_clip(projection, cam.rotation);
                 let cull_cam = CullCamera {
-                    view_proj,
+                    view_proj: view_proj_cull,
                     view,
                     near: cam.near,
                     far: cam.far,
                     fov_y: cam.fov_y,
                     aspect,
+                    layer_mask: cam.layer_mask,
                 };
 
-                let frustum_start = std::time::Instant::now();
                 let cull_serial = self.geometry.cull_serial;
+                let frustum_start = std::time::Instant::now();
                 let (frustum_culled, cull_stats, visible_mesh, visible_skinned) =
                     if self.cull.enabled {
                         let (mt, mv) = cull_mesh_indices(
@@ -689,7 +725,7 @@ impl RenderScene {
                     };
 
                 let assemble_start = std::time::Instant::now();
-                let inv_view_proj = view_proj.inverse();
+                let inv_view_proj = view_proj_cull.inverse();
                 let inv_view_proj_sky = deerpunk_engine_common::coord::inv_view_proj_sky_at_origin(
                     view,
                     projection,
@@ -708,9 +744,14 @@ impl RenderScene {
                     point_lights: self.geometry.point_lights.clone(),
                     sky: self.geometry.sky,
                     clear: self.clear,
+                    color_load: cam.color_load,
                     game_time: self.game_time,
                     target: cam.target.clone(),
                     cull_stats,
+                    layer_mask: cam.layer_mask,
+                    order: cam.order,
+                    pass_mask: cam.pass_mask,
+                    depth: cam.depth,
                 };
                 scratch.last_assemble_ms += assemble_start.elapsed().as_secs_f32() * 1000.0;
                 snap
@@ -732,19 +773,33 @@ impl RenderScene {
             for &i in &cam.visible_mesh {
                 let idx = i as usize;
                 if idx < self.geometry.mesh_draws.len() {
-                    mesh_out.push(self.geometry.mesh_draws[idx].clone());
+                    let d = &self.geometry.mesh_draws[idx];
+                    if render_layer_visible(d.layer_mask, cam.layer_mask) {
+                        mesh_out.push(d.clone());
+                    }
                 }
             }
             skinned_out.reserve(cam.visible_skinned.len());
             for &i in &cam.visible_skinned {
                 let idx = i as usize;
                 if idx < self.geometry.skinned_mesh_draws.len() {
-                    skinned_out.push(self.geometry.skinned_mesh_draws[idx].clone());
+                    let d = &self.geometry.skinned_mesh_draws[idx];
+                    if render_layer_visible(d.layer_mask, cam.layer_mask) {
+                        skinned_out.push(d.clone());
+                    }
                 }
             }
         } else {
-            mesh_out.clone_from(&self.geometry.mesh_draws);
-            skinned_out.clone_from(&self.geometry.skinned_mesh_draws);
+            for d in &self.geometry.mesh_draws {
+                if render_layer_visible(d.layer_mask, cam.layer_mask) {
+                    mesh_out.push(d.clone());
+                }
+            }
+            for d in &self.geometry.skinned_mesh_draws {
+                if render_layer_visible(d.layer_mask, cam.layer_mask) {
+                    skinned_out.push(d.clone());
+                }
+            }
         }
     }
 }

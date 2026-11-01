@@ -5,9 +5,11 @@ use std::ffi::c_void;
 
 use crate::frame::context::FrameCtx;
 use crate::frame::schedule::res;
+use crate::frame::scope::{self, Phase};
 use crate::gpu::Renderer;
 use crate::render_graph::NodeContext;
 use crate::render_profile::{GraphNodeTiming, lap_ms};
+use crate::snapshot::cam_features;
 
 /// Per-frame payload in [`NodeContext::user_data`] (raw pointers avoid graph + pass borrow split).
 pub struct GraphFrameUserData {
@@ -15,6 +17,7 @@ pub struct GraphFrameUserData {
     pub ctx: *mut FrameCtx<'static>,
     pub sprite_pipeline: *const wgpu::RenderPipeline,
     pub hud_vp: [[f32; 4]; 4],
+    pub phase: crate::frame::scope::Phase,
 }
 
 fn push_graph_timing(ctx: &mut FrameCtx<'_>, name: &str, lap_start: std::time::Instant, skipped: bool) {
@@ -40,10 +43,19 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
     let lap_start = *ctx.lap;
     let mut skipped = false;
 
+    let phase = state.phase;
+
+    if !scope::node_enabled(name, phase) {
+        skipped = true;
+        let _ = lap_ms(ctx.lap);
+        push_graph_timing(ctx, name, lap_start, skipped);
+        return;
+    }
+
     match name {
         "upload_prep" => renderer.pass_upload_prep(ctx),
         "sky" => {
-            if ctx.snapshot.sky.is_some() {
+            if ctx.snapshot.pass_mask & cam_features::SKY != 0 && ctx.snapshot.sky.is_some() {
                 renderer.pass_sky_and_clouds(ctx, nc.encoder);
             } else {
                 skipped = true;
@@ -51,7 +63,13 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
             }
         }
         "clear_hdr" => {
-            if ctx.snapshot.sky.is_none() {
+            // Clear HDR only when this camera declares a color clear AND sky did not
+            // already clear (sky pass clears to the scene clear color itself).
+            let clears_color = ctx.snapshot.color_load
+                == deerpunk_engine_common::components::ColorLoad::Clear;
+            let sky_cleared = ctx.snapshot.pass_mask & cam_features::SKY != 0
+                && ctx.snapshot.sky.is_some();
+            if clears_color && !sky_cleared {
                 renderer.pass_clear_hdr_no_sky(ctx, nc.encoder);
             } else {
                 skipped = true;
@@ -60,9 +78,24 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
         }
         "sprites_3d" => renderer.pass_sprites_3d(ctx, nc.encoder, sprite_pipeline),
         "mesh" => renderer.pass_mesh(ctx, nc.encoder),
-        "viewmodel" => renderer.pass_viewmodel(ctx, nc.encoder),
-        "terrain_splat" => renderer.pass_terrain_splat(ctx, nc.encoder),
-        "debug" => renderer.pass_debug_lines(ctx, nc.encoder),
+        "terrain_splat" => {
+            if ctx.snapshot.pass_mask & cam_features::TERRAIN != 0
+                && !ctx.snapshot.terrain_splat_draws.is_empty()
+            {
+                renderer.pass_terrain_splat(ctx, nc.encoder);
+            } else {
+                skipped = true;
+                let _ = lap_ms(ctx.lap);
+            }
+        }
+        "debug" => {
+            if ctx.snapshot.pass_mask & cam_features::DEBUG != 0 {
+                renderer.pass_debug_lines(ctx, nc.encoder);
+            } else {
+                skipped = true;
+                let _ = lap_ms(ctx.lap);
+            }
+        }
         "hud" => renderer.pass_hud(ctx, nc.encoder, sprite_pipeline, hud_vp),
         "luminance" => {
             skipped = true;
@@ -85,17 +118,13 @@ pub fn run_frame_graph(
     encoder: &mut wgpu::CommandEncoder,
     sprite_pipeline: &wgpu::RenderPipeline,
     hud_vp: [[f32; 4]; 4],
+    phase: Phase,
 ) {
-    ctx.prof.graph_nodes.clear();
-
-    r.ensure_depth_for_frame();
+    // Depth is owned by the per-camera depth pool, not the graph. Passes fetch their
+    // depth view from `Renderer::ensure_depth(snapshot.depth.target, w, h)`.
 
     let mut external: HashMap<crate::render_graph::ResId, wgpu::TextureView> = HashMap::new();
     external.insert(res::HDR, ctx.hdr_view.clone());
-    let depth = r
-        .depth_view_ref()
-        .expect("ensure_depth_for_frame must set depth_view");
-    external.insert(res::DEPTH, depth.clone());
     if let Some(surface) = ctx.surface_view {
         external.insert(res::SURFACE, surface.clone());
     }
@@ -106,6 +135,7 @@ pub fn run_frame_graph(
         ctx: unsafe { std::mem::transmute(ctx) },
         sprite_pipeline: sprite_pipeline as *const wgpu::RenderPipeline,
         hud_vp,
+        phase,
     };
     let user_ptr = &mut user as *mut GraphFrameUserData as *mut c_void;
 

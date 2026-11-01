@@ -53,10 +53,13 @@ pub use cull::{
     GRID_MIN_DRAWS,
 };
 pub use snapshot::{
-    rgba_u8, rgba_u8_4, CameraDefinition, CameraRenderGraph, CameraRenderSnapshot, CullOptions,
+    rgba_u8, rgba_u8_4, cam_features, CameraDefinition, CameraRenderGraph, CameraRenderSnapshot, CullOptions,
     Instance, MeshTexture, PointLightDraw, RenderScene, RenderSnapshot, RenderTarget, SceneGeometry,
     Shape, SkyDraw, StormDraw, TexSel,
 };
 pub use text_util::{
     color_f32, push_rect, push_text_centered, push_text_centered_f32, push_text_centered_parts,
 };
+
+#[cfg(test)]
+mod camera_pipeline_tests;

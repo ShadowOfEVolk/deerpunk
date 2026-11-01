@@ -1141,7 +1141,7 @@ impl Host {
         let net_show = self.cvar.get_usize_or("net_show", 0) as i32;
         let view = self.local_client_entity().and_then(|pawn| {
             self.client_engine.as_ref().and_then(|c| {
-                deerpunk_engine_client::view_camera::read_local_view_stamp(&c.world, pawn)
+                deerpunk_engine_client::camera_util::read_local_view_stamp(&c.world, pawn)
             })
         });
         let local_client_ent = self.local_client_entity();
@@ -1536,8 +1536,13 @@ impl Host {
         if level >= 4 {
             let m = &p.mesh_stats;
             lines.push(format!(
-                "mesh: submitted={}  lm_arr={} albedo2d={}",
-                m.draws_submitted, m.lm_array_layout_draws, m.albedo_2d_layout_draws
+                "mesh: submitted={}  indirect={} cmds={} bind_batch={}  lm_arr={} albedo2d={}",
+                m.draws_submitted,
+                m.indirect_batches,
+                m.indirect_commands,
+                m.bind_batch_draws,
+                m.lm_array_layout_draws,
+                m.albedo_2d_layout_draws
             ));
             if m.lm_array_with_gpu_id_zero > 0 {
                 lines.push(format!(
@@ -1854,7 +1859,7 @@ impl Host {
         };
         let client = self.client_engine.as_ref().unwrap();
         let Some(view) =
-            deerpunk_engine_client::view_camera::read_local_view_stamp(&client.world, pawn)
+            deerpunk_engine_client::camera_util::read_local_view_stamp(&client.world, pawn)
         else {
             return;
         };

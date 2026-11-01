@@ -169,6 +169,12 @@ const TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ALBEDO_TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// One depth buffer in the per-target depth pool.
+pub(crate) struct DepthTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
 pub struct ShaderSources {
     pub sprite: String,
     /// GPU skinned mesh pass (`mesh_skinned.wgsl`).
@@ -267,7 +273,11 @@ pub(crate) struct MeshUniform {
     /// World-space camera position (for correct view vector).
     camera_pos: [f32; 3],
     _pad_cam: f32,
+    /// Pad to 256 bytes so WGSL `array<MeshUniform>` matches CPU slot stride.
+    _pad: [f32; 24],
 }
+
+const _: () = assert!(std::mem::size_of::<MeshUniform>() == 256);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct MeshBatchKey {
@@ -564,8 +574,10 @@ pub struct Renderer {
     readback_rx: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
     readback_mapped: [bool; 2],
 
-    depth_texture: Option<wgpu::Texture>,
-    depth_view: Option<wgpu::TextureView>,
+    /// Per-target depth pool, keyed by `DepthTargetId`. Cameras sharing a target id
+    /// share one depth buffer; different ids get separate depth buffers (so an overlay
+    /// camera with its own near plane never corrupts the world depth).
+    depth_pool: std::collections::HashMap<deerpunk_engine_common::components::DepthTargetId, DepthTexture>,
 
     // HDR intermediate target + tonemap
     hdr_format: wgpu::TextureFormat,
@@ -624,6 +636,8 @@ pub struct Renderer {
     /// Reused indirect command list for multi-draw batches.
     mesh_indirect_cmd_scratch: Vec<wgpu::util::DrawIndexedIndirectArgs>,
     mesh_occlusion: crate::occlusion::MeshOcclusion,
+    /// `r_mesh_batch` — group pooled static draws for shared pipeline/texture binds.
+    mesh_draw_batching: bool,
     frame_occlusion_queries: bool,
     /// Inspector asset inventory (textures / arrays / meshes). Materials rebuilt on query.
     asset_meta: HashMap<u64, AssetEntry>,
@@ -791,9 +805,9 @@ impl Renderer {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(mesh_uniform_bytes),
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 }],
@@ -806,7 +820,7 @@ impl Renderer {
         let mesh_globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh globals"),
             size: mesh_uniform_size * MESH_UNIFORM_SLOTS_INIT,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mesh_globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -817,7 +831,7 @@ impl Renderer {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &mesh_globals_buf,
                     offset: 0,
-                    size: wgpu::BufferSize::new(mesh_uniform_bytes),
+                    size: None,
                 }),
             }],
         });
@@ -1036,9 +1050,9 @@ impl Renderer {
                         binding: 0,
                         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: true,
-                            min_binding_size: wgpu::BufferSize::new(mesh_uniform_bytes),
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
@@ -1903,8 +1917,7 @@ impl Renderer {
             readback_idx: 0,
             readback_rx: None,
             readback_mapped: [false; 2],
-            depth_texture: None,
-            depth_view: None,
+            depth_pool: std::collections::HashMap::new(),
             hdr_format: wgpu::TextureFormat::Rgba16Float,
             hdr_texture: None,
             hdr_view: None,
@@ -1954,6 +1967,7 @@ impl Renderer {
             mesh_pass_skinned_handles: Vec::new(),
             mesh_indirect_cmd_scratch: Vec::new(),
             mesh_occlusion: crate::occlusion::MeshOcclusion::new(),
+            mesh_draw_batching: true,
             frame_occlusion_queries: false,
             asset_meta: HashMap::new(),
             next_mesh_asset_id: 1,
@@ -2026,8 +2040,40 @@ impl Renderer {
         &self.last_profile
     }
 
-    pub(crate) fn depth_view_ref(&self) -> Option<&wgpu::TextureView> {
-        self.depth_view.as_ref()
+    /// Ensure (and return a clone of) the depth view for a given target id, sized to the
+    /// frame. First use of a target id allocates its depth buffer; subsequent cameras with
+    /// the same id share it. Different ids get separate depth buffers (so an overlay
+    /// camera with its own near plane never corrupts the world depth). Returns a
+    /// cloned `TextureView` (Arc-cheap) so callers avoid `&self` borrow conflicts.
+    pub(crate) fn ensure_depth(
+        &mut self,
+        target: deerpunk_engine_common::components::DepthTargetId,
+        w: u32,
+        h: u32,
+    ) -> wgpu::TextureView {
+        let needs = match self.depth_pool.get(&target) {
+            Some(d) => d.texture.width() != w || d.texture.height() != h,
+            None => true,
+        };
+        if needs {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("depth"),
+                size: wgpu::Extent3d {
+                    width: w.max(1),
+                    height: h.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.depth_pool.insert(target, DepthTexture { texture, view });
+        }
+        self.depth_pool.get(&target).unwrap().view.clone()
     }
 
     pub(crate) fn forward_graph_mut(&mut self) -> &mut crate::render_graph::RenderGraph {
@@ -2380,7 +2426,8 @@ impl Renderer {
             }
         }
         self.ensure_hdr_texture(w, h);
-        self.ensure_depth(w, h);
+        // Drop all per-target depth textures so they recreate at the new size on next use.
+        self.depth_pool.clear();
         self.forward_graph_mut().pool_mut().clear();
         self.postfx.invalidate_size();
         self.offscreen = None;
@@ -2660,16 +2707,80 @@ impl Renderer {
             .unwrap_or((800.0, 600.0));
         self.imgui_begin_frame(sw, sh);
 
-        let encoder =
-            self.encode_frame(snapshot, &hdr_view, format, Some(&surface_view), shaders);
+        let encoder = self.encode_compose(
+            std::slice::from_ref(&snapshot),
+            snapshot,
+            &hdr_view,
+            format,
+            Some(&surface_view),
+            shaders,
+        );
 
         self.finish_surface_encoder(encoder, current, &surface_view, None);
         Ok(())
     }
 
-    pub fn render_to_surface_with_game_frame(
+    /// Multi-camera frame: cameras by `order` → HUD/tonemap (Bevy-style stack).
+    pub fn render_to_surface_compose(
         &mut self,
-        snapshot: &RenderSnapshot,
+        cameras: &[&RenderSnapshot],
+        post: &RenderSnapshot,
+        shaders: &ShaderRegistry,
+    ) -> Result<(), FrameError> {
+        self.process_lum_readback();
+        self.mesh_occlusion.process_readback(&self.device);
+
+        let Some(surface) = &self.surface else {
+            return Ok(());
+        };
+
+        let acquire_start = std::time::Instant::now();
+        let current = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(st) => st,
+            wgpu::CurrentSurfaceTexture::Suboptimal(st) => st,
+            wgpu::CurrentSurfaceTexture::Timeout => return Err(FrameError::SurfaceTimeout),
+            wgpu::CurrentSurfaceTexture::Occluded => return Err(FrameError::SurfaceOccluded),
+            wgpu::CurrentSurfaceTexture::Outdated => return Err(FrameError::SurfaceOutdated),
+            wgpu::CurrentSurfaceTexture::Lost => return Err(FrameError::SurfaceLost),
+            wgpu::CurrentSurfaceTexture::Validation => return Err(FrameError::SurfaceValidation),
+        };
+        self.last_profile.surface_acquire_ms =
+            acquire_start.elapsed().as_secs_f32() * 1000.0;
+        let surface_view = current
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let format = self
+            .surface_config
+            .as_ref()
+            .map(|c| c.format)
+            .unwrap_or(TEX_FORMAT);
+
+        let hdr_view = self.hdr_view.clone().expect("HDR texture not initialized");
+
+        let (sw, sh) = self
+            .surface_config
+            .as_ref()
+            .map(|c| (c.width as f32, c.height as f32))
+            .unwrap_or((800.0, 600.0));
+        self.imgui_begin_frame(sw, sh);
+
+        let encoder = self.encode_compose(
+            cameras,
+            post,
+            &hdr_view,
+            format,
+            Some(&surface_view),
+            shaders,
+        );
+
+        self.finish_surface_encoder(encoder, current, &surface_view, None);
+        Ok(())
+    }
+
+    pub fn render_to_surface_compose_with_game_frame(
+        &mut self,
+        cameras: &[&RenderSnapshot],
+        post: &RenderSnapshot,
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
         shaders: &ShaderRegistry,
@@ -2717,10 +2828,173 @@ impl Renderer {
         }
         let game_frame_ui_ms = game_ui_start.elapsed().as_secs_f32() * 1000.0;
 
-        let encoder =
-            self.encode_frame(snapshot, &hdr_view, format, Some(&surface_view), shaders);
+        let encoder = self.encode_compose(
+            cameras,
+            post,
+            &hdr_view,
+            format,
+            Some(&surface_view),
+            shaders,
+        );
         self.finish_surface_encoder(encoder, current, &surface_view, Some(game_frame_ui_ms));
         Ok(())
+    }
+
+    fn encode_compose(
+        &mut self,
+        cameras: &[&RenderSnapshot],
+        post: &RenderSnapshot,
+        view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        surface_view: Option<&wgpu::TextureView>,
+        shaders: &ShaderRegistry,
+    ) -> wgpu::CommandEncoder {
+        use crate::frame::scope::Phase;
+
+        let frame_start = std::time::Instant::now();
+        let mut lap = frame_start;
+        let mut prof = RenderFrameProfile::default();
+        let mut draw_acc = FrameDrawAccum::default();
+        self.frame_occlusion_queries = false;
+        prof.extract_ms = self.pending_extract_ms;
+        prof.prep_ms = self.pending_prep_ms;
+        prof.prep_ui_ms = self.pending_prep_ui_ms;
+        prof.prep_snapshot_ms = self.pending_prep_snapshot_ms;
+        prof.prep_cull_ms = self.pending_prep_cull_ms;
+        prof.prep_cull_frustum_ms = self.pending_prep_cull_frustum_ms;
+        prof.prep_cull_assemble_ms = self.pending_prep_cull_assemble_ms;
+        prof.prep_cull_gather_ms = self.pending_prep_cull_gather_ms;
+        prof.prep_audio_ms = self.pending_prep_audio_ms;
+        prof.extract_gpu = self.pending_extract_gpu;
+        self.frame_mesh_gpu_uploads = 0;
+        self.frame_mesh_gpu_cached = 0;
+        prof.graph_nodes.clear();
+
+        let primary = cameras.first().copied().unwrap_or(post);
+        prof.sprite_instances = primary.instances.len() as u32;
+        prof.hud_instances = post.hud.len() as u32;
+        prof.mesh_draws = cameras
+            .iter()
+            .map(|c| (c.mesh_draws.len() + c.skinned_mesh_draws.len()) as u32)
+            .sum();
+        prof.terrain_draws = primary.terrain_splat_draws.len() as u32;
+        prof.point_lights = primary.point_lights.len() as u32;
+        prof.width = frame_width();
+        prof.height = frame_height();
+
+        let pipeline = match self.pipelines.get(&self.hdr_format) {
+            Some(p) => p.clone(),
+            None => {
+                let p = self.build_pipeline(self.hdr_format);
+                self.pipelines.insert(self.hdr_format, p.clone());
+                p
+            }
+        };
+
+        let fw = frame_width() as f32;
+        let fh = frame_height() as f32;
+        let hud_vp: [[f32; 4]; 4] = [
+            [2.0 / fw, 0.0, 0.0, 0.0],
+            [0.0, -2.0 / fh, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0, 1.0],
+        ];
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame encoder"),
+            });
+
+        for cam in cameras.iter() {
+            let phase = Phase::Camera { pass_mask: cam.pass_mask };
+            let mut frame_ctx = FrameCtx {
+                snapshot: cam,
+                hdr_view: view,
+                hdr_format: self.hdr_format,
+                surface_format: format,
+                surface_view,
+                shaders,
+                prof: &mut prof,
+                draw_acc: &mut draw_acc,
+                lap: &mut lap,
+            };
+            crate::frame::executor::run_frame_graph(
+                self,
+                &mut frame_ctx,
+                &mut encoder,
+                &pipeline,
+                hud_vp,
+                phase,
+            );
+        }
+        {
+            let mut frame_ctx = FrameCtx {
+                snapshot: post,
+                hdr_view: view,
+                hdr_format: self.hdr_format,
+                surface_format: format,
+                surface_view,
+                shaders,
+                prof: &mut prof,
+                draw_acc: &mut draw_acc,
+                lap: &mut lap,
+            };
+            crate::frame::executor::run_frame_graph(
+                self,
+                &mut frame_ctx,
+                &mut encoder,
+                &pipeline,
+                hud_vp,
+                Phase::Post,
+            );
+        }
+
+        prof.total_encode_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        let frustum_occluded = if primary.frustum_culled {
+            let cs = primary.cull_stats;
+            (cs.mesh_total - cs.mesh_visible) + (cs.skinned_total - cs.skinned_visible)
+        } else {
+            0
+        };
+        let (_, gpu_occluded) = self.mesh_occlusion.last_stats();
+        let occluded = frustum_occluded + gpu_occluded;
+        let visible_instances = primary.instances.len() as u32
+            + prof.mesh_draws
+            + primary.terrain_splat_draws.len() as u32;
+        prof.speeds_hud = FrameSpeedsHud {
+            dip_count: draw_acc.dip_count,
+            shader_bind: draw_acc.shader_bind,
+            frame_total_tris: (draw_acc.index_count / 3).min(u32::MAX as u64) as u32,
+            visible_world_lights: post.visible_world_lights,
+            visible_dyn_lights: primary.point_lights.len() as u32,
+            visible_sun_lights: if self.scene_sun_dir[3] > 0.001 { 1 } else { 0 },
+            visible_instances,
+            visible_occluders: {
+                let (queried, occ) = self.mesh_occlusion.last_stats();
+                queried.saturating_sub(occ)
+            },
+            occluded_objects: occluded,
+        };
+        self.last_profile = prof;
+
+        encoder
+    }
+
+    pub fn render_to_surface_with_game_frame(
+        &mut self,
+        snapshot: &RenderSnapshot,
+        game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
+        game_frame_ctx: *mut std::ffi::c_void,
+        shaders: &ShaderRegistry,
+    ) -> Result<(), FrameError> {
+        self.render_to_surface_compose_with_game_frame(
+            std::slice::from_ref(&snapshot),
+            snapshot,
+            game_frame_fn,
+            game_frame_ctx,
+            shaders,
+        )
     }
 
     fn finish_surface_encoder(
@@ -3123,41 +3397,10 @@ impl Renderer {
         shared: &SharedTexture,
         shaders: &ShaderRegistry,
     ) {
-        self.ensure_depth(shared.width, shared.height);
+        self.ensure_depth(snapshot.depth.target, shared.width, shared.height);
         let mut encoder = self.encode_frame(snapshot, &shared.view, TEX_FORMAT, None, shaders);
         self.queue.submit([encoder.finish()]);
         self.device.poll(wgpu::PollType::wait_indefinitely());
-    }
-
-    fn ensure_depth(&mut self, w: u32, h: u32) {
-        let needs = match &self.depth_texture {
-            Some(tex) => tex.width() != w || tex.height() != h,
-            None => true,
-        };
-        if needs {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("depth"),
-                size: wgpu::Extent3d {
-                    width: w.max(1),
-                    height: h.max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: DEPTH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.depth_texture = Some(texture);
-            self.depth_view = Some(view);
-        }
-    }
-
-    /// Depth target for mesh / terrain / debug (required by forward graph `ResId::DEPTH`).
-    pub(crate) fn ensure_depth_for_frame(&mut self) {
-        self.ensure_depth(frame_width(), frame_height());
     }
 
     fn ensure_debug_pipelines(&mut self, format: wgpu::TextureFormat) {
@@ -3893,7 +4136,7 @@ impl Renderer {
             })
     }
 
-    /// `skinned_layout`: group-0 bind group includes bone palette (must match [`Self::pass_mesh`] bind setup).
+
     fn ensure_shader_mesh_pipeline(
         &mut self,
         shaders: &ShaderRegistry,
@@ -4210,7 +4453,7 @@ impl Renderer {
         self.mesh_globals_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh globals"),
             size: stride * new_slots,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         self.mesh_globals_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -4221,7 +4464,7 @@ impl Renderer {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &self.mesh_globals_buf,
                     offset: 0,
-                    size: wgpu::BufferSize::new(mesh_uniform_bytes),
+                    size: None,
                 }),
             }],
         });
@@ -4540,6 +4783,11 @@ impl Renderer {
     /// `r_occlusion_cull` — skip mesh draws occluded in the previous frame (GPU queries).
     pub fn set_occlusion_cull(&mut self, on: bool) {
         self.mesh_occlusion.set_enabled(on);
+    }
+
+    /// `r_mesh_batch` — static mesh bind-state batching in the mesh pass.
+    pub fn set_mesh_draw_batching(&mut self, on: bool) {
+        self.mesh_draw_batching = on;
     }
 
     /// Debug: show lightmap contribution only.
@@ -4896,7 +5144,14 @@ impl Renderer {
             lap: &mut lap,
         };
 
-        crate::frame::executor::run_frame_graph(self, &mut frame_ctx, &mut encoder, &pipeline, hud_vp);
+        crate::frame::executor::run_frame_graph(
+            self,
+            &mut frame_ctx,
+            &mut encoder,
+            &pipeline,
+            hud_vp,
+            crate::frame::scope::Phase::Camera { pass_mask: snapshot.pass_mask },
+        );
 
         prof.total_encode_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         let frustum_occluded = if snapshot.frustum_culled {

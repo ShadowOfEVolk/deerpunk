@@ -38,6 +38,9 @@ impl Renderer {
     // --- Mesh draws (static + GPU-skinned, single depth pass) ---
     let static_count = ctx.snapshot.mesh_draws.len();
     let skinned_count = ctx.snapshot.skinned_mesh_draws.len();
+    // GPU occlusion is tied to the primary scene depth buffer (convention: `DepthTargetId(0)`).
+    let owns_scene_occlusion = ctx.snapshot.depth.target
+        == deerpunk_engine_common::components::DepthTargetId(0);
     if static_count > 0 || skinned_count > 0 {
         let mesh_align = 256u64;
         let mesh_uniform_size = ((std::mem::size_of::<MeshUniform>() as u64 + mesh_align - 1)
@@ -72,7 +75,8 @@ impl Renderer {
         );
         self.mesh_uniform_scratch.resize(slab_bytes, 0);
 
-        let occlusion_active = self.mesh_occlusion.filters_draws();
+        let occlusion_active =
+            self.mesh_occlusion.filters_draws() && owns_scene_occlusion;
         let static_visible: Option<Vec<bool>> = if occlusion_active {
             Some(
                 (0..static_count)
@@ -125,6 +129,7 @@ impl Renderer {
                 ],
                 camera_pos: ctx.snapshot.camera_pos,
                 _pad_cam: 0.0,
+                _pad: [0.0; 24],
             };
             let off = (i as u64 * mesh_uniform_size) as usize;
             let uniform_bytes = bytemuck::bytes_of(&uniform);
@@ -145,6 +150,7 @@ impl Renderer {
                 material_data: [resolved_skinned[j], 0, fullbright_flag, lightmap_flag],
                 camera_pos: ctx.snapshot.camera_pos,
                 _pad_cam: 0.0,
+                _pad: [0.0; 24],
             };
             let off = (i as u64 * mesh_uniform_size) as usize;
             let uniform_bytes = bytemuck::bytes_of(&uniform);
@@ -193,8 +199,19 @@ impl Renderer {
                 .write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
         }
 
-        self.ensure_depth(frame_width(), frame_height());
-
+        let depth_view = self.ensure_depth(
+            ctx.snapshot.depth.target,
+            frame_width(),
+            frame_height(),
+        );
+        // `DepthLoad::None` falls back to Clear: the mesh pipelines carry a depth-stencil
+        // state, so wgpu requires a depth attachment. True "no depth" would need a
+        // separate depthless pipeline (not yet warranted — no camera uses None today).
+        let depth_load = match ctx.snapshot.depth.load {
+            deerpunk_engine_common::components::DepthLoad::Clear(v) => wgpu::LoadOp::Clear(v),
+            deerpunk_engine_common::components::DepthLoad::Load => wgpu::LoadOp::Load,
+            deerpunk_engine_common::components::DepthLoad::None => wgpu::LoadOp::Clear(1.0),
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mesh pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -207,9 +224,9 @@ impl Renderer {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: self.depth_view.as_ref().unwrap(),
+                view: &depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: depth_load,
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
@@ -250,10 +267,7 @@ impl Renderer {
         let mut batch_for_index = vec![None; ctx.snapshot.mesh_draws.len()];
         for &i in &draw_order {
             let md = &ctx.snapshot.mesh_draws[i];
-            if !self.multi_draw_indirect_supported
-                || !md.batchable
-                || !static_vis(i)
-            {
+            if !self.mesh_draw_batching || !md.batchable || !static_vis(i) {
                 continue;
             }
             if ctx
@@ -275,7 +289,7 @@ impl Renderer {
                 texture: md.texture.0,
                 normal: md.normal.0,
                 orm: md.orm.0,
-                lightmap_gpu: md.lightmap_gpu,
+                lightmap_gpu: if lm_surface { md.lightmap_gpu } else { 0 },
                 buffer_id: handle.buffer_id,
             };
             batch_for_index[i] = Some(key);
@@ -312,8 +326,6 @@ impl Renderer {
                         .expect("batch key missing from mesh groups");
                     let representative = group[0];
                     let rep = &ctx.snapshot.mesh_draws[representative];
-                    let offset = (representative as u64 * mesh_uniform_size) as u32;
-                    pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
 
                     let pipeline = self.ensure_shader_mesh_pipeline(
                         ctx.shaders,
@@ -347,6 +359,8 @@ impl Renderer {
                         ),
                         &[],
                     );
+                    pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
+
                     let vb = self.mesh_pool.vertex_buffer(key.buffer_id);
                     let ib = self.mesh_pool.index_buffer(key.buffer_id);
                     pass.set_vertex_buffer(0, vb.slice(..));
@@ -377,25 +391,40 @@ impl Renderer {
                                 instance_count: 1,
                                 first_index: group_handle.idx_offset.saturating_add(start),
                                 base_vertex: group_handle.vert_offset as i32,
-                                first_instance: 0,
+                                first_instance: group_index as u32,
                             });
                     }
-                    if !self.mesh_indirect_cmd_scratch.is_empty() {
-                        let cmd_count = self.mesh_indirect_cmd_scratch.len();
-                        self.queue.write_buffer(
-                            &self.mesh_indirect_buf,
-                            indirect_offset,
-                            bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
-                        );
-                        pass.multi_draw_indexed_indirect(
-                            &self.mesh_indirect_buf,
-                            indirect_offset,
-                            cmd_count as u32,
-                        );
-                        indirect_offset += cmd_count as u64 * indirect_command_stride;
-                        ctx.draw_acc.note_draw_indexed(total_indices);
+                    let cmd_count = self.mesh_indirect_cmd_scratch.len();
+                    if cmd_count > 0 {
+                        if self.multi_draw_indirect_supported {
+                            self.queue.write_buffer(
+                                &self.mesh_indirect_buf,
+                                indirect_offset,
+                                bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
+                            );
+                            pass.multi_draw_indexed_indirect(
+                                &self.mesh_indirect_buf,
+                                indirect_offset,
+                                cmd_count as u32,
+                            );
+                            indirect_offset += cmd_count as u64 * indirect_command_stride;
+                            ctx.draw_acc.note_draw_indexed(total_indices);
+                            ctx.prof.mesh_stats.draws_submitted += 1;
+                            ctx.prof.mesh_stats.indirect_batches += 1;
+                            ctx.prof.mesh_stats.indirect_commands += cmd_count as u32;
+                        } else {
+                            for cmd in &self.mesh_indirect_cmd_scratch {
+                                pass.draw_indexed(
+                                    cmd.first_index..cmd.first_index + cmd.index_count,
+                                    cmd.base_vertex,
+                                    cmd.first_instance..cmd.first_instance + 1,
+                                );
+                                ctx.draw_acc.note_draw_indexed(cmd.index_count);
+                            }
+                            ctx.prof.mesh_stats.draws_submitted += cmd_count as u32;
+                            ctx.prof.mesh_stats.bind_batch_draws += cmd_count as u32;
+                        }
                         ctx.prof.mesh_index_count += total_indices as u64;
-                        ctx.prof.mesh_stats.draws_submitted += cmd_count as u32;
                         ctx.prof.mesh_stats.tris_drawn += total_indices as u64;
                         if key.lm_surface {
                             ctx.prof.mesh_stats.lm_array_layout_draws += cmd_count as u32;
@@ -435,8 +464,7 @@ impl Renderer {
             );
             let handle = self.mesh_static_handle_at(i, &md.mesh);
             let material_id = resolved_static[i];
-            let offset = (i as u64 * mesh_uniform_size) as u32;
-            pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
+            pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
 
             let lm_surface = ctx.shaders
                 .get(md.shader_id)
@@ -478,7 +506,7 @@ impl Renderer {
             };
             if count > 0 {
                 ctx.prof.mesh_index_count += count as u64;
-                pass.draw_indexed(start..start + count, 0, 0..1);
+                pass.draw_indexed(start..start + count, 0, i as u32..i as u32 + 1);
                 ctx.draw_acc.note_draw_indexed(count);
 
                 ctx.prof.mesh_stats.tris_drawn += count as u64;
@@ -534,7 +562,7 @@ impl Renderer {
                 .skinned_mesh_globals_bgs
                 .get(&sd.bone_buffer)
                 .expect("bone palette missing — upload bone_palettes before draw");
-            pass.set_bind_group(0, bone_bg, &[offset]);
+            pass.set_bind_group(0, bone_bg, &[]);
             pass.set_bind_group(1, self.mesh_bind_group(sd.texture), &[]);
             pass.set_bind_group(2, self.ensure_material_bg(material_id, sd.normal, sd.orm), &[]);
             let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
@@ -547,7 +575,7 @@ impl Renderer {
             let count = handle.idx_count;
             if count > 0 {
                 ctx.prof.mesh_index_count += count as u64;
-                pass.draw_indexed(0..count, 0, 0..1);
+                pass.draw_indexed(0..count, 0, (i as u32)..(i as u32 + 1));
                 ctx.draw_acc.note_draw_indexed(count);
                 ctx.prof.mesh_stats.tris_drawn += count as u64;
                 ctx.prof.mesh_stats.draws_submitted += 1;
@@ -572,13 +600,18 @@ impl Renderer {
             .collect();
     }
     if static_count > 0 || skinned_count > 0 {
-        if let Some(depth_view) = self.depth_view.as_ref() {
-            self.frame_occlusion_queries = self.mesh_occlusion.encode_queries(
+        let depth_view = self.ensure_depth(
+            ctx.snapshot.depth.target,
+            frame_width(),
+            frame_height(),
+        );
+        if owns_scene_occlusion {
+            self.frame_occlusion_queries |= self.mesh_occlusion.encode_queries(
                 &self.device,
                 &self.queue,
                 encoder,
                 ctx.snapshot,
-                depth_view,
+                &depth_view,
                 ctx.hdr_view,
                 ctx.hdr_format,
                 DEPTH_FORMAT,
@@ -586,118 +619,5 @@ impl Renderer {
         }
     }
         ctx.prof.mesh_stats.draw_encode_ms = lap_ms(ctx.lap);
-    }
-
-    pub(crate) fn pass_viewmodel(
-        &mut self,
-        ctx: &mut FrameCtx<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        let Some(vp) = ctx.snapshot.viewmodel_view_proj else {
-            return;
-        };
-        let draws = &ctx.snapshot.viewmodel_mesh_draws;
-        if draws.is_empty() {
-            return;
-        }
-        let mesh_uniform_size = Self::mesh_uniform_stride();
-        let draw_count = draws.len();
-        let base_slot = ctx.snapshot.mesh_draws.len() as u64;
-        let total_slots = base_slot + draw_count as u64;
-        self.ensure_mesh_uniform_slots(total_slots);
-        let fullbright_flag = if self.fullbright { 1u32 } else { 0u32 };
-        let lightmap_flag = if self.lightmap_only { 1u32 } else { 0u32 };
-        self.mesh_uniform_scratch
-            .resize((mesh_uniform_size * draw_count as u64) as usize, 0);
-        for (i, md) in draws.iter().enumerate() {
-            let uniform = MeshUniform {
-                view_proj: vp,
-                model: md.model_mat,
-                material_data: [md.material_id, md.uniform_aux, fullbright_flag, lightmap_flag],
-                camera_pos: ctx.snapshot.viewmodel_camera_pos,
-                _pad_cam: 0.0,
-            };
-            let off = (i as u64 * mesh_uniform_size) as usize;
-            self.mesh_uniform_scratch[off..off + std::mem::size_of::<MeshUniform>()]
-                .copy_from_slice(bytemuck::bytes_of(&uniform));
-        }
-        self.queue.write_buffer(
-            &self.mesh_globals_buf,
-            base_slot * mesh_uniform_size,
-            &self.mesh_uniform_scratch[..(mesh_uniform_size * draw_count as u64) as usize],
-        );
-
-        self.ensure_depth(frame_width(), frame_height());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("viewmodel pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.hdr_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: self.depth_view.as_ref().unwrap(),
-                depth_ops: Some(wgpu::Operations {
-                    // Keep world depth; viewmodel lens uses a closer near plane so the item still wins.
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_bind_group(3, &self.lights_bg, &[]);
-
-        for (i, md) in draws.iter().enumerate() {
-            if md.shader_id == 0 {
-                continue;
-            }
-            let handle = self.mesh_resolve_for_draw(&md.mesh);
-            let pipeline = self.ensure_shader_mesh_pipeline(
-                ctx.shaders,
-                md.shader_id,
-                ctx.hdr_format,
-                false,
-            );
-            ctx.draw_acc.note_pipeline();
-            pass.set_pipeline(&pipeline);
-            let slot = base_slot + i as u64;
-            let offset = (slot * mesh_uniform_size) as u32;
-            pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
-            if ctx
-                .shaders
-                .get(md.shader_id)
-                .map(|d| d.group1_uses_lightmap_array())
-                .unwrap_or(false)
-            {
-                let bind1 = self.ensure_albedo_lightmap_bg(md.texture.0, md.lightmap_gpu);
-                pass.set_bind_group(1, &bind1, &[]);
-            } else {
-                pass.set_bind_group(1, self.mesh_bind_group(md.texture), &[]);
-            }
-            pass.set_bind_group(
-                2,
-                self.ensure_material_bg(md.material_id, md.normal, md.orm),
-                &[],
-            );
-            let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
-            let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-            pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
-            pass.set_index_buffer(
-                ib.slice(self.mesh_pool.index_byte_range(handle)),
-                wgpu::IndexFormat::Uint32,
-            );
-            let count = handle.idx_count;
-            if count > 0 {
-                pass.draw_indexed(0..count, 0, 0..1);
-                ctx.draw_acc.note_draw_indexed(count);
-            }
-        }
     }
 }

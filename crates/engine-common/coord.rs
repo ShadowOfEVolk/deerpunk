@@ -154,6 +154,41 @@ mod tests {
             "ground ndc_z must be in [0,1], got {ndc_z}"
         );
     }
+
+    #[test]
+    fn mesh_clip_matches_world_view_proj() {
+        let eye = glam::Vec3::new(100.0, 200.0, 50.0);
+        let rot = glam::Quat::from_rotation_z(-0.4);
+        let view = super::view_matrix_z_up_rh(eye, rot);
+        let proj = super::perspective_rh_wgpu(75.0_f32.to_radians(), 16.0 / 9.0, 0.05, 2048.0);
+        let local = glam::Vec3::new(8.0, 4.0, 2.0);
+        let model = glam::Mat4::from_translation(glam::Vec3::new(512.0, 128.0, 0.0));
+        let world = model * glam::Vec4::from((local, 1.0));
+        let clip_world = proj * view * world;
+        let clip_rel = super::view_proj_world_mesh_clip(proj, rot)
+            * glam::Vec4::from(((world.truncate() - eye), 1.0));
+        assert!(
+            (clip_world - clip_rel).length() < 1e-3,
+            "camera-relative clip mismatch"
+        );
+    }
+
+    #[test]
+    fn z_up_view_steep_pitch_projects_valid_depth() {
+        let eye = glam::Vec3::new(100.0, 200.0, 80.0);
+        let rot = glam::Quat::from_rotation_x(-1.55);
+        let view = super::view_matrix_z_up_rh(eye, rot);
+        let proj = super::perspective_rh_wgpu(75.0_f32.to_radians(), 16.0 / 9.0, 0.05, 2048.0);
+        let vp = proj * view;
+        let ground = glam::Vec4::new(100.0, 200.0, 0.0, 1.0);
+        let clip = vp * ground;
+        assert!(clip.w > 0.0, "w must be positive");
+        let ndc_z = clip.z / clip.w;
+        assert!(
+            ndc_z >= 0.0 && ndc_z <= 1.0,
+            "steep pitch ndc_z in [0,1], got {ndc_z}"
+        );
+    }
 }
 
 /// Умножение матрицы4x4 на вектор (column-major).
@@ -268,4 +303,25 @@ pub fn inv_view_proj_sky_at_origin(view: glam::Mat4, projection: glam::Mat4) -> 
     (projection * view_at_origin)
         .inverse()
         .to_cols_array_2d()
+}
+
+/// Right-handed perspective with wgpu/D3D/Vulkan clip Z in `[0, 1]`.
+pub fn perspective_rh_wgpu(fov_y: f32, aspect: f32, near: f32, far: f32) -> glam::Mat4 {
+    glam::Mat4::perspective_rh(fov_y, aspect, near, far)
+}
+
+/// Mesh/sprite clip matrix: camera rotation at origin × projection.
+/// Vertex shaders subtract [`CameraDefinition::position`] from world position before multiply.
+pub fn view_proj_world_mesh_clip(projection: glam::Mat4, rotation: glam::Quat) -> glam::Mat4 {
+    projection * view_matrix_z_up_rh(glam::Vec3::ZERO, rotation)
+}
+
+/// Z-up view matrix: camera local +Y is forward. Uses world +Z as up hint (fallback +Y at pole).
+pub fn view_matrix_z_up_rh(eye: glam::Vec3, rotation: glam::Quat) -> glam::Mat4 {
+    let forward = (rotation * glam::Vec3::Y).normalize_or_zero();
+    let mut up_ref = glam::Vec3::Z;
+    if forward.dot(up_ref).abs() > 0.999 {
+        up_ref = glam::Vec3::Y;
+    }
+    glam::Mat4::look_to_rh(eye, forward, up_ref)
 }

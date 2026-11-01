@@ -33,13 +33,16 @@ impl Renderer {
 
         let verts = crate::debug_draw::collect_vertices(ctx.snapshot, 1.5, 120000);
         if !verts.is_empty() {
-            self.ensure_depth(frame_width(), frame_height());
             self.ensure_debug_pipelines(ctx.hdr_format);
 
             self.queue
                 .write_buffer(&self.debug_vertex_buf, 0, bytemuck::cast_slice(&verts));
             let vcount = verts.len() as u32;
-            let depth_view = self.depth_view.as_ref().unwrap();
+            let depth_view = self.ensure_depth(
+                ctx.snapshot.depth.target,
+                frame_width(),
+                frame_height(),
+            );
 
             // 1) Behind geometry — dim (depth test: farther than scene).
             if let Some(ref pipeline) = self.debug_pipeline_occluded {
@@ -55,7 +58,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: depth_view,
+                        view: &depth_view,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
@@ -88,7 +91,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: depth_view,
+                        view: &depth_view,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,

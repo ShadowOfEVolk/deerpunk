@@ -8,7 +8,14 @@ struct MeshUniform {
     material_data: vec4<u32>,
     camera_pos: vec3<f32>,
     _pad_cam: f32,
+    _pad: array<f32, 24>,
 };
+
+@group(0) @binding(0) var<storage, read> mesh_uniform_slots: array<MeshUniform>;
+
+fn mesh_mu_slot(slot: u32) -> MeshUniform {
+    return mesh_uniform_slots[slot];
+}
 
 struct MaterialData {
     color: vec4<f32>,
@@ -40,7 +47,6 @@ struct LightsUniform {
 
 #@shader pass=mesh_opaque queue=1000
 
-@group(0) @binding(0) var<uniform> mu: MeshUniform;
 @group(1) @binding(0) var u_tex: texture_2d<f32>;
 @group(1) @binding(1) var u_sampler: sampler;
 @group(2) @binding(0) var<storage, read> materials: array<MaterialData>;
@@ -61,19 +67,23 @@ struct VsIn {
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
+    @location(1) @interpolate(flat) draw_slot: u32,
 };
 
 @vertex
-fn vs_main(in: VsIn) -> VsOut {
+fn vs_main(in: VsIn, @builtin(instance_index) draw_slot: u32) -> VsOut {
+    let mu = mesh_mu_slot(draw_slot);
     let world_pos = mu.model * vec4(in.position, 1.0);
     var out: VsOut;
     out.pos = mu.view_proj * world_pos;
     out.world_pos = world_pos.xyz;
+    out.draw_slot = draw_slot;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let _mu = mesh_mu_slot(in.draw_slot);
     // Classic engine "missing shader" magenta (linear HDR).
     let err = vec3<f32>(0.92, 0.08, 0.78);
     let stripe = step(0.5, fract(in.world_pos.x * 0.35 + in.world_pos.y * 0.35));

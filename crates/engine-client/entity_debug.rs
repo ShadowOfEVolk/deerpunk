@@ -84,24 +84,10 @@ pub fn tick(
     }
 }
 
-use crate::view_camera::camera_world_at_entity;
+use crate::camera_util::camera_world_at_entity;
 
 fn camera_eye(world: &World) -> Option<([f32; 3], [f32; 3])> {
     let cam_id = world.component_init::<CameraComponent>();
-    let tag_id = world.component_init::<deerpunk_engine_common::components::ViewCameraTag>();
-    for e in world.inspect_entities() {
-        if !world.has(e.id, cam_id) {
-            continue;
-        }
-        if !world.has(e.id, tag_id) {
-            continue;
-        }
-        let Some((eye, rot)) = camera_world_at_entity(world, e.id) else {
-            continue;
-        };
-        let forward = rot * Vec3::Y;
-        return Some((eye.to_array(), forward.normalize_or_zero().to_array()));
-    }
     for e in world.inspect_entities() {
         if !world.has(e.id, cam_id) {
             continue;

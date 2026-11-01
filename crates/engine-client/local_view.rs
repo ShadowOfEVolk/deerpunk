@@ -6,7 +6,7 @@ use deerpunk_engine_common::world::World;
 use glam::{Quat, Vec3};
 
 use crate::client_engine::LocalViewStamp;
-use crate::view_camera::ensure_view_camera_child;
+use crate::camera_util::ensure_child_world_camera;
 
 pub fn stamp_view_on_entity(
     client_world: &World,
@@ -18,7 +18,7 @@ pub fn stamp_view_on_entity(
     } else {
         CHAR_EYE_HEIGHT
     };
-    let cam_ent = ensure_view_camera_child(client_world, pawn, eye);
+    let cam_ent = ensure_child_world_camera(client_world, pawn, eye);
     let tid = client_world.component_init::<TransformComponent>();
     let cid = client_world.component_init::<CameraComponent>();
     let pitch = stamp.pitch.clamp(-1.5, 1.5);

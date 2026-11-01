@@ -242,9 +242,9 @@ Static draws are sorted by:
 
 Skinned draws follow a similar path with skinned pipeline layouts.
 
-### Batch groups → indirect
+### Batch groups (bind-state batching)
 
-Draws that share a **`MeshBatchKey`** and are marked **`batchable`** can merge:
+Draws that share a **`MeshBatchKey`** and are marked **`batchable`** (pooled mesh allocator) merge for **pipeline / bind group 1–2** setup:
 
 | MeshBatchKey field | Must match |
 |--------------------|------------|
@@ -252,9 +252,11 @@ Draws that share a **`MeshBatchKey`** and are marked **`batchable`** can merge:
 | texture, normal, orm, lightmap_gpu | Bind group 1 |
 | buffer_id | Same VB/IB pool buffer |
 
-For each group the pass fills **`DrawIndexedIndirectArgs`** and calls **`multi_draw_indexed_indirect`** on **`mesh_indirect_buf`**.
+For each group the pass sets pipeline and texture binds **once**, then issues one **`draw_indexed` per member** with that draw’s **dynamic uniform offset** and **`vertex_byte_range` / `index_byte_range`**. Groups need **≥ 2** draws; singletons use the normal per-draw path.
 
-If the adapter lacks **`multi_draw_indirect`**, or the draw is not batchable, or the shader uses skinned vertex layout, the pass falls back to **`draw_indexed`** per object.
+**Not used:** `multi_draw_indexed_indirect` with a single `MeshUniform` for the whole group (wrong per-chunk `model` → z-fight). Future GPU indirect batching would need per-instance uniforms (e.g. storage buffer + `instance_index`).
+
+Skinned draws are never batch-grouped. Non-**batchable** draws always use the per-draw path.
 
 ### Other batching
 
@@ -299,6 +301,7 @@ Shaders load from **`gamedir/shaders/`**; reload via **`v1:renderer:reload_shade
 | `r_fullbright` / `r_lightmap` | Lighting debug modes |
 | `r_exposure`, `r_tonemap`, `r_bloom`, `r_grain` | Post FX |
 | `r_frustum_cull`, `r_occlusion_cull` | Culling toggles |
+| `r_mesh_batch` | Static mesh bind-state batching (default on) |
 | `r_showalloc` | Mesh allocator visualization |
 | `r_drawentities` | Entity draw debug |
 

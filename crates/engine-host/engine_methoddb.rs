@@ -437,11 +437,12 @@ impl crate::Host {
         let Some(ent) = self.local_client_entity() else {
             return -1;
         };
-        use deerpunk_engine_client::view_camera::{camera_world_at_entity, find_view_camera_child};
+        use deerpunk_engine_client::camera_util::{camera_world_at_entity, find_child_camera_with_layer};
+        use deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD;
         use glam::Vec3;
 
         let pawn = ent;
-        let Some(cam_ent) = find_view_camera_child(&client.world, pawn) else {
+        let Some(cam_ent) = find_child_camera_with_layer(&client.world, pawn, RENDER_LAYER_WORLD) else {
             return -1;
         };
         let Some((eye, view_rot)) = camera_world_at_entity(&client.world, cam_ent) else {

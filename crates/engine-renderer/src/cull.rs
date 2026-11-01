@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use glam::Mat4;
 
+use deerpunk_engine_common::components::render_layer::render_layer_visible;
+
 use crate::aabb::Aabb;
 use crate::frustum::Frustum;
 use crate::snapshot::{MeshDraw, SkinnedMeshDraw};
@@ -37,6 +39,7 @@ pub struct CullScratch {
     mesh_octree_serial: u64,
     skinned_octree_serial: u64,
     last_view_proj: Mat4,
+    last_layer_mask: u32,
     /// Last [`RenderScene::build_snapshots`] frustum pass (ms).
     pub last_frustum_ms: f32,
     /// Matrix / clone work in `build_snapshots` excluding frustum (ms).
@@ -58,6 +61,7 @@ impl CullScratch {
             mesh_octree_serial: 0,
             skinned_octree_serial: 0,
             last_view_proj: Mat4::ZERO,
+            last_layer_mask: 0,
             last_frustum_ms: 0.0,
             last_assemble_ms: 0.0,
         }
@@ -88,6 +92,7 @@ pub struct CullCamera {
     pub far: f32,
     pub fov_y: f32,
     pub aspect: f32,
+    pub layer_mask: u32,
 }
 
 fn cull_draws_linear(
@@ -151,6 +156,42 @@ fn cull_octree_frustum_draws<M>(
     }
 }
 
+fn cull_mesh_linear(draws: &[MeshDraw], cam: &CullCamera, frustum: &Frustum, out: &mut Vec<u32>) {
+    out.clear();
+    for (i, d) in draws.iter().enumerate() {
+        if !render_layer_visible(d.layer_mask, cam.layer_mask) {
+            continue;
+        }
+        if frustum.intersects_aabb(&d.world_bounds) {
+            out.push(i as u32);
+        }
+    }
+}
+
+fn cull_mesh_octree(
+    draws: &[MeshDraw],
+    cam: &CullCamera,
+    frustum: &Frustum,
+    octree: &mut PersistentOctree,
+    id_to_index: &HashMap<u64, u32>,
+    out: &mut Vec<u32>,
+) {
+    out.clear();
+    for &id in octree.query_frustum_ids(frustum) {
+        let Some(&ix) = id_to_index.get(&id) else {
+            continue;
+        };
+        let i = ix as usize;
+        if i >= draws.len() {
+            continue;
+        }
+        if !render_layer_visible(draws[i].layer_mask, cam.layer_mask) {
+            continue;
+        }
+        out.push(ix);
+    }
+}
+
 fn mesh_cull_key(draw: &MeshDraw, index: usize) -> u64 {
     if draw.entity_id != 0 {
         draw.entity_id
@@ -198,23 +239,28 @@ pub fn cull_mesh_indices(
     }
 
     if scratch.last_view_proj == cam.view_proj
+        && scratch.last_layer_mask == cam.layer_mask
         && cull_serial == scratch.cached_cull_serial
         && scratch.cached_mesh_draw_len == len
         && !scratch.visible_mesh.is_empty()
     {
         return (len as u32, scratch.visible_mesh.len() as u32);
     }
-    if scratch.last_view_proj != cam.view_proj || cull_serial != scratch.cached_cull_serial {
+    if scratch.last_view_proj != cam.view_proj
+        || scratch.last_layer_mask != cam.layer_mask
+        || cull_serial != scratch.cached_cull_serial
+    {
         scratch.visible_mesh.clear();
         scratch.visible_skinned.clear();
         scratch.cached_mesh_draw_len = 0;
         scratch.cached_skinned_draw_len = 0;
     }
     scratch.last_view_proj = cam.view_proj;
+    scratch.last_layer_mask = cam.layer_mask;
     scratch.cached_cull_serial = cull_serial;
 
     if len < GRID_MIN_DRAWS {
-        cull_draws_linear(len, |i| draws[i].world_bounds, &frustum, &mut scratch.visible_mesh);
+        cull_mesh_linear(draws, cam, &frustum, &mut scratch.visible_mesh);
     } else {
         if cull_serial != scratch.mesh_octree_serial {
             scratch.mesh_octree_serial = cull_serial;
@@ -228,8 +274,9 @@ pub fn cull_mesh_indices(
             scratch.mesh_octree.sync_slice(&scratch.keys_scratch);
         }
         rebuild_id_to_index(draws, |i, d| mesh_cull_key(d, i), &mut scratch.id_to_index);
-        cull_octree_frustum_draws(
+        cull_mesh_octree(
             draws,
+            cam,
             &frustum,
             &mut scratch.mesh_octree,
             &scratch.id_to_index,

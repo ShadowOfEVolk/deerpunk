@@ -123,6 +123,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_mesh_batch",
+    "1",
+    "Static mesh bind-state batching (same shader/textures, per-draw uniforms; 0=one draw_indexed per object)",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_grain_downscale",
     "3",
     "Film grain noise tile scale.",

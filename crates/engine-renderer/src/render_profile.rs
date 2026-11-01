@@ -50,6 +50,12 @@ pub struct SceneExtractGpuStats {
 #[derive(Clone, Debug, Default)]
 pub struct MeshEncodeStats {
     pub draws_submitted: u32,
+    /// `multi_draw_indexed_indirect` batches (one GPU indirect call each).
+    pub indirect_batches: u32,
+    /// Draw records inside indirect batches (`sum(first_instance slots)`).
+    pub indirect_commands: u32,
+    /// Per-draw `draw_indexed` inside a bind batch when indirect is unavailable.
+    pub bind_batch_draws: u32,
     pub lm_array_layout_draws: u32,
     pub albedo_2d_layout_draws: u32,
     pub lm_array_with_gpu_id_zero: u32,

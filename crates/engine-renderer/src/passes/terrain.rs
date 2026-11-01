@@ -30,6 +30,7 @@ impl Renderer {
                 material_data: [0, 0, 0, 0],
                 camera_pos: ctx.snapshot.camera_pos,
                 _pad_cam: 0.0,
+                _pad: [0.0; 24],
             };
             self.queue.write_buffer(
                 &self.mesh_globals_buf,
@@ -44,7 +45,21 @@ impl Renderer {
             .map(|td| self.mesh_for_draw(&td.mesh))
             .collect();
 
+        let depth_view = self.ensure_depth(
+            ctx.snapshot.depth.target,
+            frame_width(),
+            frame_height(),
+        );
+
         let pipeline = self.terrain_splat_pipelines.get(&ctx.hdr_format).unwrap();
+
+        let mesh_wrote_depth = !ctx.snapshot.mesh_draws.is_empty()
+            || !ctx.snapshot.skinned_mesh_draws.is_empty();
+        let depth_load = if mesh_wrote_depth {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(1.0)
+        };
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terrain splat pass"),
@@ -58,9 +73,9 @@ impl Renderer {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: self.depth_view.as_ref().unwrap(),
+                view: &depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: depth_load,
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
@@ -75,7 +90,7 @@ impl Renderer {
         for (i, td) in ctx.snapshot.terrain_splat_draws.iter().enumerate() {
             let handle = terrain_handles[i];
             let offset = (i as u64 * uniform_size) as u32;
-            pass.set_bind_group(0, &self.mesh_globals_bg, &[offset]);
+            pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
 
             let layer_views: [&wgpu::TextureView; 4] = std::array::from_fn(|j| {
                 self.texture_views

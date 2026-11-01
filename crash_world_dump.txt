@@ -1,6 +1,6 @@
 === World Dump (panic) ===
-Actually alive (scanned): 248
-Entity slots: count=248, alive=248
+Actually alive (scanned): 305
+Entity slots: count=305, alive=305
   0x00000001 'Component' : Component, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000002 'Identifier' : Component, Relationship, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000003 'Poly' : Component, (Identifier,Name), (Identifier,Symbol), (ChildOf,flecs.core)
@@ -246,6 +246,63 @@ Entity slots: count=248, alive=248
   0x00000025 'Collider' : Component, (Identifier,Name), (Identifier,Symbol)
   0x00000026 'ItemDropComponent' : Component, (Identifier,Name), (Identifier,Symbol)
   0x00000027 'ParentComponent' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x00000028 'ViewCameraTag' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x00000029 'MeshDrawHidden' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x0000002a 'MeshDrawAux' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000028 'MeshDrawHidden' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x00000029 'MeshDrawAux' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x0000002a 'RenderLayer' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x000001d7 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001d8 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001d9 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001da '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001db '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001dc '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001dd '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001de '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001df '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e0 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e1 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e2 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e3 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e4 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e5 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e6 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e7 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e8 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001e9 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001ea '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001eb '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001ec '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
+  0x000001ed 'player' : TransformComponent, NetworkEntity, (Identifier,Name)
+  0x000001ee '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001ef '(unnamed)' : TransformComponent, CameraComponent, ParentComponent
+  0x000001f0 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, RenderLayer
+  0x000001f1 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f2 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f3 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f4 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f5 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f6 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f7 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f8 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001f9 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001fa '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001fb '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001fc '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001fd '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001fe '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x000001ff '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000200 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000201 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000202 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000203 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000204 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000205 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000206 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000207 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000208 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x00000209 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000020a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000020b '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000020c '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000020d '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000020e '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000020f '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial

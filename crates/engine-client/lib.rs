@@ -21,10 +21,11 @@ pub mod common {
 // pub use network::replication::{client_replication, ClientReplication};
 pub use camera::{Camera, CameraMode, FreecamController, CAMERA_SMOOTH_SPEED, FOLLOW_VIEW_SIZE, tank_in_camera_view};
 pub mod app;
+pub mod camera_compose;
+pub mod camera_util;
 pub mod client_engine;
 pub mod console;
 pub mod local_view;
-pub mod view_camera;
 pub mod local_sim;
 pub mod usercmd_channel;
 

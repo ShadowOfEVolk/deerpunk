@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::components::{
     CameraComponent, LuaScript, MapKv, Material, NetworkEntity, PointLight, SoundEmitter,
-    TransformComponent, UiDocumentComponent, ViewCameraTag, Worldspawn,
+    TransformComponent, UiDocumentComponent, Worldspawn,
 };
 use crate::network::field_path::NetFieldId;
 use crate::physics::CharacterController;
@@ -67,8 +67,7 @@ pub fn apply_component(
             Ok(())
         }
         "ViewCamera" | "ViewCameraTag" => {
-            let id = world.component_init::<ViewCameraTag>();
-            world.set(entity, id, ViewCameraTag::marker());
+            // Legacy prefab marker: lens comes from the `Camera` component block.
             Ok(())
         }
         "CharacterController" => {
