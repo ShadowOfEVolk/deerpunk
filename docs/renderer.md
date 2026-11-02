@@ -47,10 +47,13 @@ flowchart TB
 **Where:** `crates/engine-client/render_extractor.rs`, `render_extract_cache.rs`  
 **When:** Each frame before render, from `ClientEngine::extract_scene_view`.
 
-The extractor runs **prepared ECS queries** (cameras, `Mesh3D` + `DrawMaterial`, skinned meshes, terrain splats, lights). It outputs:
+1. **`sync_world_transforms`** — [`TransformComponent`] + [`ParentComponent`] → [`WorldTransformComponent`] (hierarchy is **not** render-specific; extract only reads world pose).
+2. Extractor runs **prepared ECS queries** (cameras, `Mesh3D` + `DrawMaterial`, skinned meshes, terrain splats, lights). It outputs:
 
 - **`RenderScene`** — cameras + **`SceneGeometry`** (all draw lists, sky, lights, viewmodel pass).
-- Optional **early frustum** during extract (`MeshDrawExtractCache`) to skip building draws for entities already outside the view (`frustum_skip` counter).
+- Optional **early frustum** during extract (`MeshDrawExtractCache`) to skip building draws for entities already outside the view (`frustum_skip` counter). Cvar **`cl_extract_early_cull`** (default `1`). When enabled with a **single** surface camera, **`build_snapshots`** skips the second CPU frustum pass (layer mask only).
+- **`cl_draw_distance`** (default `192`, `0`=off): client sets [`MeshDrawHidden`] on mesh entities farther than the radius so they drop out of the extract query. **Gamelib should still destroy** unloaded chunk entities; this cvar reduces extract work for entities that remain replicated/loaded.
+- **Root mesh entities** (no `ParentComponent`): cache hit avoids `world_pose` and reuses cached `MeshDraw` (`try_mesh_root_hit`). Typical voxel chunks at rest spend most frames in `hit` + `frustum_skip`.
 
 **Extract cache:** For static meshes, per-entity data is cached by `(mesh, material, aux)`. If only the transform changed, the engine updates `model_mat` and world AABB without rebuilding material/texture fields (`xform_only` vs `static_rebuild`).
 
@@ -250,11 +253,12 @@ Draws that share a **`MeshBatchKey`** and are marked **`batchable`** (pooled mes
 |--------------------|------------|
 | shader, lm_surface, material_id | Pipeline + bind group 2 |
 | texture, normal, orm, lightmap_gpu | Bind group 1 |
-| buffer_id | Same VB/IB pool buffer |
 
-For each group the pass sets pipeline and texture binds **once**, then issues one **`draw_indexed` per member** with that draw’s **dynamic uniform offset** and **`vertex_byte_range` / `index_byte_range`**. Groups need **≥ 2** draws; singletons use the normal per-draw path.
+Per draw in the batch: same **sliced** VB/IB and `draw_indexed` as the solo path (`instance_index` = draw slot).
 
-**Not used:** `multi_draw_indexed_indirect` with a single `MeshUniform` for the whole group (wrong per-chunk `model` → z-fight). Future GPU indirect batching would need per-instance uniforms (e.g. storage buffer + `instance_index`).
+Groups need **≥ 2** draws; singletons use the normal per-draw path.
+
+**Batchable** on extract: pooled mesh (`allocator_id != 0`) and no per-draw aux override (`uniform_aux == 0`, e.g. crack stage). World chunk origin lives in **`model_mat`**, not identity ECS transform.
 
 Skinned draws are never batch-grouped. Non-**batchable** draws always use the per-draw path.
 
@@ -302,6 +306,7 @@ Shaders load from **`gamedir/shaders/`**; reload via **`v1:renderer:reload_shade
 | `r_exposure`, `r_tonemap`, `r_bloom`, `r_grain` | Post FX |
 | `r_frustum_cull`, `r_occlusion_cull` | Culling toggles |
 | `r_mesh_batch` | Static mesh bind-state batching (default on) |
+| `r_mesh_batch_mdi` | Multi-draw indirect for batches (needs `INDIRECT_FIRST_INSTANCE` + draw slot in WGSL) |
 | `r_showalloc` | Mesh allocator visualization |
 | `r_drawentities` | Entity draw debug |
 

@@ -1,0 +1,34 @@
+//! Explicit Tracy startup/shutdown when built with `manual-lifetime` (see `Host::shutdown`).
+
+#[cfg(feature = "tracy")]
+mod imp {
+    use std::sync::Once;
+
+    static START: Once = Once::new();
+
+    pub fn ensure_started() {
+        START.call_once(|| {
+            let _ = tracy_client::Client::start();
+        });
+    }
+
+    pub fn shutdown() {
+        if tracy_client::Client::is_running() {
+            unsafe {
+                tracy_client::sys::___tracy_shutdown_profiler();
+            }
+        }
+    }
+}
+
+/// Start the Tracy client once per process (host executable).
+pub fn tracy_ensure_started() {
+    #[cfg(feature = "tracy")]
+    imp::ensure_started();
+}
+
+/// Stop Tracy worker thread; call after render/client teardown, no zones active.
+pub fn tracy_shutdown() {
+    #[cfg(feature = "tracy")]
+    imp::shutdown();
+}

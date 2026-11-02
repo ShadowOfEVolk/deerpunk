@@ -38,6 +38,10 @@ pub struct CullScratch {
     cached_skinned_draw_len: usize,
     mesh_octree_serial: u64,
     skinned_octree_serial: u64,
+    mesh_id_map_serial: u64,
+    mesh_id_map_len: usize,
+    skinned_id_map_serial: u64,
+    skinned_id_map_len: usize,
     last_view_proj: Mat4,
     last_layer_mask: u32,
     /// Last [`RenderScene::build_snapshots`] frustum pass (ms).
@@ -60,6 +64,10 @@ impl CullScratch {
             cached_skinned_draw_len: 0,
             mesh_octree_serial: 0,
             skinned_octree_serial: 0,
+            mesh_id_map_serial: 0,
+            mesh_id_map_len: 0,
+            skinned_id_map_serial: 0,
+            skinned_id_map_len: 0,
             last_view_proj: Mat4::ZERO,
             last_layer_mask: 0,
             last_frustum_ms: 0.0,
@@ -168,6 +176,33 @@ fn cull_mesh_linear(draws: &[MeshDraw], cam: &CullCamera, frustum: &Frustum, out
     }
 }
 
+/// Extract already frustum-filtered [`MeshDraw`] list — only apply camera layer mask.
+pub fn visible_mesh_indices_pre_culled(
+    draws: &[MeshDraw],
+    cam: &CullCamera,
+    out: &mut Vec<u32>,
+) -> (u32, u32) {
+    out.clear();
+    out.reserve(draws.len());
+    for (i, d) in draws.iter().enumerate() {
+        if render_layer_visible(d.layer_mask, cam.layer_mask) {
+            out.push(i as u32);
+        }
+    }
+    (draws.len() as u32, out.len() as u32)
+}
+
+/// Extract already frustum-filtered skinned list — identity index map.
+pub fn visible_skinned_indices_pre_culled(
+    draws: &[SkinnedMeshDraw],
+    out: &mut Vec<u32>,
+) -> (u32, u32) {
+    let n = draws.len();
+    out.clear();
+    out.extend(0..n as u32);
+    (n as u32, n as u32)
+}
+
 fn cull_mesh_octree(
     draws: &[MeshDraw],
     cam: &CullCamera,
@@ -265,7 +300,9 @@ pub fn cull_mesh_indices(
         if cull_serial != scratch.mesh_octree_serial {
             scratch.mesh_octree_serial = cull_serial;
             scratch.keys_scratch.clear();
-            scratch.keys_scratch.reserve(len);
+            if scratch.keys_scratch.capacity() < len {
+                scratch.keys_scratch.reserve(len);
+            }
             for (i, d) in draws.iter().enumerate() {
                 scratch
                     .keys_scratch
@@ -273,7 +310,11 @@ pub fn cull_mesh_indices(
             }
             scratch.mesh_octree.sync_slice(&scratch.keys_scratch);
         }
-        rebuild_id_to_index(draws, |i, d| mesh_cull_key(d, i), &mut scratch.id_to_index);
+        if cull_serial != scratch.mesh_id_map_serial || len != scratch.mesh_id_map_len {
+            rebuild_id_to_index(draws, |i, d| mesh_cull_key(d, i), &mut scratch.id_to_index);
+            scratch.mesh_id_map_serial = cull_serial;
+            scratch.mesh_id_map_len = len;
+        }
         cull_mesh_octree(
             draws,
             cam,
@@ -316,7 +357,9 @@ pub fn cull_skinned_indices(
         if cull_serial != scratch.skinned_octree_serial {
             scratch.skinned_octree_serial = cull_serial;
             scratch.keys_scratch.clear();
-            scratch.keys_scratch.reserve(len);
+            if scratch.keys_scratch.capacity() < len {
+                scratch.keys_scratch.reserve(len);
+            }
             for (i, d) in draws.iter().enumerate() {
                 scratch
                     .keys_scratch
@@ -324,7 +367,11 @@ pub fn cull_skinned_indices(
             }
             scratch.skinned_octree.sync_slice(&scratch.keys_scratch);
         }
-        rebuild_id_to_index(draws, |i, d| skinned_cull_key(d, i), &mut scratch.id_to_index);
+        if cull_serial != scratch.skinned_id_map_serial || len != scratch.skinned_id_map_len {
+            rebuild_id_to_index(draws, |i, d| skinned_cull_key(d, i), &mut scratch.id_to_index);
+            scratch.skinned_id_map_serial = cull_serial;
+            scratch.skinned_id_map_len = len;
+        }
         cull_octree_frustum_draws(
             draws,
             &frustum,

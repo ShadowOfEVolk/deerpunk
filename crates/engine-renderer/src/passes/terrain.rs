@@ -53,8 +53,9 @@ impl Renderer {
 
         let pipeline = self.terrain_splat_pipelines.get(&ctx.hdr_format).unwrap();
 
-        let mesh_wrote_depth = !ctx.snapshot.mesh_draws.is_empty()
-            || !ctx.snapshot.skinned_mesh_draws.is_empty();
+        use crate::draw_list::{MeshDrawListView, SkinnedDrawListView};
+        let mesh_wrote_depth = !MeshDrawListView::new(ctx.snapshot, ctx.geometry).is_empty()
+            || !SkinnedDrawListView::new(ctx.snapshot, ctx.geometry).is_empty();
         let depth_load = if mesh_wrote_depth {
             wgpu::LoadOp::Load
         } else {

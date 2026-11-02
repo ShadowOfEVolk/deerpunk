@@ -17,6 +17,7 @@ pub struct RendererApiResolved {
         u32,
     ) -> u32,
     set_scene_lighting_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> i32,
+    set_scene_fog_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
     set_sky_palette_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
     set_procedural_sky_fn: unsafe extern "C" fn(*mut u8, i32) -> i32,
     set_gamelib_sky_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
@@ -42,6 +43,9 @@ impl RendererApiResolved {
             },
             set_scene_lighting_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_scene_lighting"))
+            },
+            set_scene_fog_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_scene_fog"))
             },
             set_sky_palette_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_sky_palette"))
@@ -136,6 +140,16 @@ impl RendererApiResolved {
                 am_bytes.as_ptr(),
                 am_bytes.len(),
             )
+        }
+    }
+
+    /// Voxel distance fog (start, e-folding falloff) packed into `LightsUniform` padding.
+    pub fn set_scene_fog(&self, start: f32, falloff: f32) -> i32 {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&start.to_le_bytes());
+        bytes[4..8].copy_from_slice(&falloff.to_le_bytes());
+        unsafe {
+            (self.set_scene_fog_fn)(self.ctx, bytes.as_ptr(), bytes.len())
         }
     }
 

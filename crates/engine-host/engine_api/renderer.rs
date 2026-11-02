@@ -85,6 +85,21 @@ impl crate::Host {
         0
     }
 
+    /// `bytes` = 8 bytes: fog_start (f32), fog_falloff (f32).
+    #[methoddb::bind(name = "set_scene_fog")]
+    pub fn api_renderer_set_scene_fog(&mut self, bytes: &[u8]) -> i32 {
+        let Some(ce) = self.client_engine.as_mut() else {
+            return -1;
+        };
+        if bytes.len() < 8 {
+            return -1;
+        }
+        let start = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let falloff = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        ce.renderer_mut().set_scene_fog(start, falloff);
+        0
+    }
+
     /// `bytes` = 16 bytes: day_k (f32), zenith rgb (3×f32).
     #[methoddb::bind(name = "set_sky_palette")]
     pub fn api_renderer_set_sky_palette(&mut self, bytes: &[u8]) -> i32 {
@@ -229,6 +244,11 @@ impl crate::Host {
         _sun_dir_bytes: &[u8],
         _ambient_bytes: &[u8],
     ) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "set_scene_fog")]
+    pub fn api_renderer_set_scene_fog(&mut self, _bytes: &[u8]) -> i32 {
         0
     }
 

@@ -4,12 +4,13 @@ use deerpunk_engine_common::components::mesh3d::Mesh3D;
 use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::SkinnedMesh3D;
 use deerpunk_engine_common::components::{
-    CameraComponent, MeshDrawAux, PointLight, RenderLayer, TransformComponent,
+    CameraComponent, MeshDrawAux, MeshDrawHidden, PointLight, RenderLayer, TransformComponent,
+    WorldTransformComponent,
 };
 use deerpunk_engine_common::components::render_layer::{
     render_layer_visible, RENDER_LAYER_DEFAULT_DRAW, RENDER_LAYER_WORLD,
 };
-use deerpunk_engine_common::transform_hierarchy::{camera_world_pose, world_pose};
+use deerpunk_engine_common::transform_hierarchy::camera_world_pose;
 use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::resource::mesh_registry::MeshRegistry;
 
@@ -24,6 +25,7 @@ use deerpunk_engine_renderer::snapshot::{
 };
 use deerpunk_engine_renderer::world_bounds;
 use deerpunk_engine_renderer::SceneExtractGpuStats;
+use glam::Vec3;
 
 use crate::render_extract_cache::{
     static_mesh_key, static_skinned_key, MeshDrawExtractCache,
@@ -32,13 +34,19 @@ use crate::render_extract_cache::{
 pub struct RenderExtractor {
     q_cameras: QueryId,
     q_draw_materials: QueryId,
+    q_draw_stream: QueryId,
     q_terrain_splat: QueryId,
     q_lights: QueryId,
     q_skinned: QueryId,
     parent_id: ComponentId,
     render_layer_id: ComponentId,
     mesh_draw_aux_id: ComponentId,
+    mesh_draw_hidden_id: ComponentId,
+    world_transform_id: ComponentId,
+    q_world_sync_roots: QueryId,
+    q_world_sync_parented: QueryId,
     mesh_cache: MeshDrawExtractCache,
+    camera_list_scratch: Vec<(u64, TransformComponent, CameraComponent)>,
 }
 
 impl RenderExtractor {
@@ -52,24 +60,133 @@ impl RenderExtractor {
         let _ = world.component_init::<TerrainSplatMaterial>();
         let _ = world.component_init::<PointLight>();
         let mesh_draw_aux_id = world.component_init::<MeshDrawAux>();
-        let _ = world.component_init::<deerpunk_engine_common::components::MeshDrawHidden>();
+        let world_transform_id = world.component_init::<deerpunk_engine_common::components::WorldTransformComponent>();
+        let mesh_draw_hidden_id = world.component_init::<MeshDrawHidden>();
         let render_layer_id = world.component_init::<RenderLayer>();
+        let q_world_sync_roots = world.query_prepare("TransformComponent, !ParentComponent");
+        let q_world_sync_parented = world.query_prepare("TransformComponent, ParentComponent");
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
             q_draw_materials: world.query_prepare(
-                "TransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden",
+                "WorldTransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden",
             ),
+            q_draw_stream: world.query_prepare("WorldTransformComponent, Mesh3D, DrawMaterial"),
             q_terrain_splat: world
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
             q_skinned: world.query_prepare(
-                "TransformComponent, SkinnedMesh3D, DrawMaterial, !MeshDrawHidden",
+                "WorldTransformComponent, SkinnedMesh3D, DrawMaterial, !MeshDrawHidden",
             ),
             parent_id,
             render_layer_id,
             mesh_draw_aux_id,
+            mesh_draw_hidden_id,
+            world_transform_id,
+            q_world_sync_roots,
+            q_world_sync_parented,
             mesh_cache: MeshDrawExtractCache::new(),
+            camera_list_scratch: Vec::new(),
         }
+    }
+
+    /// [`TransformComponent`] → [`WorldTransformComponent`]; run before [`Self::extract`].
+    pub fn sync_world_transforms(
+        &self,
+        world: &mut World,
+    ) -> deerpunk_engine_common::transform_hierarchy::SyncWorldTransformStats {
+        deerpunk_engine_common::transform_hierarchy::sync_world_transforms(
+            world,
+            self.q_world_sync_roots,
+            self.q_world_sync_parented,
+        )
+    }
+
+    /// Toggle [`MeshDrawHidden`] on streamed mesh entities outside `draw_distance` (0 = off).
+    /// Gamelib should still `destroy` unloaded chunks; this trims extract query work.
+    pub fn apply_draw_stream_distance(
+        &self,
+        world: &mut World,
+        view_entity: Option<u64>,
+        draw_distance: f32,
+    ) {
+        if draw_distance <= 0.0 {
+            return;
+        }
+        let Some(cam_pos) = self.active_camera_position(world, view_entity) else {
+            return;
+        };
+        let dist_sq = draw_distance * draw_distance;
+        let Some(batches) = world.query_batches(self.q_draw_stream) else {
+            return;
+        };
+        for batch in batches {
+            let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+            let world_xforms = unsafe {
+                std::slice::from_raw_parts(
+                    batch.columns[0] as *const WorldTransformComponent,
+                    batch.count,
+                )
+            };
+            for i in 0..batch.count {
+                let ent = entities[i];
+                let p = world_xforms[i].position;
+                let dsq = (p - cam_pos).length_squared();
+                if dsq > dist_sq {
+                    world.set(ent, self.mesh_draw_hidden_id, MeshDrawHidden::marker());
+                } else if world
+                    .get::<MeshDrawHidden>(ent, self.mesh_draw_hidden_id)
+                    .is_some()
+                {
+                    world.remove(ent, self.mesh_draw_hidden_id);
+                }
+            }
+        }
+    }
+
+    fn active_camera_position(&self, world: &World, view_entity: Option<u64>) -> Option<Vec3> {
+        if let Some(ve) = view_entity {
+            if let Some(wt) = world.get::<WorldTransformComponent>(ve, self.world_transform_id) {
+                return Some(wt.position);
+            }
+        }
+        let mut best: Option<(u8, u64, Vec3)> = None;
+        let Some(batches) = world.query_batches(self.q_cameras) else {
+            return None;
+        };
+        for batch in batches {
+            let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+            let transforms = unsafe {
+                std::slice::from_raw_parts(
+                    batch.columns[0] as *const TransformComponent,
+                    batch.count,
+                )
+            };
+            let cameras = unsafe {
+                std::slice::from_raw_parts(batch.columns[1] as *const CameraComponent, batch.count)
+            };
+            for i in 0..batch.count {
+                let ent = entities[i];
+                if !camera_entity_in_view(world, view_entity, ent) {
+                    continue;
+                }
+                let c = &cameras[i];
+                let pos = world
+                    .get::<WorldTransformComponent>(ent, self.world_transform_id)
+                    .map(|w| w.position)
+                    .unwrap_or_else(|| {
+                        let (p, _) = camera_world_pose(world, ent, &transforms[i], self.parent_id);
+                        p
+                    });
+                match &best {
+                    None => best = Some((c.order, ent, pos)),
+                    Some((ord, e, _)) if (c.order, ent) < (*ord, *e) => {
+                        best = Some((c.order, ent, pos));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        best.map(|(_, _, p)| p)
     }
 
     fn draw_layer_mask(world: &World, ent: u64, render_layer_id: ComponentId) -> u32 {
@@ -141,20 +258,6 @@ impl RenderExtractor {
         })
     }
 
-    fn world_transform(
-        world: &World,
-        ent: u64,
-        t: &TransformComponent,
-        parent_id: ComponentId,
-    ) -> TransformComponent {
-        let (pos, rot) = world_pose(world, ent, t, parent_id);
-        TransformComponent {
-            position: pos,
-            rotation: rot,
-            scale: t.scale,
-        }
-    }
-
     /// `view_entity`: if set, only that pawn's camera is used (server SetView).
     ///
     /// `material_store` — for resolving `DrawMaterial` handles to GPU indices.
@@ -194,11 +297,13 @@ impl RenderExtractor {
             fallback_mesh.clone()
         };
         let mut scene = RenderScene::new();
+        scene.geometry.mesh_draws.clear();
+        scene.geometry.skinned_mesh_draws.clear();
         let extract_body_start = std::time::Instant::now();
         self.mesh_cache.begin_frame();
 
         if let Some(batches) = world.query_batches(self.q_cameras) {
-            let mut list: Vec<(u64, TransformComponent, CameraComponent)> = Vec::new();
+            self.camera_list_scratch.clear();
             for batch in batches {
                 let entities =
                     unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
@@ -219,13 +324,16 @@ impl RenderExtractor {
                     if !camera_entity_in_view(world, view_entity, ent) {
                         continue;
                     }
-                    list.push((ent, *t, *c));
+                    self.camera_list_scratch.push((ent, *t, *c));
                 }
             }
-            list.sort_by_key(|(e, _, c)| (c.order, *e));
-            for (ent, t, c) in list {
-                let (world_pos, world_rot) =
-                    camera_world_pose(world, ent, &t, self.parent_id);
+            self.camera_list_scratch
+                .sort_by_key(|(e, _, c)| (c.order, *e));
+            for (ent, t, c) in self.camera_list_scratch.drain(..) {
+                let (world_pos, world_rot) = world
+                    .get::<WorldTransformComponent>(ent, self.world_transform_id)
+                    .map(|w| (w.position, w.rotation))
+                    .unwrap_or_else(|| camera_world_pose(world, ent, &t, self.parent_id));
                 scene.push_camera(CameraDefinition {
                     position: world_pos.to_array(),
                     rotation: world_rot,
@@ -252,13 +360,15 @@ impl RenderExtractor {
             None
         };
         let frustum_ref = extract_frustum.as_ref();
+        let mesh_out = &mut scene.geometry.mesh_draws;
+        let skinned_out = &mut scene.geometry.skinned_mesh_draws;
 
         if let Some(batches) = world.query_batches(self.q_draw_materials) {
             for batch in batches {
                 let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let transforms = unsafe {
+                let world_xforms = unsafe {
                     std::slice::from_raw_parts(
-                        batch.columns[0] as *const TransformComponent,
+                        batch.columns[0] as *const WorldTransformComponent,
                         batch.count,
                     )
                 };
@@ -270,8 +380,7 @@ impl RenderExtractor {
                 };
                 for i in 0..batch.count {
                     let ent = entities[i];
-                    let t = &transforms[i];
-                    let wt = Self::world_transform(world, ent, t, self.parent_id);
+                    let wt = &world_xforms[i];
                     let m = &meshes[i];
                     let dm = &draw_mats[i];
 
@@ -285,19 +394,24 @@ impl RenderExtractor {
                     } else {
                         0
                     };
+                    let static_key = static_mesh_key(m, dm, uniform_aux);
+                    if self.mesh_cache.try_mesh_world_hit(
+                        ent,
+                        wt,
+                        static_key,
+                        frustum_ref,
+                        mesh_out,
+                    ) {
+                        continue;
+                    }
                     let draw_layers = Self::draw_layer_mask(world, ent, self.render_layer_id);
                     if draw_layers == 0 {
                         continue;
                     }
-                    let static_key = static_mesh_key(m, dm, uniform_aux);
                     let ent_copy = ent;
                     let dm_handle = dm.handle;
-                    self.mesh_cache.push_mesh(
-                        ent,
-                        &wt,
-                        m,
-                        static_key,
-                        || Self::build_mesh_draw(
+                    let build = || {
+                        Self::build_mesh_draw(
                             ent_copy,
                             m,
                             dm_handle,
@@ -309,8 +423,16 @@ impl RenderExtractor {
                             device,
                             queue,
                             gpu_stats,
-                        ),
+                        )
+                    };
+                    self.mesh_cache.push_mesh(
+                        ent,
+                        wt,
+                        m,
+                        static_key,
+                        build,
                         frustum_ref,
+                        mesh_out,
                     );
                 }
             }
@@ -359,9 +481,9 @@ impl RenderExtractor {
         if let Some(batches) = world.query_batches(self.q_skinned) {
             for batch in batches {
                 let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let transforms = unsafe {
+                let world_xforms = unsafe {
                     std::slice::from_raw_parts(
-                        batch.columns[0] as *const TransformComponent,
+                        batch.columns[0] as *const WorldTransformComponent,
                         batch.count,
                     )
                 };
@@ -376,8 +498,7 @@ impl RenderExtractor {
                 };
                 for i in 0..batch.count {
                     let ent = entities[i];
-                    let t = &transforms[i];
-                    let wt = Self::world_transform(world, ent, t, self.parent_id);
+                    let wt = &world_xforms[i];
                     let sm = &meshes[i];
                     let dm = &draw_mats[i];
                     if sm.bone_buffer == 0 {
@@ -389,7 +510,7 @@ impl RenderExtractor {
                     let bone_buffer = sm.bone_buffer;
                     self.mesh_cache.push_skinned(
                         ent,
-                        &wt,
+                        wt,
                         static_key,
                         || {
                             let mesh = resolve(ent_copy, sm.mesh);
@@ -426,6 +547,7 @@ impl RenderExtractor {
                             })
                         },
                         frustum_ref,
+                        skinned_out,
                     );
                 }
             }
@@ -459,8 +581,6 @@ impl RenderExtractor {
         gpu_stats.extract_cache_hit = self.mesh_cache.full_hit;
         gpu_stats.extract_frustum_skip = self.mesh_cache.frustum_skip;
 
-        scene.geometry.mesh_draws = self.mesh_cache.take_mesh_out();
-        scene.geometry.skinned_mesh_draws = self.mesh_cache.take_skinned_out();
         self.mesh_cache.finish_frame();
 
         gpu_stats.mesh_draws = scene.geometry.mesh_draws.len() as u32;
@@ -469,6 +589,8 @@ impl RenderExtractor {
         let serial_start = std::time::Instant::now();
         scene.geometry.refresh_cull_serial();
         gpu_stats.cull_serial_ms = serial_start.elapsed().as_secs_f32() * 1000.0;
+
+        scene.extract_early_cull = early_cull && frustum_ref.is_some();
 
         scene
     }

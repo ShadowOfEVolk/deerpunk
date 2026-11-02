@@ -32,9 +32,16 @@ pub fn pack_surface_camera(
     out.hud.clear();
     out.mesh_draws.clear();
     out.skinned_mesh_draws.clear();
+    out.mesh_geometry_indices.clear();
+    out.skinned_geometry_indices.clear();
+    if cam.frustum_culled {
+        out.mesh_geometry_indices.clone_from(&cam.visible_mesh);
+        out.skinned_geometry_indices.clone_from(&cam.visible_skinned);
+    } else {
+        scene.gather_visible_draws(cam, &mut out.mesh_draws, &mut out.skinned_mesh_draws);
+    }
     out.terrain_splat_draws.clear();
     out.storm = None;
-    scene.gather_visible_draws(cam, &mut out.mesh_draws, &mut out.skinned_mesh_draws);
     if cam.pass_mask & cam_features::TERRAIN != 0 {
         out.terrain_splat_draws
             .clone_from(&scene.geometry.terrain_splat_draws);

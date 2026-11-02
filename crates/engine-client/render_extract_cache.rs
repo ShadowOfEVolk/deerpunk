@@ -1,9 +1,9 @@
 //! Cached scene extract: static draw data per entity, transform-only updates, optional early frustum.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use deerpunk_engine_common::components::{Mesh3D, TransformComponent};
+use deerpunk_engine_common::components::{Mesh3D, TransformComponent, WorldTransformComponent};
 use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 use deerpunk_engine_renderer::Frustum;
@@ -19,6 +19,14 @@ struct XformKey {
 }
 
 impl XformKey {
+    fn from_world(w: &WorldTransformComponent) -> Self {
+        Self {
+            position: w.position.to_array(),
+            rotation: w.rotation.to_array(),
+            scale: w.scale.to_array(),
+        }
+    }
+
     fn from_transform(t: &TransformComponent) -> Self {
         Self {
             position: t.position.to_array(),
@@ -48,6 +56,7 @@ struct CachedMeshEntry {
     static_key: StaticMeshKey,
     xform: XformKey,
     draw: MeshDraw,
+    touch_gen: u32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -62,14 +71,13 @@ struct CachedSkinnedEntry {
     static_key: StaticSkinnedKey,
     xform: XformKey,
     draw: SkinnedMeshDraw,
+    touch_gen: u32,
 }
 
 pub struct MeshDrawExtractCache {
     mesh: HashMap<u64, CachedMeshEntry>,
     skinned: HashMap<u64, CachedSkinnedEntry>,
-    alive: HashSet<u64>,
-    mesh_out: Vec<MeshDraw>,
-    skinned_out: Vec<SkinnedMeshDraw>,
+    frame_gen: u32,
     pub static_rebuild: u32,
     pub xform_only: u32,
     pub full_hit: u32,
@@ -81,9 +89,7 @@ impl MeshDrawExtractCache {
         Self {
             mesh: HashMap::new(),
             skinned: HashMap::new(),
-            alive: HashSet::new(),
-            mesh_out: Vec::new(),
-            skinned_out: Vec::new(),
+            frame_gen: 0,
             static_rebuild: 0,
             xform_only: 0,
             full_hit: 0,
@@ -94,15 +100,14 @@ impl MeshDrawExtractCache {
     pub fn clear(&mut self) {
         self.mesh.clear();
         self.skinned.clear();
-        self.alive.clear();
-        self.mesh_out.clear();
-        self.skinned_out.clear();
+        self.frame_gen = 0;
     }
 
     pub fn begin_frame(&mut self) {
-        self.alive.clear();
-        self.mesh_out.clear();
-        self.skinned_out.clear();
+        self.frame_gen = self.frame_gen.wrapping_add(1);
+        if self.frame_gen == 0 {
+            self.frame_gen = 1;
+        }
         self.static_rebuild = 0;
         self.xform_only = 0;
         self.full_hit = 0;
@@ -110,8 +115,9 @@ impl MeshDrawExtractCache {
     }
 
     pub fn finish_frame(&mut self) {
-        self.mesh.retain(|ent, _| self.alive.contains(ent));
-        self.skinned.retain(|ent, _| self.alive.contains(ent));
+        let gen = self.frame_gen;
+        self.mesh.retain(|_, e| e.touch_gen == gen);
+        self.skinned.retain(|_, e| e.touch_gen == gen);
     }
 
     pub fn frustum_from_camera(cam: &CameraDefinition, aspect: f32) -> Frustum {
@@ -121,38 +127,41 @@ impl MeshDrawExtractCache {
     }
 
     fn update_mesh_transform(draw: &mut MeshDraw, xform: XformKey) {
-        let mesh = draw.mesh.clone();
         let model = xform.model_mat();
         draw.model_mat = model.to_cols_array_2d();
-        draw.world_bounds = world_bounds(model, &mesh);
-        draw.batchable = mesh.allocator_id != 0
-            && xform.position == [0.0; 3]
-            && xform.rotation == [0.0, 0.0, 0.0, 1.0]
-            && xform.scale == [1.0, 1.0, 1.0]
-            && draw.uniform_aux == 0;
+        draw.world_bounds = world_bounds(model, &draw.mesh);
+        draw.batchable = mesh_draw_batchable(&draw.mesh, draw.uniform_aux);
     }
 
     fn update_skinned_transform(draw: &mut SkinnedMeshDraw, xform: XformKey) {
-        let mesh = draw.mesh.clone();
         let model = xform.model_mat();
         draw.model_mat = model.to_cols_array_2d();
-        draw.world_bounds = world_bounds(model, &mesh);
+        draw.world_bounds = world_bounds(model, &draw.mesh);
+    }
+
+    fn push_visible_mesh(out: &mut Vec<MeshDraw>, draw: &MeshDraw) {
+        out.push(MeshDraw {
+            batchable: mesh_draw_batchable(&draw.mesh, draw.uniform_aux),
+            ..draw.clone()
+        });
     }
 
     pub fn push_mesh(
         &mut self,
         ent: u64,
-        t: &TransformComponent,
+        world: &WorldTransformComponent,
         m: &Mesh3D,
         static_key: StaticMeshKey,
         build_static: impl FnOnce() -> Option<MeshDraw>,
         frustum: Option<&Frustum>,
+        out: &mut Vec<MeshDraw>,
     ) {
-        self.alive.insert(ent);
-        let xform = XformKey::from_transform(t);
+        let xform = XformKey::from_world(world);
+        let gen = self.frame_gen;
 
-        if let Some(entry) = self.mesh.get(&ent) {
+        if let Some(entry) = self.mesh.get_mut(&ent) {
             if entry.static_key == static_key && entry.xform == xform {
+                entry.touch_gen = gen;
                 self.full_hit += 1;
                 if let Some(f) = frustum {
                     if !f.intersects_aabb(&entry.draw.world_bounds) {
@@ -160,7 +169,7 @@ impl MeshDrawExtractCache {
                         return;
                     }
                 }
-                self.mesh_out.push(entry.draw.clone());
+                Self::push_visible_mesh(out, &entry.draw);
                 return;
             }
         }
@@ -183,11 +192,13 @@ impl MeshDrawExtractCache {
                     static_key,
                     xform,
                     draw,
+                    touch_gen: gen,
                 },
             );
             self.static_rebuild += 1;
         } else {
             let entry = self.mesh.get_mut(&ent).expect("cache entry");
+            entry.touch_gen = gen;
             if entry.xform != xform {
                 Self::update_mesh_transform(&mut entry.draw, xform);
                 entry.xform = xform;
@@ -204,22 +215,53 @@ impl MeshDrawExtractCache {
                 return;
             }
         }
-        self.mesh_out.push(draw.clone());
+        Self::push_visible_mesh(out, draw);
+    }
+
+    /// Full cache hit: only frustum + clone (world pose already in [`WorldTransformComponent`]).
+    pub fn try_mesh_world_hit(
+        &mut self,
+        ent: u64,
+        world: &WorldTransformComponent,
+        static_key: StaticMeshKey,
+        frustum: Option<&Frustum>,
+        out: &mut Vec<MeshDraw>,
+    ) -> bool {
+        let xform = XformKey::from_world(world);
+        let gen = self.frame_gen;
+        let Some(entry) = self.mesh.get_mut(&ent) else {
+            return false;
+        };
+        if entry.static_key != static_key || entry.xform != xform {
+            return false;
+        }
+        entry.touch_gen = gen;
+        self.full_hit += 1;
+        if let Some(f) = frustum {
+            if !f.intersects_aabb(&entry.draw.world_bounds) {
+                self.frustum_skip += 1;
+                return true;
+            }
+        }
+        Self::push_visible_mesh(out, &entry.draw);
+        true
     }
 
     pub fn push_skinned(
         &mut self,
         ent: u64,
-        t: &TransformComponent,
+        world: &WorldTransformComponent,
         static_key: StaticSkinnedKey,
         build_static: impl FnOnce() -> Option<SkinnedMeshDraw>,
         frustum: Option<&Frustum>,
+        out: &mut Vec<SkinnedMeshDraw>,
     ) {
-        self.alive.insert(ent);
-        let xform = XformKey::from_transform(t);
+        let xform = XformKey::from_world(world);
+        let gen = self.frame_gen;
 
-        if let Some(entry) = self.skinned.get(&ent) {
+        if let Some(entry) = self.skinned.get_mut(&ent) {
             if entry.static_key == static_key && entry.xform == xform {
+                entry.touch_gen = gen;
                 self.full_hit += 1;
                 if let Some(f) = frustum {
                     if !f.intersects_aabb(&entry.draw.world_bounds) {
@@ -227,7 +269,7 @@ impl MeshDrawExtractCache {
                         return;
                     }
                 }
-                self.skinned_out.push(entry.draw.clone());
+                out.push(entry.draw.clone());
                 return;
             }
         }
@@ -250,11 +292,13 @@ impl MeshDrawExtractCache {
                     static_key,
                     xform,
                     draw,
+                    touch_gen: gen,
                 },
             );
             self.static_rebuild += 1;
         } else {
             let entry = self.skinned.get_mut(&ent).expect("cache entry");
+            entry.touch_gen = gen;
             if entry.xform != xform {
                 Self::update_skinned_transform(&mut entry.draw, xform);
                 entry.xform = xform;
@@ -271,16 +315,15 @@ impl MeshDrawExtractCache {
                 return;
             }
         }
-        self.skinned_out.push(draw.clone());
+        out.push(draw.clone());
     }
+}
 
-    pub fn take_mesh_out(&mut self) -> Vec<MeshDraw> {
-        std::mem::take(&mut self.mesh_out)
-    }
-
-    pub fn take_skinned_out(&mut self) -> Vec<SkinnedMeshDraw> {
-        std::mem::take(&mut self.skinned_out)
-    }
+/// Pooled meshes (`allocator_id != 0`) may use multi-draw indirect; each draw keeps its own
+/// `MeshUniform` slot via `first_instance` / `@builtin(instance_index)` (chunk world origin in `model`).
+/// Pooled meshes may share pipeline/texture binds; each draw keeps its own uniform slot.
+pub fn mesh_draw_batchable(mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>, uniform_aux: u32) -> bool {
+    mesh.allocator_id != 0 && uniform_aux == 0
 }
 
 pub fn static_mesh_key(
@@ -304,5 +347,27 @@ pub fn static_skinned_key(
         mesh_handle: mesh.0,
         material_handle: dm.handle.0,
         bone_buffer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mesh_draw_batchable;
+    use deerpunk_engine_common::resource::mesh::Mesh;
+    use std::sync::Arc;
+
+    #[test]
+    fn batchable_pooled_without_aux() {
+        let mut mesh = Mesh::empty();
+        mesh.allocator_id = 1;
+        let mesh = Arc::new(mesh);
+        assert!(mesh_draw_batchable(&mesh, 0));
+        assert!(!mesh_draw_batchable(&mesh, 1));
+    }
+
+    #[test]
+    fn batchable_not_without_pool() {
+        let mesh = Arc::new(Mesh::empty());
+        assert!(!mesh_draw_batchable(&mesh, 0));
     }
 }

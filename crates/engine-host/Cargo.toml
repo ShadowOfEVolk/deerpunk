@@ -56,3 +56,4 @@ full-kira = [
     "deerpunk-engine-renderer",
     "audio-kira",
 ]
+tracy = ["deerpunk-engine-renderer/tracy"]

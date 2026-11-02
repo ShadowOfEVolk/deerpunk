@@ -18,6 +18,39 @@ use crate::snapshot::MeshTexture;
 
 type MeshPipelineKey = (u32, bool, bool);
 
+struct MeshMdiSegment {
+    buffer_id: u32,
+    byte_offset: u64,
+    cmd_count: u32,
+    index_count: u32,
+}
+
+fn push_mesh_indirect_cmd(
+    scratch: &mut Vec<wgpu::util::DrawIndexedIndirectArgs>,
+    draw_index: usize,
+    md: &crate::snapshot::MeshDraw,
+    handle: crate::mesh_allocator::MeshHandle,
+) -> u32 {
+    let start = md.first_index;
+    let count = if md.index_count == 0 {
+        handle.idx_count
+    } else {
+        md.index_count
+            .min(handle.idx_count.saturating_sub(start))
+    };
+    if count == 0 {
+        return 0;
+    }
+    scratch.push(wgpu::util::DrawIndexedIndirectArgs {
+        index_count: count,
+        instance_count: 1,
+        first_index: handle.idx_offset.saturating_add(start),
+        base_vertex: handle.vert_offset as i32,
+        first_instance: draw_index as u32,
+    });
+    count
+}
+
 /// Pipeline cache key for **static** mesh draws (`mesh_globals_bg`, never skinned group-0 layout).
 fn static_mesh_pipeline_key(shaders: &ShaderRegistry, shader_id: u32) -> MeshPipelineKey {
     let Some(def) = shaders.get(shader_id) else {
@@ -30,14 +63,18 @@ fn static_mesh_pipeline_key(shaders: &ShaderRegistry, shader_id: u32) -> MeshPip
     )
 }
 
+use crate::draw_list::{MeshDrawListView, SkinnedDrawListView};
+
 impl Renderer {
     pub(crate) fn pass_mesh(
         &mut self,
         ctx: &mut FrameCtx<'_>, encoder: &mut wgpu::CommandEncoder,
     ) {
     // --- Mesh draws (static + GPU-skinned, single depth pass) ---
-    let static_count = ctx.snapshot.mesh_draws.len();
-    let skinned_count = ctx.snapshot.skinned_mesh_draws.len();
+    let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
+    let skinned_meshes = SkinnedDrawListView::new(ctx.snapshot, ctx.geometry);
+    let static_count = meshes.len();
+    let skinned_count = skinned_meshes.len();
     // GPU occlusion is tied to the primary scene depth buffer (convention: `DepthTargetId(0)`).
     let owns_scene_occlusion = ctx.snapshot.depth.target
         == deerpunk_engine_common::components::DepthTargetId(0);
@@ -47,15 +84,11 @@ impl Renderer {
             / mesh_align)
             * mesh_align;
 
-        let resolved_static: Vec<u32> = ctx.snapshot
-            .mesh_draws
-            .iter()
-            .map(|md| md.material_id)
+        let resolved_static: Vec<u32> = (0..static_count)
+            .map(|i| meshes.get(i).material_id)
             .collect();
-        let resolved_skinned: Vec<u32> = ctx.snapshot
-            .skinned_mesh_draws
-            .iter()
-            .map(|sd| sd.material_id)
+        let resolved_skinned: Vec<u32> = (0..skinned_count)
+            .map(|j| skinned_meshes.get(j).material_id)
             .collect();
 
         let fullbright_flag = if self.fullbright { 1u32 } else { 0u32 };
@@ -83,7 +116,7 @@ impl Renderer {
                     .map(|i| {
                         self.mesh_occlusion.draw_visible_static(
                             i,
-                            &ctx.snapshot.mesh_draws[i],
+                            &meshes.get(i),
                         )
                     })
                     .collect(),
@@ -97,7 +130,7 @@ impl Renderer {
                     .map(|j| {
                         self.mesh_occlusion.draw_visible_skinned(
                             j,
-                            &ctx.snapshot.skinned_mesh_draws[j],
+                            &skinned_meshes.get(j),
                         )
                     })
                     .collect(),
@@ -111,7 +144,7 @@ impl Renderer {
         let mut min_uniform_slot = draw_count as u64;
         let mut max_uniform_slot = 0u64;
         let mut wrote_uniform = false;
-        for (i, md) in ctx.snapshot.mesh_draws.iter().enumerate() {
+        for (i, md) in (0..static_count).map(|i| meshes.get(i)).enumerate() {
             if !static_vis(i) {
                 continue;
             }
@@ -136,7 +169,7 @@ impl Renderer {
             self.mesh_uniform_scratch[off..off + uniform_bytes.len()]
                 .copy_from_slice(uniform_bytes);
         }
-        for (j, sd) in ctx.snapshot.skinned_mesh_draws.iter().enumerate() {
+        for (j, sd) in (0..skinned_count).map(|j| skinned_meshes.get(j)).enumerate() {
             if !skinned_vis(j) {
                 continue;
             }
@@ -178,6 +211,8 @@ impl Renderer {
             let n = ctx.snapshot.point_lights.len().min(MAX_POINT_LIGHTS);
             lights.count = n as u32;
             lights.scene_time_bits = ctx.snapshot.game_time.to_bits();
+            lights._pad[0] = self.scene_fog[0].to_bits();
+            lights._pad[1] = self.scene_fog[1].to_bits();
             lights.zenith = [
                 self.scene_sky_zenith[0],
                 self.scene_sky_zenith[1],
@@ -212,6 +247,136 @@ impl Renderer {
             deerpunk_engine_common::components::DepthLoad::Load => wgpu::LoadOp::Load,
             deerpunk_engine_common::components::DepthLoad::None => wgpu::LoadOp::Clear(1.0),
         };
+        let mut shader_bins: std::collections::HashMap<(u32, bool), (u32, u64)> =
+            std::collections::HashMap::new();
+        let mut sample_set = false;
+
+        self.mesh_draw_order.clear();
+        self.mesh_draw_order.extend(0..meshes.len());
+        self.mesh_draw_order.sort_unstable_by_key(|&i| {
+            let md = &meshes.get(i);
+            let lm = ctx.shaders
+                .get(md.shader_id)
+                .map(|d| d.group1_uses_lightmap_array())
+                .unwrap_or(false);
+            (
+                md.shader_id,
+                lm as u8,
+                md.material_id,
+                md.texture.0,
+                md.normal.0,
+                md.orm.0,
+                md.lightmap_gpu,
+            )
+        });
+
+        let draw_order = std::mem::take(&mut self.mesh_draw_order);
+        let mut batch_groups: HashMap<MeshBatchKey, Vec<usize>> = HashMap::new();
+        let mut batch_for_index = vec![None; meshes.len()];
+        for &i in &draw_order {
+            let md = &meshes.get(i);
+            if !self.mesh_draw_batching || !md.batchable || !static_vis(i) {
+                continue;
+            }
+            if ctx
+                .shaders
+                .get(md.shader_id)
+                .is_some_and(|d| d.uses_skinned_mesh_vertex())
+            {
+                continue;
+            }
+            self.mesh_static_handle_at(i, &md.mesh);
+            let lm_surface = ctx.shaders
+                .get(md.shader_id)
+                .map(|d| d.group1_uses_lightmap_array())
+                .unwrap_or(false);
+            let key = MeshBatchKey {
+                shader_id: md.shader_id,
+                lm_surface,
+                material_id: resolved_static[i],
+                texture: md.texture.0,
+                normal: md.normal.0,
+                orm: md.orm.0,
+                lightmap_gpu: if lm_surface { md.lightmap_gpu } else { 0 },
+            };
+            batch_for_index[i] = Some(key);
+            batch_groups.entry(key).or_default().push(i);
+        }
+        for group in batch_groups.values() {
+            if group.len() < 2 {
+                for &i in group {
+                    batch_for_index[i] = None;
+                }
+            }
+        }
+
+        let indirect_command_stride =
+            std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+        let mut batch_mdi: HashMap<MeshBatchKey, Vec<MeshMdiSegment>> = HashMap::new();
+        let mdi_ok = self.mesh_draw_batching
+            && self.mesh_batch_mdi
+            && self.multi_draw_indirect_supported
+            && self.indirect_first_instance_supported;
+        if mdi_ok {
+            self.mesh_indirect_cmd_scratch.clear();
+            for (key, group) in &batch_groups {
+                if group.len() < 2 {
+                    continue;
+                }
+                let shader_ok = ctx
+                    .shaders
+                    .get(key.shader_id)
+                    .is_some_and(|d| crate::mesh_shader_instance::mesh_shader_supports_draw_slot(&d.wgsl));
+                if !shader_ok {
+                    continue;
+                }
+                let mut by_buffer: HashMap<u32, Vec<usize>> = HashMap::new();
+                for &gi in group {
+                    if !static_vis(gi) {
+                        continue;
+                    }
+                    let md = &meshes.get(gi);
+                    let handle = self.mesh_static_handle_at(gi, &md.mesh);
+                    by_buffer.entry(handle.buffer_id).or_default().push(gi);
+                }
+                for (buffer_id, indices) in by_buffer {
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    let scratch_start = self.mesh_indirect_cmd_scratch.len();
+                    let mut seg_indices = 0u32;
+                    for &gi in &indices {
+                        let md = &meshes.get(gi);
+                        let handle = self.mesh_static_handle_at(gi, &md.mesh);
+                        seg_indices = seg_indices.saturating_add(push_mesh_indirect_cmd(
+                            &mut self.mesh_indirect_cmd_scratch,
+                            gi,
+                            md,
+                            handle,
+                        ));
+                    }
+                    let cmd_count = self.mesh_indirect_cmd_scratch.len() - scratch_start;
+                    if cmd_count == 0 {
+                        continue;
+                    }
+                    batch_mdi.entry(*key).or_default().push(MeshMdiSegment {
+                        buffer_id,
+                        byte_offset: scratch_start as u64 * indirect_command_stride,
+                        cmd_count: cmd_count as u32,
+                        index_count: seg_indices,
+                    });
+                }
+            }
+            if !self.mesh_indirect_cmd_scratch.is_empty() {
+                self.ensure_mesh_indirect_capacity(self.mesh_indirect_cmd_scratch.len());
+                self.queue.write_buffer(
+                    &self.mesh_indirect_buf,
+                    0,
+                    bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
+                );
+            }
+        }
+
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mesh pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -237,85 +402,11 @@ impl Renderer {
         });
         pass.set_bind_group(3, &self.lights_bg, &[]);
 
-        let mut shader_bins: std::collections::HashMap<(u32, bool), (u32, u64)> =
-            std::collections::HashMap::new();
-        let mut sample_set = false;
-
-        self.mesh_draw_order.clear();
-        self.mesh_draw_order.extend(0..ctx.snapshot.mesh_draws.len());
-        self.mesh_draw_order.sort_unstable_by_key(|&i| {
-            let md = &ctx.snapshot.mesh_draws[i];
-            let lm = ctx.shaders
-                .get(md.shader_id)
-                .map(|d| d.group1_uses_lightmap_array())
-                .unwrap_or(false);
-            (
-                md.shader_id,
-                lm as u8,
-                md.material_id,
-                md.texture.0,
-                md.normal.0,
-                md.orm.0,
-                md.lightmap_gpu,
-            )
-        });
-
         let mut last_mesh_pipeline: Option<MeshPipelineKey> = None;
 
-        let draw_order = std::mem::take(&mut self.mesh_draw_order);
-        let mut batch_groups: HashMap<MeshBatchKey, Vec<usize>> = HashMap::new();
-        let mut batch_for_index = vec![None; ctx.snapshot.mesh_draws.len()];
-        for &i in &draw_order {
-            let md = &ctx.snapshot.mesh_draws[i];
-            if !self.mesh_draw_batching || !md.batchable || !static_vis(i) {
-                continue;
-            }
-            if ctx
-                .shaders
-                .get(md.shader_id)
-                .is_some_and(|d| d.uses_skinned_mesh_vertex())
-            {
-                continue;
-            }
-            let handle = self.mesh_static_handle_at(i, &md.mesh);
-            let lm_surface = ctx.shaders
-                .get(md.shader_id)
-                .map(|d| d.group1_uses_lightmap_array())
-                .unwrap_or(false);
-            let key = MeshBatchKey {
-                shader_id: md.shader_id,
-                lm_surface,
-                material_id: resolved_static[i],
-                texture: md.texture.0,
-                normal: md.normal.0,
-                orm: md.orm.0,
-                lightmap_gpu: if lm_surface { md.lightmap_gpu } else { 0 },
-                buffer_id: handle.buffer_id,
-            };
-            batch_for_index[i] = Some(key);
-            batch_groups.entry(key).or_default().push(i);
-        }
-        for group in batch_groups.values() {
-            if group.len() < 2 {
-                for &i in group {
-                    batch_for_index[i] = None;
-                }
-            }
-        }
-        let indirect_command_count = batch_groups
-            .values()
-            .filter(|group| group.len() >= 2)
-            .map(|group| group.len())
-            .sum::<usize>();
-        if indirect_command_count > 0 {
-            self.ensure_mesh_indirect_capacity(indirect_command_count);
-        }
-        let indirect_command_stride =
-            std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
-        let mut indirect_offset = 0u64;
         let mut emitted_batches = std::collections::HashSet::new();
         for i in draw_order {
-            let md = &ctx.snapshot.mesh_draws[i];
+            let md = &meshes.get(i);
             if !static_vis(i) {
                 continue;
             }
@@ -325,7 +416,7 @@ impl Renderer {
                         .get(&key)
                         .expect("batch key missing from mesh groups");
                     let representative = group[0];
-                    let rep = &ctx.snapshot.mesh_draws[representative];
+                    let rep = &meshes.get(representative);
 
                     let pipeline = self.ensure_shader_mesh_pipeline(
                         ctx.shaders,
@@ -361,98 +452,141 @@ impl Renderer {
                     );
                     pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
 
-                    let vb = self.mesh_pool.vertex_buffer(key.buffer_id);
-                    let ib = self.mesh_pool.index_buffer(key.buffer_id);
-                    pass.set_vertex_buffer(0, vb.slice(..));
-                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-
-                    self.mesh_indirect_cmd_scratch.clear();
-                    self.mesh_indirect_cmd_scratch.reserve(group.len());
-                    let mut total_indices = 0u32;
+                    let mut batch_done = false;
+                    if let Some(segments) = batch_mdi.get(&key) {
+                        let mut batch_cmds = 0u32;
+                        let mut batch_tris = 0u64;
+                        for seg in segments {
+                            let vb = self.mesh_pool.vertex_buffer(seg.buffer_id);
+                            let ib = self.mesh_pool.index_buffer(seg.buffer_id);
+                            pass.set_vertex_buffer(0, vb.slice(..));
+                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.multi_draw_indexed_indirect(
+                                &self.mesh_indirect_buf,
+                                seg.byte_offset,
+                                seg.cmd_count,
+                            );
+                            ctx.draw_acc.note_draw_indexed(seg.index_count);
+                            batch_cmds += seg.cmd_count;
+                            batch_tris += seg.index_count as u64;
+                            ctx.prof.mesh_index_count += seg.index_count as u64;
+                            ctx.prof.mesh_stats.indirect_batches += 1;
+                            ctx.prof.mesh_stats.indirect_commands += seg.cmd_count;
+                        }
+                        if batch_cmds > 0 {
+                            ctx.prof.mesh_stats.draws_submitted += batch_cmds;
+                            ctx.prof.mesh_stats.tris_drawn += batch_tris;
+                            if key.lm_surface {
+                                ctx.prof.mesh_stats.lm_array_layout_draws += batch_cmds;
+                                if key.lightmap_gpu == 0 {
+                                    ctx.prof.mesh_stats.lm_array_with_gpu_id_zero += batch_cmds;
+                                }
+                            } else {
+                                ctx.prof.mesh_stats.albedo_2d_layout_draws += batch_cmds;
+                            }
+                            if key.texture == MeshTexture::WHITE.0 {
+                                ctx.prof.mesh_stats.albedo_white_slot_draws += batch_cmds;
+                            }
+                            let bin = shader_bins
+                                .entry((key.shader_id, key.lm_surface))
+                                .or_insert((0, 0));
+                            bin.0 += batch_cmds;
+                            bin.1 += batch_tris;
+                            if !sample_set {
+                                sample_set = true;
+                                ctx.prof.mesh_stats.sample_shader_id = key.shader_id;
+                                ctx.prof.mesh_stats.sample_shader_path = ctx
+                                    .shaders
+                                    .path_for_id(key.shader_id)
+                                    .unwrap_or("?")
+                                    .to_string();
+                                ctx.prof.mesh_stats.sample_lm_array = key.lm_surface;
+                                ctx.prof.mesh_stats.sample_albedo_slot = key.texture;
+                                ctx.prof.mesh_stats.sample_lightmap_gpu = key.lightmap_gpu;
+                                ctx.prof.mesh_stats.sample_material_id = key.material_id;
+                                ctx.prof.mesh_stats.sample_has_bsp_mesh =
+                                    Self::mesh_has_bsp_surface_data(&rep.mesh);
+                            }
+                            batch_done = true;
+                        }
+                    }
+                    if !batch_done {
+                    let mut batch_draws = 0u32;
+                    let mut batch_tris = 0u64;
                     for &group_index in group {
-                        let group_md = &ctx.snapshot.mesh_draws[group_index];
-                        let group_handle =
+                        if !static_vis(group_index) {
+                            continue;
+                        }
+                        let group_md = &meshes.get(group_index);
+                        let handle =
                             self.mesh_static_handle_at(group_index, &group_md.mesh);
+                        let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
+                        let ib = self.mesh_pool.index_buffer(handle.buffer_id);
+                        pass.set_vertex_buffer(
+                            0,
+                            vb.slice(self.mesh_pool.vertex_byte_range(handle)),
+                        );
+                        pass.set_index_buffer(
+                            ib.slice(self.mesh_pool.index_byte_range(handle)),
+                            wgpu::IndexFormat::Uint32,
+                        );
                         let start = group_md.first_index;
                         let count = if group_md.index_count == 0 {
-                            group_handle.idx_count
+                            handle.idx_count
                         } else {
                             group_md
                                 .index_count
-                                .min(group_handle.idx_count.saturating_sub(start))
+                                .min(handle.idx_count.saturating_sub(start))
                         };
                         if count == 0 {
                             continue;
                         }
-                        total_indices = total_indices.saturating_add(count);
-                        self.mesh_indirect_cmd_scratch
-                            .push(wgpu::util::DrawIndexedIndirectArgs {
-                                index_count: count,
-                                instance_count: 1,
-                                first_index: group_handle.idx_offset.saturating_add(start),
-                                base_vertex: group_handle.vert_offset as i32,
-                                first_instance: group_index as u32,
-                            });
+                        pass.draw_indexed(
+                            start..start + count,
+                            0,
+                            group_index as u32..group_index as u32 + 1,
+                        );
+                        ctx.draw_acc.note_draw_indexed(count);
+                        batch_draws += 1;
+                        batch_tris += count as u64;
+                        ctx.prof.mesh_index_count += count as u64;
                     }
-                    let cmd_count = self.mesh_indirect_cmd_scratch.len();
-                    if cmd_count > 0 {
-                        if self.multi_draw_indirect_supported {
-                            self.queue.write_buffer(
-                                &self.mesh_indirect_buf,
-                                indirect_offset,
-                                bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
-                            );
-                            pass.multi_draw_indexed_indirect(
-                                &self.mesh_indirect_buf,
-                                indirect_offset,
-                                cmd_count as u32,
-                            );
-                            indirect_offset += cmd_count as u64 * indirect_command_stride;
-                            ctx.draw_acc.note_draw_indexed(total_indices);
-                            ctx.prof.mesh_stats.draws_submitted += 1;
-                            ctx.prof.mesh_stats.indirect_batches += 1;
-                            ctx.prof.mesh_stats.indirect_commands += cmd_count as u32;
-                        } else {
-                            for cmd in &self.mesh_indirect_cmd_scratch {
-                                pass.draw_indexed(
-                                    cmd.first_index..cmd.first_index + cmd.index_count,
-                                    cmd.base_vertex,
-                                    cmd.first_instance..cmd.first_instance + 1,
-                                );
-                                ctx.draw_acc.note_draw_indexed(cmd.index_count);
-                            }
-                            ctx.prof.mesh_stats.draws_submitted += cmd_count as u32;
-                            ctx.prof.mesh_stats.bind_batch_draws += cmd_count as u32;
-                        }
-                        ctx.prof.mesh_index_count += total_indices as u64;
-                        ctx.prof.mesh_stats.tris_drawn += total_indices as u64;
+                    if batch_draws > 0 {
+                        ctx.prof.mesh_stats.draws_submitted += batch_draws;
+                        ctx.prof.mesh_stats.bind_batch_draws += batch_draws;
+                        ctx.prof.mesh_stats.tris_drawn += batch_tris;
                         if key.lm_surface {
-                            ctx.prof.mesh_stats.lm_array_layout_draws += cmd_count as u32;
+                            ctx.prof.mesh_stats.lm_array_layout_draws += batch_draws;
                             if key.lightmap_gpu == 0 {
-                                ctx.prof.mesh_stats.lm_array_with_gpu_id_zero += cmd_count as u32;
+                                ctx.prof.mesh_stats.lm_array_with_gpu_id_zero += batch_draws;
                             }
                         } else {
-                            ctx.prof.mesh_stats.albedo_2d_layout_draws += cmd_count as u32;
+                            ctx.prof.mesh_stats.albedo_2d_layout_draws += batch_draws;
                         }
                         if key.texture == MeshTexture::WHITE.0 {
-                            ctx.prof.mesh_stats.albedo_white_slot_draws += cmd_count as u32;
+                            ctx.prof.mesh_stats.albedo_white_slot_draws += batch_draws;
                         }
                         let bin = shader_bins
                             .entry((key.shader_id, key.lm_surface))
                             .or_insert((0, 0));
-                        bin.0 += cmd_count as u32;
-                        bin.1 += total_indices as u64;
+                        bin.0 += batch_draws;
+                        bin.1 += batch_tris;
                         if !sample_set {
                             sample_set = true;
                             ctx.prof.mesh_stats.sample_shader_id = key.shader_id;
-                            ctx.prof.mesh_stats.sample_shader_path =
-                                ctx.shaders.path_for_id(key.shader_id).unwrap_or("?").to_string();
+                            ctx.prof.mesh_stats.sample_shader_path = ctx
+                                .shaders
+                                .path_for_id(key.shader_id)
+                                .unwrap_or("?")
+                                .to_string();
                             ctx.prof.mesh_stats.sample_lm_array = key.lm_surface;
                             ctx.prof.mesh_stats.sample_albedo_slot = key.texture;
                             ctx.prof.mesh_stats.sample_lightmap_gpu = key.lightmap_gpu;
                             ctx.prof.mesh_stats.sample_material_id = key.material_id;
-                            ctx.prof.mesh_stats.sample_has_bsp_mesh = Self::mesh_has_bsp_surface_data(&rep.mesh);
+                            ctx.prof.mesh_stats.sample_has_bsp_mesh =
+                                Self::mesh_has_bsp_surface_data(&rep.mesh);
                         }
+                    }
                     }
                 }
                 continue;
@@ -543,7 +677,7 @@ impl Renderer {
         }
 
         let mut last_skinned_shader: Option<ShaderId> = None;
-        for (j, sd) in ctx.snapshot.skinned_mesh_draws.iter().enumerate() {
+        for (j, sd) in (0..skinned_count).map(|j| skinned_meshes.get(j)).enumerate() {
             if !skinned_vis(j) {
                 continue;
             }
@@ -611,6 +745,7 @@ impl Renderer {
                 &self.queue,
                 encoder,
                 ctx.snapshot,
+                ctx.geometry,
                 &depth_view,
                 ctx.hdr_view,
                 ctx.hdr_format,

@@ -275,6 +275,34 @@ fn expand_includes_inner(
         }
 
         if let Some(path_str) = parse_include_path(trimmed) {
+            if let Some(internal_rel) = path_str.strip_prefix("internal://") {
+                let key = crate::resource::normalize_internal_path(internal_rel);
+                let canonical = PathBuf::from(format!("internal://{key}"));
+                if state.stack.iter().any(|p| p == &canonical) {
+                    return Err(ShaderError::IncludeCycle(key.clone()));
+                }
+                if state.once.contains(&canonical) {
+                    continue;
+                }
+                let text = crate::resource::internal_asset(&key).ok_or_else(|| {
+                    ShaderError::IncludeNotFound(format!("internal://{key}"))
+                })?;
+                state.stack.push(canonical.clone());
+                state.once.insert(canonical);
+                let chunk = expand_includes_inner(text, define_set, base, state, false)?;
+                state.stack.pop();
+                if !chunk.is_empty() {
+                    if !output.is_empty() && !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                    output.push_str(&chunk);
+                    if !chunk.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+                continue;
+            }
+
             let parent = base.ok_or(ShaderError::IncludeNoBase)?;
             let resolved = resolve_include_path(parent, path_str)?;
             let canonical = resolved
@@ -587,6 +615,18 @@ fn main() {}
             .err()
             .expect("expected cycle error");
         assert!(matches!(err, ShaderError::IncludeCycle(_)));
+    }
+
+    #[test]
+    fn include_internal_embedded() {
+        let root = r#"#include "internal://shaders/inc/dither.wgsl"
+fn main() {}
+"#;
+        let out = ShaderPreprocessor::process_at(root, &[], Some(Path::new("/unused")))
+            .unwrap()
+            .wgsl;
+        assert!(out.contains("fn dither_threshold"));
+        assert!(out.contains("fn main()"));
     }
 
     #[test]

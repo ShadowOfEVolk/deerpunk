@@ -230,6 +230,8 @@ impl Host {
         resources.register_loader(Box::new(deerpunk_engine_common::resource::ShaderLoader {
             root: shader_root,
         }));
+        #[cfg(feature = "tracy")]
+        deerpunk_engine_renderer::tracy_ensure_started();
         #[cfg(any(feature = "client", feature = "full"))]
         let client_engine = Some(ClientEngine::new(&resources));
         let loopback = Arc::new(NetLoopback::new());
@@ -1485,7 +1487,9 @@ impl Host {
         if level >= 3 {
             let eg = &p.extract_gpu;
             lines.push(format!(
-                "  extract: body {:.2} serial {:.2} post {:.2} ms | mat {:.2} ms draws {}+{}",
+                "  extract: sync {:.2} ms skip {} | body {:.2} serial {:.2} post {:.2} ms | mat {:.2} ms draws {}+{}",
+                eg.sync_world_ms,
+                eg.sync_world_unchanged,
                 eg.extractor_ms,
                 eg.cull_serial_ms,
                 eg.post_ms,
@@ -2031,11 +2035,13 @@ impl Host {
 
             let view_ent = self.client_engine.as_mut().unwrap().rep.view_entity();
             let early_cull = self.cvar.get_usize_or("cl_extract_early_cull", 1) != 0;
+            let draw_distance = self.cvar.get_f32_or("cl_draw_distance", 192.0);
             let scene = {
                 let _g = system_profiler::scope("frame.extract");
                 let extract_start = std::time::Instant::now();
                 let (client, registry) = self.split_client_registry();
-                let mut scene = client.extract_scene_view(registry, view_ent, early_cull);
+                let mut scene =
+                    client.extract_scene_view(registry, view_ent, early_cull, draw_distance);
                 scene.cull =
                     deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
                 let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;
@@ -2121,6 +2127,8 @@ impl Host {
         self.cmd.shutdown();
         self.cvar.shutdown();
         self.fs.shutdown();
+        #[cfg(feature = "tracy")]
+        deerpunk_engine_renderer::tracy_shutdown();
         log::info!("[host] shutdown OK");
     }
 }

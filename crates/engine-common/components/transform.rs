@@ -1,6 +1,6 @@
 use glam::{Quat, Vec3};
 
-/// World transform. Engine convention is **Z-up** (yaw around Z).
+/// Local transform relative to [`ParentComponent`] (if any). World pose: [`WorldTransformComponent`].
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct TransformComponent {

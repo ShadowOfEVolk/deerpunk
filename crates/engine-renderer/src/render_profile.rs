@@ -44,6 +44,10 @@ pub struct SceneExtractGpuStats {
     pub extract_cache_hit: u32,
     /// Skipped before push (early frustum in extract).
     pub extract_frustum_skip: u32,
+    /// [`sync_world_transforms`] before extract, ms.
+    pub sync_world_ms: f32,
+    /// Root/parented rows where [`WorldTransformComponent`] already matched (no `set`).
+    pub sync_world_unchanged: u32,
 }
 
 /// Mesh path diagnostics (`r_speeds 3`).

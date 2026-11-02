@@ -142,7 +142,7 @@ flowchart TD
     C --> D[World simulate / physics step]
     D --> E[Replication + user messages]
     E --> F[client_pre_render]
-    F --> G[Build RenderScene extract]
+    F --> G[sync_world_transforms + RenderScene extract]
     G --> H[ClientEngine tick audio / UI]
     H --> I[Renderer execute graph]
     I --> J[Present / post FX]

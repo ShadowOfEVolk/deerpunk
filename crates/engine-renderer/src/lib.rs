@@ -1,5 +1,6 @@
 mod aabb;
 mod cull;
+mod draw_list;
 mod cvars;
 mod occlusion;
 mod frustum;
@@ -16,6 +17,7 @@ pub mod material_store;
 pub mod mesh_alloc_debug;
 pub mod mesh_allocator;
 pub mod mesh_gpu_pool;
+mod mesh_shader_instance;
 pub mod postfx;
 pub mod render_graph;
 pub mod render_profile;
@@ -23,7 +25,10 @@ pub mod shader_registry;
 mod shader_fallback;
 pub mod snapshot;
 pub mod text_util;
+pub mod tracy_lifecycle;
 pub mod ui_pass;
+
+pub use tracy_lifecycle::{tracy_ensure_started, tracy_shutdown};
 
 pub use asset_inventory::{AssetEntry, AssetKind};
 pub use debug_draw::{DebugColor, DebugDraw, DebugPrimitive};

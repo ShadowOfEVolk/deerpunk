@@ -2,7 +2,26 @@
 
 All game content lives under **`gamedir`** — the directory passed to the host at startup. Paths in JSON and scripts are relative to this root unless prefixed with `file://`.
 
-## Layout (typical)
+### `internal://` (engine-embedded)
+
+Some shared assets ship **inside the engine binary** (no gamedir copy). Use the `internal://` URI scheme:
+
+| URI | Purpose |
+|-----|---------|
+| `internal://shaders/inc/dither.wgsl` | Bayer / blue / white screen dither helpers |
+| `internal://shaders/inc/mesh_uniform_slot.wgsl` | `mesh_uniform_slots` + `mesh_mu_slot` for MDI batching |
+
+In WGSL, `#include` accepts the same paths:
+
+```wgsl
+#include "internal://shaders/inc/dither.wgsl"
+```
+
+Add new files under `crates/engine-resource/assets/internal/` and register them in `internal_assets.rs` (`include_str!`).
+
+Game files under `gamedir/shaders/inc/` still override nothing automatically — pick either gamedir copy or `internal://` explicitly.
+
+---
 
 ```text
 gamedir/
@@ -37,7 +56,8 @@ flowchart LR
 | Loader | Types |
 |--------|--------|
 | File | Raw bytes, text |
-| Shader | `.wgsl` via URI |
+| Shader | `.wgsl` via `file://` |
+| Internal | Embedded `internal://…` (WGSL text) |
 | Mesh | OBJ, internal mesh blobs |
 | WAD | Legacy archive textures |
 | Audio clip | Ogg/wav for Kira backend |

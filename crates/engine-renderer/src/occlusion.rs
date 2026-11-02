@@ -197,6 +197,7 @@ impl MeshOcclusion {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         snapshot: &RenderSnapshot,
+        geometry: Option<&crate::snapshot::SceneGeometry>,
         depth_view: &wgpu::TextureView,
         color_view: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
@@ -206,18 +207,23 @@ impl MeshOcclusion {
             return false;
         }
 
+        let meshes = crate::draw_list::MeshDrawListView::new(snapshot, geometry);
+        let skinned = crate::draw_list::SkinnedDrawListView::new(snapshot, geometry);
+
         self.pending_keys.clear();
-        for (i, md) in snapshot.mesh_draws.iter().enumerate() {
+        for i in 0..meshes.len() {
             if self.pending_keys.len() >= MAX_OCCLUSION_QUERIES as usize {
                 break;
             }
+            let md = meshes.get(i);
             self.pending_keys.push(Self::key_static(i, md.entity_id));
         }
         let static_n = self.pending_keys.len();
-        for (j, sd) in snapshot.skinned_mesh_draws.iter().enumerate() {
+        for j in 0..skinned.len() {
             if self.pending_keys.len() >= MAX_OCCLUSION_QUERIES as usize {
                 break;
             }
+            let sd = skinned.get(j);
             self.pending_keys.push(Self::key_skinned(j, sd.entity_id));
         }
         let query_count = self.pending_keys.len();
@@ -233,10 +239,12 @@ impl MeshOcclusion {
         let slab = (stride * query_count as u64) as usize;
         gpu.uniform_scratch.resize(slab, 0);
         let view_proj = snapshot.view_proj;
-        for (qi, md) in snapshot.mesh_draws.iter().take(static_n).enumerate() {
+        for qi in 0..static_n {
+            let md = meshes.get(qi);
             write_uniform(&mut gpu.uniform_scratch, qi, stride, view_proj, &md.world_bounds);
         }
-        for (j, sd) in snapshot.skinned_mesh_draws.iter().take(query_count - static_n).enumerate() {
+        for j in 0..(query_count - static_n) {
+            let sd = skinned.get(j);
             write_uniform(
                 &mut gpu.uniform_scratch,
                 static_n + j,

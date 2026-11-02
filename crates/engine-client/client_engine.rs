@@ -128,6 +128,7 @@ pub struct ClientEngine {
     cull_scratch: CullScratch,
     surface_snapshot: RenderSnapshot,
     /// Per-frame surface cameras (sorted by `order`) for compose.
+    camera_build_scratch: Vec<deerpunk_engine_renderer::snapshot::CameraRenderSnapshot>,
     camera_compose_scratch: Vec<RenderSnapshot>,
     /// Gamelib overlays merged into frame debug draw (block outline, etc.).
     game_debug: DebugDraw,
@@ -202,6 +203,7 @@ impl ClientEngine {
             gamelib_sky: None,
             cull_scratch: CullScratch::new(),
             surface_snapshot: RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear),
+            camera_build_scratch: Vec::new(),
             camera_compose_scratch: Vec::new(),
             game_debug: DebugDraw::new(),
         }
@@ -812,7 +814,7 @@ impl ClientEngine {
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
     ) -> RenderScene {
-        self.extract_scene_view(meshes, None, true)
+        self.extract_scene_view(meshes, None, true, 0.0)
     }
 
     /// Extract with optional view entity (server `SetView` net pawn).
@@ -821,12 +823,24 @@ impl ClientEngine {
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
         view_entity: Option<u64>,
         early_cull: bool,
+        draw_distance: f32,
     ) -> RenderScene {
         let mut extract_gpu = deerpunk_engine_renderer::SceneExtractGpuStats::default();
 
         let fallback = self.fallback_mesh.clone();
         let aspect = deerpunk_engine_common::frame::frame_width() as f32
             / deerpunk_engine_common::frame::frame_height().max(1) as f32;
+        if let Some(ext) = self.extractor.as_ref() {
+            let sync_start = std::time::Instant::now();
+            let sync_stats = ext.sync_world_transforms(&mut self.world);
+            extract_gpu.sync_world_ms = sync_start.elapsed().as_secs_f32() * 1000.0;
+            extract_gpu.sync_world_unchanged = sync_stats.unchanged;
+        }
+        if draw_distance > 0.0 {
+            if let Some(ext) = self.extractor.as_ref() {
+                ext.apply_draw_stream_distance(&mut self.world, view_entity, draw_distance);
+            }
+        }
         let mut scene = self
             .extractor
             .as_mut()
@@ -1060,27 +1074,35 @@ impl ClientEngine {
         // No cameras (e.g. menu-only) still need a surface pass so the UI overlay runs.
         let snap_start = std::time::Instant::now();
         let aspect = w as f32 / h as f32;
-        let mut snapshots = scene
-            .map(|s| s.build_snapshots(aspect, &mut self.cull_scratch))
-            .unwrap_or_default();
+        if let Some(s) = scene.as_ref() {
+            s.build_snapshots_into(aspect, &mut self.cull_scratch, &mut self.camera_build_scratch);
+        } else {
+            self.camera_build_scratch.clear();
+        }
         let build_snap_ms = snap_start.elapsed().as_secs_f32() * 1000.0;
         let frustum_ms = self.cull_scratch.last_frustum_ms;
         let assemble_ms = self.cull_scratch.last_assemble_ms;
 
-        let mut surface_snaps: Vec<_> = snapshots
+        let mut surface_indices: Vec<usize> = self
+            .camera_build_scratch
             .iter()
-            .filter(|s| matches!(s.target, RenderTarget::Surface))
+            .enumerate()
+            .filter(|(_, s)| matches!(s.target, RenderTarget::Surface))
+            .map(|(i, _)| i)
             .collect();
-        surface_snaps.sort_by_key(|s| (s.order, s.camera_pos[0].to_bits()));
+        surface_indices.sort_by_key(|&i| {
+            let s = &self.camera_build_scratch[i];
+            (s.order, s.camera_pos[0].to_bits())
+        });
 
         // Audio: listener from lowest-order surface camera.
         let audio_start = std::time::Instant::now();
         {
-            let listener = surface_snaps
+            let listener = surface_indices
                 .first()
-                .map(|s| listener_from_view(s.view))
+                .map(|&i| listener_from_view(self.camera_build_scratch[i].view))
                 .unwrap_or_else(|| {
-                    snapshots
+                    self.camera_build_scratch
                         .first()
                         .map(|s| listener_from_view(s.view))
                         .unwrap_or_default()
@@ -1096,10 +1118,11 @@ impl ClientEngine {
         let _ = prep_start;
 
         let mut rendered_surface = false;
-        if !surface_snaps.is_empty() {
+        if !surface_indices.is_empty() {
             self.camera_compose_scratch.clear();
             if let Some(sc) = scene {
-                for (i, cam) in surface_snaps.iter().enumerate() {
+                for (i, &cam_idx) in surface_indices.iter().enumerate() {
+                    let cam = &self.camera_build_scratch[cam_idx];
                     let gather_start = std::time::Instant::now();
                     let mut snap = RenderSnapshot::new(cam.color_load);
                     pack_surface_camera(sc, cam, &mut snap);
@@ -1110,13 +1133,14 @@ impl ClientEngine {
                     self.camera_compose_scratch.push(snap);
                 }
             }
-            let cam_refs: Vec<&RenderSnapshot> =
-                self.camera_compose_scratch.iter().collect();
-            let post = cam_refs.first().expect("surface_snaps non-empty");
+            let post_idx = 0usize;
+            let post = &self.camera_compose_scratch[post_idx];
+            let geometry = scene.as_ref().map(|s| &s.geometry);
             if game_frame_fn.is_some() {
                 if let Err(e) = self.renderer.render_to_surface_compose_with_game_frame(
-                    &cam_refs,
+                    &self.camera_compose_scratch,
                     post,
+                    geometry,
                     game_frame_fn,
                     game_frame_ctx,
                     &self.shader_registry,
@@ -1124,8 +1148,9 @@ impl ClientEngine {
                     self.handle_surface_frame_error(e);
                 }
             } else if let Err(e) = self.renderer.render_to_surface_compose(
-                &cam_refs,
+                &self.camera_compose_scratch,
                 post,
+                geometry,
                 &self.shader_registry,
             ) {
                 self.handle_surface_frame_error(e);
@@ -1134,7 +1159,7 @@ impl ClientEngine {
         }
         self.renderer
             .note_cull_detail(frustum_ms, assemble_ms, gather_ms);
-        for snap in snapshots.drain(..) {
+        for snap in self.camera_build_scratch.drain(..) {
             if !snap.frustum_culled {
                 continue;
             }

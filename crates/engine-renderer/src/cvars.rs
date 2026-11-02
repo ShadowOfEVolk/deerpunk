@@ -129,6 +129,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_mesh_batch_mdi",
+    "1",
+    "Batch groups use multi_draw_indexed_indirect (@builtin(instance_index) + mesh_mu_slot; ohmyblock inc/mesh_uniform_slot.wgsl)",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_grain_downscale",
     "3",
     "Film grain noise tile scale.",

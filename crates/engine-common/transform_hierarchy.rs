@@ -2,8 +2,8 @@
 
 use glam::{Quat, Vec3};
 
-use crate::components::{ParentComponent, TransformComponent};
-use crate::world::{ComponentId, World};
+use crate::components::{ParentComponent, TransformComponent, WorldTransformComponent};
+use crate::world::{ComponentId, QueryId, World};
 
 /// Full parent chain: `world = parent_n ⊕ … ⊕ local` (Z-up engine convention).
 pub fn world_pose(
@@ -13,13 +13,24 @@ pub fn world_pose(
     parent_id: ComponentId,
 ) -> (Vec3, Quat) {
     let tid = world.component_init::<TransformComponent>();
+    world_pose_with_ids(world, entity, local, parent_id, tid)
+}
+
+/// Like [`world_pose`] but reuses pre-resolved component ids (hot extract paths).
+pub fn world_pose_with_ids(
+    world: &World,
+    entity: u64,
+    local: &TransformComponent,
+    parent_id: ComponentId,
+    transform_id: ComponentId,
+) -> (Vec3, Quat) {
     let mut pos = local.position;
     let mut rot = local.rotation;
     let mut scale = local.scale;
     let mut current = entity;
     while let Some(link) = world.get::<ParentComponent>(current, parent_id) {
         let parent_ent = link.parent;
-        let Some(parent_t) = world.get::<TransformComponent>(parent_ent, tid) else {
+        let Some(parent_t) = world.get::<TransformComponent>(parent_ent, transform_id) else {
             break;
         };
         let scaled = pos * scale;
@@ -29,6 +40,78 @@ pub fn world_pose(
         current = parent_ent;
     }
     (pos, rot)
+}
+
+/// Rows skipped because [`WorldTransformComponent`] already matched computed world pose.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SyncWorldTransformStats {
+    pub unchanged: u32,
+}
+
+/// Propagate local [`TransformComponent`] + [`ParentComponent`] into [`WorldTransformComponent`].
+/// Call once per frame **before** render extract (not the renderer's job to walk parents).
+pub fn sync_world_transforms(
+    world: &mut World,
+    q_roots: QueryId,
+    q_parented: QueryId,
+) -> SyncWorldTransformStats {
+    let transform_id = world.component_init::<TransformComponent>();
+    let world_id = world.component_init::<WorldTransformComponent>();
+    let parent_id = world.component_init::<ParentComponent>();
+
+    let mut unchanged = 0u32;
+
+    if let Some(batches) = world.query_batches(q_roots) {
+        for batch in batches {
+            let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+            let transforms = unsafe {
+                std::slice::from_raw_parts(
+                    batch.columns[0] as *const TransformComponent,
+                    batch.count,
+                )
+            };
+            for i in 0..batch.count {
+                let ent = entities[i];
+                let local = &transforms[i];
+                let world_t = WorldTransformComponent::from_transform(local);
+                if world.get::<WorldTransformComponent>(ent, world_id) == Some(world_t) {
+                    unchanged += 1;
+                    continue;
+                }
+                world.set(ent, world_id, world_t);
+            }
+        }
+    }
+
+    if let Some(batches) = world.query_batches(q_parented) {
+        for batch in batches {
+            let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+            let transforms = unsafe {
+                std::slice::from_raw_parts(
+                    batch.columns[0] as *const TransformComponent,
+                    batch.count,
+                )
+            };
+            for i in 0..batch.count {
+                let ent = entities[i];
+                let local = &transforms[i];
+                let (pos, rot) =
+                    world_pose_with_ids(world, ent, local, parent_id, transform_id);
+                let world_t = WorldTransformComponent {
+                    position: pos,
+                    rotation: rot,
+                    scale: local.scale,
+                };
+                if world.get::<WorldTransformComponent>(ent, world_id) == Some(world_t) {
+                    unchanged += 1;
+                    continue;
+                }
+                world.set(ent, world_id, world_t);
+            }
+        }
+    }
+
+    SyncWorldTransformStats { unchanged }
 }
 
 /// World eye + orientation for any [`CameraComponent`] entity (uses parent chain when linked).

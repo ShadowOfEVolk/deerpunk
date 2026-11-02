@@ -8,6 +8,7 @@ pub mod mesh_content;
 pub mod mesh_handle;
 pub mod mesh_registry;
 pub mod wad;
+pub mod internal_assets;
 
 use loader::Loader;
 use mesh::Mesh;
@@ -25,9 +26,10 @@ use std::sync::{Arc, Mutex};
 
 pub use loader::{LoadOpts, LoadedAsset};
 pub use loaders::{
-    fallback_name_to_texgen_uri, register_default_loaders, AudioClip, FileLoader, ShaderLoader,
-    ShaderSource, TexgenLoader, WadLoader,
+    fallback_name_to_texgen_uri, register_default_loaders, AudioClip, FileLoader, InternalLoader,
+    ShaderLoader, ShaderSource, TexgenLoader, WadLoader,
 };
+pub use internal_assets::{internal_asset, internal_asset_paths, normalize_internal_path};
 /// OBJ helpers used by scene prefab appliers (MTL diffuse lookup).
 pub use loaders::obj;
 

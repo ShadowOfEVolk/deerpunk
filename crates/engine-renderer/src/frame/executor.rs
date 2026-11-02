@@ -52,9 +52,20 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
         return;
     }
 
+    macro_rules! render_scope {
+        ($label:literal) => {
+            #[cfg(feature = "tracy")]
+            profiling::scope!($label);
+        };
+    }
+
     match name {
-        "upload_prep" => renderer.pass_upload_prep(ctx),
+        "upload_prep" => {
+            render_scope!("render/upload_prep");
+            renderer.pass_upload_prep(ctx);
+        }
         "sky" => {
+            render_scope!("render/sky");
             if ctx.snapshot.pass_mask & cam_features::SKY != 0 && ctx.snapshot.sky.is_some() {
                 renderer.pass_sky_and_clouds(ctx, nc.encoder);
             } else {
@@ -63,6 +74,7 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
             }
         }
         "clear_hdr" => {
+            render_scope!("render/clear_hdr");
             // Clear HDR only when this camera declares a color clear AND sky did not
             // already clear (sky pass clears to the scene clear color itself).
             let clears_color = ctx.snapshot.color_load
@@ -76,9 +88,16 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
                 let _ = lap_ms(ctx.lap);
             }
         }
-        "sprites_3d" => renderer.pass_sprites_3d(ctx, nc.encoder, sprite_pipeline),
-        "mesh" => renderer.pass_mesh(ctx, nc.encoder),
+        "sprites_3d" => {
+            render_scope!("render/sprites_3d");
+            renderer.pass_sprites_3d(ctx, nc.encoder, sprite_pipeline);
+        }
+        "mesh" => {
+            render_scope!("render/mesh");
+            renderer.pass_mesh(ctx, nc.encoder);
+        }
         "terrain_splat" => {
+            render_scope!("render/terrain_splat");
             if ctx.snapshot.pass_mask & cam_features::TERRAIN != 0
                 && !ctx.snapshot.terrain_splat_draws.is_empty()
             {
@@ -89,6 +108,7 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
             }
         }
         "debug" => {
+            render_scope!("render/debug");
             if ctx.snapshot.pass_mask & cam_features::DEBUG != 0 {
                 renderer.pass_debug_lines(ctx, nc.encoder);
             } else {
@@ -96,12 +116,19 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
                 let _ = lap_ms(ctx.lap);
             }
         }
-        "hud" => renderer.pass_hud(ctx, nc.encoder, sprite_pipeline, hud_vp),
+        "hud" => {
+            render_scope!("render/hud");
+            renderer.pass_hud(ctx, nc.encoder, sprite_pipeline, hud_vp);
+        }
         "luminance" => {
+            render_scope!("render/luminance");
             skipped = true;
             let _ = lap_ms(ctx.lap);
         }
-        "tonemap_ui" => renderer.pass_tonemap_and_ui(ctx, nc.encoder),
+        "tonemap_ui" => {
+            render_scope!("render/tonemap_ui");
+            renderer.pass_tonemap_and_ui(ctx, nc.encoder);
+        }
         _ => {
             skipped = true;
             let _ = lap_ms(ctx.lap);

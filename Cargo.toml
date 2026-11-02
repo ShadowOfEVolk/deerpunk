@@ -44,6 +44,7 @@ path = "src/main.rs"
 default = ["full"]
 full = ["deerpunk-engine-host/full"]
 full-kira = ["deerpunk-engine-host/full-kira"]
+tracy = ["deerpunk-engine-host/tracy", "deerpunk-engine-renderer/tracy"]
 
 [dependencies]
 deerpunk-engine-host = { path = "crates/engine-host", default-features = false }

@@ -11,7 +11,8 @@ use tiny_skia::Pixmap;
 
 use crate::aabb::Aabb;
 use crate::cull::{
-    cull_mesh_indices, cull_skinned_indices, CullCamera, CullScratch, CullStats, DEFAULT_CELL_SIZE,
+    cull_mesh_indices, cull_skinned_indices, visible_mesh_indices_pre_culled,
+    visible_skinned_indices_pre_culled, CullCamera, CullScratch, CullStats, DEFAULT_CELL_SIZE,
 };
 use deerpunk_engine_common::components::render_layer::render_layer_visible;
 
@@ -266,9 +267,12 @@ pub struct RenderSnapshot {
     pub inv_view_proj_sky: [[f32; 4]; 4],
     /// World-space camera position.
     pub camera_pos: [f32; 3],
-    /// Меши для отрисовки.
+    /// Мesh draws when not using geometry indices (non-cull or legacy path).
     pub mesh_draws: Vec<MeshDraw>,
     pub skinned_mesh_draws: Vec<SkinnedMeshDraw>,
+    /// Indices into frame [`SceneGeometry::mesh_draws`] when [`Self::frustum_culled`] + encode has geometry.
+    pub mesh_geometry_indices: Vec<u32>,
+    pub skinned_geometry_indices: Vec<u32>,
     pub bone_palettes: Vec<BonePaletteUpload>,
     /// Террейн со сплат-маппингом.
     pub terrain_splat_draws: Vec<TerrainSplatDraw>,
@@ -304,6 +308,8 @@ impl RenderSnapshot {
             hud: Vec::new(),
             mesh_draws: Vec::new(),
             skinned_mesh_draws: Vec::new(),
+            mesh_geometry_indices: Vec::new(),
+            skinned_geometry_indices: Vec::new(),
             bone_palettes: Vec::new(),
             terrain_splat_draws: Vec::new(),
             point_lights: Vec::new(),
@@ -629,6 +635,8 @@ pub struct RenderScene {
     pub clear: [f32; 4],
     pub game_time: f32,
     pub cull: CullOptions,
+    /// Extract frustum-filtered geometry for the primary camera; skip CPU frustum when single cam.
+    pub extract_early_cull: bool,
 }
 
 impl RenderScene {
@@ -639,6 +647,7 @@ impl RenderScene {
             clear: [0.1, 0.1, 0.15, 1.0],
             game_time: 0.0,
             cull: CullOptions::default(),
+            extract_early_cull: false,
         }
     }
 
@@ -656,10 +665,21 @@ impl RenderScene {
         aspect: f32,
         scratch: &mut CullScratch,
     ) -> Vec<CameraRenderSnapshot> {
+        let mut out = Vec::new();
+        self.build_snapshots_into(aspect, scratch, &mut out);
+        out
+    }
+
+    pub fn build_snapshots_into(
+        &self,
+        aspect: f32,
+        scratch: &mut CullScratch,
+        out: &mut Vec<CameraRenderSnapshot>,
+    ) {
         scratch.reset_build_timing();
-        self.cameras
-            .iter()
-            .map(|cam| {
+        out.clear();
+        out.reserve(self.cameras.len());
+        for (cam_idx, cam) in self.cameras.iter().enumerate() {
                 let view = cam.view_matrix();
                 let projection = cam.projection_matrix(aspect);
                 let view_proj_cull = projection * view;
@@ -677,24 +697,42 @@ impl RenderScene {
 
                 let cull_serial = self.geometry.cull_serial;
                 let frustum_start = std::time::Instant::now();
+                let skip_frustum =
+                    self.extract_early_cull && cam_idx == 0 && self.cameras.len() == 1;
                 let (frustum_culled, cull_stats, visible_mesh, visible_skinned) =
                     if self.cull.enabled {
-                        let (mt, mv) = cull_mesh_indices(
-                            &self.geometry.mesh_draws,
-                            &cull_cam,
-                            cull_serial,
-                            self.cull.cell_size,
-                            scratch,
-                        );
-                        let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
-                        let (st, sv) = cull_skinned_indices(
-                            &self.geometry.skinned_mesh_draws,
-                            &cull_cam,
-                            cull_serial,
-                            self.cull.cell_size,
-                            scratch,
-                        );
-                        let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
+                        let (mt, mv, visible_mesh, st, sv, visible_skinned) = if skip_frustum {
+                            let (mt, mv) = visible_mesh_indices_pre_culled(
+                                &self.geometry.mesh_draws,
+                                &cull_cam,
+                                &mut scratch.visible_mesh,
+                            );
+                            let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
+                            let (st, sv) = visible_skinned_indices_pre_culled(
+                                &self.geometry.skinned_mesh_draws,
+                                &mut scratch.visible_skinned,
+                            );
+                            let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
+                            (mt, mv, visible_mesh, st, sv, visible_skinned)
+                        } else {
+                            let (mt, mv) = cull_mesh_indices(
+                                &self.geometry.mesh_draws,
+                                &cull_cam,
+                                cull_serial,
+                                self.cull.cell_size,
+                                scratch,
+                            );
+                            let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
+                            let (st, sv) = cull_skinned_indices(
+                                &self.geometry.skinned_mesh_draws,
+                                &cull_cam,
+                                cull_serial,
+                                self.cull.cell_size,
+                                scratch,
+                            );
+                            let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
+                            (mt, mv, visible_mesh, st, sv, visible_skinned)
+                        };
                         scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
                         (
                             true,
@@ -754,9 +792,8 @@ impl RenderScene {
                     depth: cam.depth,
                 };
                 scratch.last_assemble_ms += assemble_start.elapsed().as_secs_f32() * 1000.0;
-                snap
-            })
-            .collect()
+                out.push(snap);
+        }
     }
 
     /// Copy visible draws into GPU snapshot buffers (single gather pass per frame).

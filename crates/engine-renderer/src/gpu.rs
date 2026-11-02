@@ -288,7 +288,6 @@ pub(crate) struct MeshBatchKey {
     normal: u32,
     orm: u32,
     lightmap_gpu: u32,
-    buffer_id: u32,
 }
 
 pub(crate) const MAX_POINT_LIGHTS: usize = 32;
@@ -628,6 +627,8 @@ pub struct Renderer {
     /// Some adapters cannot execute indirect draw commands. Keep the normal
     /// per-draw path available on those devices.
     multi_draw_indirect_supported: bool,
+    /// Required for non-zero `first_instance` in indirect draw commands (per-draw uniform slot).
+    indirect_first_instance_supported: bool,
     /// Reused draw order for mesh pass (sort by shader / material to cut pipeline binds).
     mesh_draw_order: Vec<usize>,
     /// Per-frame lazy GPU mesh handles (index = snapshot draw index).
@@ -638,6 +639,8 @@ pub struct Renderer {
     mesh_occlusion: crate::occlusion::MeshOcclusion,
     /// `r_mesh_batch` — group pooled static draws for shared pipeline/texture binds.
     mesh_draw_batching: bool,
+    /// `r_mesh_batch_mdi` — multi-draw indirect for batch groups (needs draw-slot in WGSL).
+    mesh_batch_mdi: bool,
     frame_occlusion_queries: bool,
     /// Inspector asset inventory (textures / arrays / meshes). Materials rebuilt on query.
     asset_meta: HashMap<u64, AssetEntry>,
@@ -657,6 +660,8 @@ pub struct Renderer {
     // Scene-level lighting (set via set_scene_lighting, was per-material before).
     scene_sun_dir: [f32; 4],
     scene_ambient: [f32; 4],
+    /// Voxel distance fog (gamelib `set_scene_fog` → `LightsUniform._pad`).
+    scene_fog: [f32; 2],
     /// Derived in `set_scene_lighting` — shared by sky pass + gamelib skylight.
     scene_sky_day_k: f32,
     scene_sky_zenith: [f32; 3],
@@ -714,18 +719,31 @@ impl Renderer {
             ..Default::default()
         }))
         .expect("no adapter for wgpu");
-        let multi_draw_indirect_supported = adapter
+        let downlevel_indirect = adapter
             .get_downlevel_capabilities()
             .flags
             .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+        let adapter_features = adapter.features();
         let mut required_features = wgpu::Features::empty();
         required_features |= wgpu::Features::POLYGON_MODE_LINE;
+        if adapter_features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE) {
+            required_features |= wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        }
         let desc = wgpu::DeviceDescriptor {
             required_features,
             ..Default::default()
         };
         let (device, queue) =
             pollster::block_on(adapter.request_device(&desc)).expect("no device for wgpu");
+        let indirect_first_instance_supported =
+            device.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+        let multi_draw_indirect_supported =
+            downlevel_indirect && indirect_first_instance_supported;
+        if !indirect_first_instance_supported {
+            log::warn!(
+                "GPU/device missing INDIRECT_FIRST_INSTANCE — mesh MDI disabled (indirect first_instance would be ignored)"
+            );
+        }
 
         let globals_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("globals"),
@@ -888,6 +906,7 @@ impl Renderer {
         // Scene-level lighting defaults (no sun, no ambient — gamelib sets via set_scene_lighting).
         let scene_sun_dir: [f32; 4] = [0.0, 0.0, 1.0, 0.0];
         let scene_ambient: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+        let scene_fog: [f32; 2] = [0.0, 0.0];
         let scene_sky_day_k = 1.0;
         let scene_sky_zenith = [0.28, 0.55, 0.92];
         let cloud_speed = 0.04;
@@ -1962,12 +1981,14 @@ impl Renderer {
             mesh_uniform_scratch: Vec::new(),
             mesh_indirect_buf,
             multi_draw_indirect_supported,
+            indirect_first_instance_supported,
             mesh_draw_order: Vec::new(),
             mesh_pass_static_handles: Vec::new(),
             mesh_pass_skinned_handles: Vec::new(),
             mesh_indirect_cmd_scratch: Vec::new(),
             mesh_occlusion: crate::occlusion::MeshOcclusion::new(),
             mesh_draw_batching: true,
+            mesh_batch_mdi: true,
             frame_occlusion_queries: false,
             asset_meta: HashMap::new(),
             next_mesh_asset_id: 1,
@@ -1982,6 +2003,7 @@ impl Renderer {
             material_allocator,
             scene_sun_dir,
             scene_ambient,
+            scene_fog,
             scene_sky_day_k,
             scene_sky_zenith,
             cloud_speed,
@@ -2094,6 +2116,10 @@ impl Renderer {
         self.scene_ambient = ambient;
         let z = sun_dir[2].clamp(-1.0, 1.0);
         self.scene_sky_day_k = smoothstep_gpu(-0.18, 0.32, z);
+    }
+
+    pub fn set_scene_fog(&mut self, start: f32, falloff: f32) {
+        self.scene_fog = [start.max(0.0), falloff.max(1.0)];
     }
 
     /// Authoritative sky palette from gamelib (`daytime.rs`), overrides derived day_k/zenith.
@@ -2708,8 +2734,9 @@ impl Renderer {
         self.imgui_begin_frame(sw, sh);
 
         let encoder = self.encode_compose(
-            std::slice::from_ref(&snapshot),
+            std::slice::from_ref(snapshot),
             snapshot,
+            None,
             &hdr_view,
             format,
             Some(&surface_view),
@@ -2723,8 +2750,9 @@ impl Renderer {
     /// Multi-camera frame: cameras by `order` → HUD/tonemap (Bevy-style stack).
     pub fn render_to_surface_compose(
         &mut self,
-        cameras: &[&RenderSnapshot],
+        cameras: &[RenderSnapshot],
         post: &RenderSnapshot,
+        geometry: Option<&crate::snapshot::SceneGeometry>,
         shaders: &ShaderRegistry,
     ) -> Result<(), FrameError> {
         self.process_lum_readback();
@@ -2767,6 +2795,7 @@ impl Renderer {
         let encoder = self.encode_compose(
             cameras,
             post,
+            geometry,
             &hdr_view,
             format,
             Some(&surface_view),
@@ -2779,8 +2808,9 @@ impl Renderer {
 
     pub fn render_to_surface_compose_with_game_frame(
         &mut self,
-        cameras: &[&RenderSnapshot],
+        cameras: &[RenderSnapshot],
         post: &RenderSnapshot,
+        geometry: Option<&crate::snapshot::SceneGeometry>,
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
         shaders: &ShaderRegistry,
@@ -2831,6 +2861,7 @@ impl Renderer {
         let encoder = self.encode_compose(
             cameras,
             post,
+            geometry,
             &hdr_view,
             format,
             Some(&surface_view),
@@ -2842,8 +2873,9 @@ impl Renderer {
 
     fn encode_compose(
         &mut self,
-        cameras: &[&RenderSnapshot],
+        cameras: &[RenderSnapshot],
         post: &RenderSnapshot,
+        geometry: Option<&crate::snapshot::SceneGeometry>,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         surface_view: Option<&wgpu::TextureView>,
@@ -2870,12 +2902,12 @@ impl Renderer {
         self.frame_mesh_gpu_cached = 0;
         prof.graph_nodes.clear();
 
-        let primary = cameras.first().copied().unwrap_or(post);
+        let primary = cameras.first().unwrap_or(post);
         prof.sprite_instances = primary.instances.len() as u32;
         prof.hud_instances = post.hud.len() as u32;
         prof.mesh_draws = cameras
             .iter()
-            .map(|c| (c.mesh_draws.len() + c.skinned_mesh_draws.len()) as u32)
+            .map(|c| crate::draw_list::snapshot_mesh_draw_count(c, geometry))
             .sum();
         prof.terrain_draws = primary.terrain_splat_draws.len() as u32;
         prof.point_lights = primary.point_lights.len() as u32;
@@ -2906,10 +2938,11 @@ impl Renderer {
                 label: Some("frame encoder"),
             });
 
-        for cam in cameras.iter() {
+        for cam in cameras {
             let phase = Phase::Camera { pass_mask: cam.pass_mask };
             let mut frame_ctx = FrameCtx {
                 snapshot: cam,
+                geometry,
                 hdr_view: view,
                 hdr_format: self.hdr_format,
                 surface_format: format,
@@ -2931,6 +2964,7 @@ impl Renderer {
         {
             let mut frame_ctx = FrameCtx {
                 snapshot: post,
+                geometry,
                 hdr_view: view,
                 hdr_format: self.hdr_format,
                 surface_format: format,
@@ -2989,8 +3023,9 @@ impl Renderer {
         shaders: &ShaderRegistry,
     ) -> Result<(), FrameError> {
         self.render_to_surface_compose_with_game_frame(
-            std::slice::from_ref(&snapshot),
+            std::slice::from_ref(snapshot),
             snapshot,
+            None,
             game_frame_fn,
             game_frame_ctx,
             shaders,
@@ -4790,6 +4825,11 @@ impl Renderer {
         self.mesh_draw_batching = on;
     }
 
+    /// `r_mesh_batch_mdi` — use `multi_draw_indexed_indirect` for batch groups (shader must use `instance_index` slot).
+    pub fn set_mesh_batch_mdi(&mut self, on: bool) {
+        self.mesh_batch_mdi = on;
+    }
+
     /// Debug: show lightmap contribution only.
     pub fn set_lightmap_only(&mut self, on: bool) {
         self.lightmap_only = on;
@@ -5134,6 +5174,7 @@ impl Renderer {
 
         let mut frame_ctx = FrameCtx {
             snapshot,
+            geometry: None,
             hdr_view: view,
             hdr_format: self.hdr_format,
             surface_format: format,
