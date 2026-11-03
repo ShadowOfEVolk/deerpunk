@@ -7,7 +7,7 @@ use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::goldsrc_lightstyle::{LightstyleTable, MAX_LIGHTSTYLES};
 use deerpunk_engine_common::network::ClientSessionPhase;
 use deerpunk_engine_common::input::Input;
-use deerpunk_engine_common::material::ShaderPreprocessor;
+use deerpunk_engine_common::material::{screen_dither_preprocessor_defines, ShaderPreprocessor};
 use deerpunk_engine_common::network::sound_event::SoundPlayRpc;
 use deerpunk_engine_common::resource::mesh::Mesh;
 use deerpunk_engine_common::resource::{path_to_file_uri, ResourceManager, ShaderSource};
@@ -147,7 +147,7 @@ impl ClientEngine {
         let instance = wgpu::Instance::default();
         let surface = app.create_wgpu_surface(&instance);
 
-        let mut renderer = Renderer::new(load_shader_sources(resources), &instance, Some(&surface));
+        let mut renderer = Renderer::new(load_shader_sources(resources, 0), &instance, Some(&surface));
 
         let (w, h) = app.window_size();
         deerpunk_engine_common::frame::set_frame_size(w, h);
@@ -1262,7 +1262,11 @@ impl ClientEngine {
     }
 
     /// Re-read WGSL from gamedir: built-in passes (sky, postfx, …) + all [`ShaderRegistry`] variants.
-    pub fn reload_shaders(&mut self, resources: &ResourceManager) -> Result<(), String> {
+    pub fn reload_shaders(
+        &mut self,
+        resources: &ResourceManager,
+        screen_dither_mode: i32,
+    ) -> Result<(), String> {
         let shader_dir = std::env::var("SHADER_DIR").unwrap_or_else(|_| "shaders".to_string());
         let shader_dir = Path::new(&shader_dir);
 
@@ -1308,7 +1312,7 @@ impl ClientEngine {
         }
 
         self.material_store.bump_shader_generations();
-        let sources = load_shader_sources(resources);
+        let sources = load_shader_sources(resources, screen_dither_mode);
         self.renderer.reload_shader_sources(sources);
         log::info!("[shaders] hot-reload OK ({variant_count} material shader variants)");
         Ok(())
@@ -1343,7 +1347,12 @@ fn with_audio_assets<R>(ptr: *const ResourceManager, f: impl FnOnce(&ResourceMan
     }
 }
 
-fn load_wgsl_required(rm: &ResourceManager, shader_dir: &Path, name: &str) -> String {
+fn load_wgsl_required(
+    rm: &ResourceManager,
+    shader_dir: &Path,
+    name: &str,
+    defines: &[String],
+) -> String {
     let path = shader_dir.join(format!("{name}.wgsl"));
     let uri = path_to_file_uri(&path);
     let handle = rm.load::<ShaderSource>(&uri);
@@ -1360,33 +1369,35 @@ fn load_wgsl_required(rm: &ResourceManager, shader_dir: &Path, name: &str) -> St
     // handing the source to wgpu — wgpu would otherwise choke on the `#@` lines,
     // which are not valid WGSL. Files without decorators pass through unchanged.
     let base = path.parent();
-    match ShaderPreprocessor::process_at(&source, &[], base) {
+    match ShaderPreprocessor::process_at(&source, defines, base) {
         Ok(processed) => processed.wgsl,
         Err(err) => panic!("Failed to preprocess shader {uri}: {err}"),
     }
 }
 
 /// Load WGSL sources through [`ResourceManager`] (`file://…/*.wgsl`).
-fn load_shader_sources(rm: &ResourceManager) -> ShaderSources {
+fn load_shader_sources(rm: &ResourceManager, screen_dither_mode: i32) -> ShaderSources {
     let shader_dir = std::env::var("SHADER_DIR").unwrap_or_else(|_| "shaders".to_string());
     let shader_dir = Path::new(&shader_dir);
+    let dither_defines = screen_dither_preprocessor_defines(screen_dither_mode);
+    let no_defines: &[String] = &[];
 
-    let ui = load_wgsl_required(rm, shader_dir, "ui");
+    let ui = load_wgsl_required(rm, shader_dir, "ui", no_defines);
 
     ShaderSources {
-        sprite: load_wgsl_required(rm, shader_dir, "sprite"),
-        mesh_skinned: load_wgsl_required(rm, shader_dir, "mesh_skinned"),
-        terrain_splat: load_wgsl_required(rm, shader_dir, "terrain_splat"),
-        sky: load_wgsl_required(rm, shader_dir, "sky"),
-        cloud: load_wgsl_required(rm, shader_dir, "cloud"),
-        debug: load_wgsl_required(rm, shader_dir, "debug"),
-        tonemap: load_wgsl_required(rm, shader_dir, "tonemap"),
-        luminance: load_wgsl_required(rm, shader_dir, "luminance"),
-        storm: load_wgsl_required(rm, shader_dir, "storm"),
-        bloom_threshold: load_wgsl_required(rm, shader_dir, "bloom_threshold"),
-        bloom_blur: load_wgsl_required(rm, shader_dir, "bloom_blur"),
-        bloom_composite: load_wgsl_required(rm, shader_dir, "bloom_composite"),
-        grain: load_wgsl_required(rm, shader_dir, "grain"),
+        sprite: load_wgsl_required(rm, shader_dir, "sprite", no_defines),
+        mesh_skinned: load_wgsl_required(rm, shader_dir, "mesh_skinned", no_defines),
+        terrain_splat: load_wgsl_required(rm, shader_dir, "terrain_splat", no_defines),
+        sky: load_wgsl_required(rm, shader_dir, "sky", no_defines),
+        cloud: load_wgsl_required(rm, shader_dir, "cloud", &dither_defines),
+        debug: load_wgsl_required(rm, shader_dir, "debug", no_defines),
+        tonemap: load_wgsl_required(rm, shader_dir, "tonemap", no_defines),
+        luminance: load_wgsl_required(rm, shader_dir, "luminance", no_defines),
+        storm: load_wgsl_required(rm, shader_dir, "storm", no_defines),
+        bloom_threshold: load_wgsl_required(rm, shader_dir, "bloom_threshold", no_defines),
+        bloom_blur: load_wgsl_required(rm, shader_dir, "bloom_blur", no_defines),
+        bloom_composite: load_wgsl_required(rm, shader_dir, "bloom_composite", no_defines),
+        grain: load_wgsl_required(rm, shader_dir, "grain", no_defines),
         ui,
     }
 }

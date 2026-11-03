@@ -116,6 +116,11 @@ pub struct RapierPhysicsBackend {
     _expr_collider_rm: Option<CString>,
     _expr_char_set: Option<CString>,
     _expr_char_rm: Option<CString>,
+    /// Server ECS world (for Flecs sync systems invoked from prepare/writeback).
+    pub(crate) world_view: *const crate::world::World,
+    sys_sync_in: u64,
+    sys_writeback_characters: u64,
+    sys_writeback_dynamics: u64,
     attached: bool,
     /// Contact skin (`target_distance`) for swept capsule casts. Smaller for
     /// voxel (1-unit) scale, larger for HL scale. Set via cvar `ph_capsule_skin`.
@@ -142,6 +147,10 @@ impl RapierPhysicsBackend {
             _expr_collider_rm: None,
             _expr_char_set: None,
             _expr_char_rm: None,
+            world_view: std::ptr::null(),
+            sys_sync_in: 0,
+            sys_writeback_characters: 0,
+            sys_writeback_dynamics: 0,
             attached: false,
             capsule_skin: 0.5,
         }
@@ -432,6 +441,133 @@ impl RapierPhysicsBackend {
             &[],
             &mut events,
         );
+    }
+
+    /// Per-entity sync (Flecs system `PhysicsSyncIn`).
+    pub(crate) fn integrate_character(&mut self, world: &World, entity: u64, dt: f32) {
+        let Some(entry) = self.characters.get(&entity) else {
+            return;
+        };
+        let cc_id = world.component_init::<CharacterController>();
+        let t_id = world.component_init::<TransformComponent>();
+        let Some(cc) = world.get::<CharacterController>(entity, cc_id) else {
+            return;
+        };
+        let Some(t) = world.get::<TransformComponent>(entity, t_id) else {
+            return;
+        };
+        let body = entry.body;
+        let shape = entry.shape.clone();
+        let center_offset = entry.center_offset.max(cc.center_offset());
+        let controller = Self::kcc_for(entry);
+        let noclip = cc.noclip();
+        let manual = cc.manual_move();
+
+        let Some(rb) = self.world.inner.bodies.get_mut(body) else {
+            return;
+        };
+        let feet = t.position;
+        let rot = if manual { t.rotation } else { Quat::IDENTITY };
+        rb.set_position(Pose::from_parts(feet, rot), true);
+
+        if manual {
+            if let Some(entry) = self.characters.get_mut(&entity) {
+                entry.grounded = cc.grounded != 0;
+                entry.center_offset = center_offset;
+                entry.step_height = cc.step_height.max(0.0);
+                entry.max_slope_deg = cc.max_slope_deg.max(1.0);
+            }
+            return;
+        }
+
+        let desired = Vec3::from_array(cc.velocity) * dt;
+        let (new_feet, grounded) = if noclip {
+            (feet + desired, false)
+        } else {
+            let mut center = feet + Vec3::new(0.0, 0.0, center_offset);
+            let filter = player_query_filter(Some(body));
+            let queries = self.world.inner.query_pipeline_with_filter(filter);
+            let movement = controller.move_shape(
+                dt,
+                &queries,
+                shape.as_ref(),
+                &Pose::from_parts(center, Quat::IDENTITY),
+                desired,
+                |_| {},
+            );
+            center += movement.translation;
+            let grounded = movement.grounded && cc.velocity[2] <= 0.0;
+            (center - Vec3::new(0.0, 0.0, center_offset), grounded)
+        };
+
+        if let Some(rb) = self.world.inner.bodies.get_mut(body) {
+            rb.set_position(Pose::from_parts(new_feet, Quat::IDENTITY), true);
+        }
+        if let Some(entry) = self.characters.get_mut(&entity) {
+            entry.grounded = grounded;
+            entry.center_offset = center_offset;
+            entry.step_height = cc.step_height.max(0.0);
+            entry.max_slope_deg = cc.max_slope_deg.max(1.0);
+        }
+    }
+
+    pub(crate) fn writeback_character(&mut self, world: &World, entity: u64) {
+        let Some(entry) = self.characters.get(&entity) else {
+            return;
+        };
+        let cc_id = world.component_init::<CharacterController>();
+        let t_id = world.component_init::<TransformComponent>();
+        let ptr = world.get_raw(entity, cc_id);
+        let manual = if !ptr.is_null() {
+            unsafe { (*(ptr as *const CharacterController)).manual_move() }
+        } else {
+            false
+        };
+        if manual {
+            return;
+        }
+        let Some(rb) = self.world.inner.bodies.get(entry.body) else {
+            return;
+        };
+        let feet = rb.translation();
+        if let Some(mut t) = world.get::<TransformComponent>(entity, t_id) {
+            t.position = feet;
+            world.set(entity, t_id, t);
+        }
+        if !ptr.is_null() {
+            let cc = unsafe { &mut *(ptr as *mut CharacterController) };
+            cc.grounded = u32::from(entry.grounded);
+            if entry.grounded && !cc.noclip() && cc.velocity[2] < 0.0 {
+                cc.velocity[2] = cc.velocity[2].clamp(-80.0, 0.0);
+            }
+        }
+    }
+
+    pub(crate) fn writeback_dynamic(&mut self, world: &World, entity: u64) {
+        if self.characters.contains_key(&entity) || self.voxel_entities.contains_key(&entity) {
+            return;
+        }
+        let Some(&handle) = self.world.body_map.get(&entity) else {
+            return;
+        };
+        let Some(rb) = self.world.inner.bodies.get(handle) else {
+            return;
+        };
+        if !rb.is_dynamic() {
+            return;
+        }
+        let t_id = world.component_init::<TransformComponent>();
+        if let Some(mut t) = world.get::<TransformComponent>(entity, t_id) {
+            t.position = rb.translation();
+            t.rotation = *rb.rotation();
+            world.set(entity, t_id, t);
+        }
+    }
+
+    pub(crate) fn set_sync_system_ids(&mut self, sync_in: u64, writeback_characters: u64, writeback_dynamics: u64) {
+        self.sys_sync_in = sync_in;
+        self.sys_writeback_characters = writeback_characters;
+        self.sys_writeback_dynamics = writeback_dynamics;
     }
 
     /// Sweep all registered voxel volumes with a ray; return the closest hit.
@@ -783,83 +919,9 @@ impl PhysicsBackend for RapierPhysicsBackend {
     }
 
     fn prepare(&mut self, world: &World, dt: f32) {
-        // Refresh BVH so OnSet colliders are visible to queries this tick.
         self.sync_query_bvh();
-
-        let cc_id = world.component_init::<CharacterController>();
-        let t_id = world.component_init::<TransformComponent>();
-        let entities: Vec<u64> = self.characters.keys().copied().collect();
-        let dt = dt.max(0.0);
-
-        for entity in entities {
-            let Some(cc) = world.get::<CharacterController>(entity, cc_id) else {
-                continue;
-            };
-            let Some(t) = world.get::<TransformComponent>(entity, t_id) else {
-                continue;
-            };
-            let Some(entry) = self.characters.get(&entity) else {
-                continue;
-            };
-            let body = entry.body;
-            let shape = entry.shape.clone();
-            let center_offset = entry.center_offset.max(cc.center_offset());
-            let controller = Self::kcc_for(entry);
-            let noclip = cc.noclip();
-            let manual = cc.manual_move();
-
-            let Some(rb) = self.world.inner.bodies.get_mut(body) else {
-                continue;
-            };
-            // Body / ECS = feet. Teleport if ECS moved far (spawn / noclip / manual).
-            let mut feet = rb.translation();
-            if (feet - t.position).length_squared() > 1.0 || manual {
-                feet = t.position;
-            }
-            rb.set_position(Pose::from_parts(feet, Quat::IDENTITY), true);
-
-            // Gamelib owns slide integration — keep collider in sync, skip KCC.
-            if manual {
-                if let Some(entry) = self.characters.get_mut(&entity) {
-                    entry.grounded = cc.grounded != 0;
-                    entry.center_offset = center_offset;
-                    entry.step_height = cc.step_height.max(0.0);
-                    entry.max_slope_deg = cc.max_slope_deg.max(1.0);
-                }
-                continue;
-            }
-
-            let desired = Vec3::from_array(cc.velocity) * dt;
-            let (new_feet, grounded) = if noclip {
-                (feet + desired, false)
-            } else {
-                // Rapier docs: move_shape(dt, queries, shape, character_pos, desired)
-                // character_pos = capsule *center* (not feet).
-                let mut center = feet + Vec3::new(0.0, 0.0, center_offset);
-                let filter = player_query_filter(Some(body));
-                let queries = self.world.inner.query_pipeline_with_filter(filter);
-                let movement = controller.move_shape(
-                    dt,
-                    &queries,
-                    shape.as_ref(),
-                    &Pose::from_parts(center, Quat::IDENTITY),
-                    desired,
-                    |_| {},
-                );
-                center += movement.translation;
-                let grounded = movement.grounded && cc.velocity[2] <= 0.0;
-                (center - Vec3::new(0.0, 0.0, center_offset), grounded)
-            };
-
-            if let Some(rb) = self.world.inner.bodies.get_mut(body) {
-                rb.set_position(Pose::from_parts(new_feet, Quat::IDENTITY), true);
-            }
-            if let Some(entry) = self.characters.get_mut(&entity) {
-                entry.grounded = grounded;
-                entry.center_offset = center_offset;
-                entry.step_height = cc.step_height.max(0.0);
-                entry.max_slope_deg = cc.max_slope_deg.max(1.0);
-            }
+        if self.sys_sync_in != 0 {
+            world.run_system(self.sys_sync_in, dt.max(0.0));
         }
     }
 
@@ -868,56 +930,11 @@ impl PhysicsBackend for RapierPhysicsBackend {
     }
 
     fn writeback(&mut self, world: &World) {
-        let cc_id = world.component_init::<CharacterController>();
-        let t_id = world.component_init::<TransformComponent>();
-
-        for (&entity, entry) in &self.characters {
-            let Some(rb) = self.world.inner.bodies.get(entry.body) else {
-                continue;
-            };
-            let ptr = world.get_raw(entity, cc_id);
-            let manual = if !ptr.is_null() {
-                unsafe { (*(ptr as *const CharacterController)).manual_move() }
-            } else {
-                false
-            };
-            // Manual: gamelib already wrote Transform + grounded; don't stomp.
-            if manual {
-                continue;
-            }
-            // A: body = feet = ECS Transform.
-            let feet = rb.translation();
-            if let Some(mut t) = world.get::<TransformComponent>(entity, t_id) {
-                t.position = feet;
-                world.set(entity, t_id, t);
-            }
-            // Patch in place — no world.set (keeps OnAdd-only create path clean).
-            if !ptr.is_null() {
-                let cc = unsafe { &mut *(ptr as *mut CharacterController) };
-                cc.grounded = u32::from(entry.grounded);
-                // Only kill downward stick/fall — never clamp away jump (+Z).
-                if entry.grounded && !cc.noclip() && cc.velocity[2] < 0.0 {
-                    cc.velocity[2] = cc.velocity[2].clamp(-80.0, 0.0);
-                }
-            }
+        if self.sys_writeback_characters != 0 {
+            world.run_system(self.sys_writeback_characters, 0.0);
         }
-
-        // Rigid bodies (non-character) → Transform.
-        for (&entity, &handle) in &self.world.body_map {
-            if self.characters.contains_key(&entity) {
-                continue;
-            }
-            let Some(rb) = self.world.inner.bodies.get(handle) else {
-                continue;
-            };
-            if !rb.is_dynamic() {
-                continue;
-            }
-            if let Some(mut t) = world.get::<TransformComponent>(entity, t_id) {
-                t.position = rb.translation();
-                t.rotation = *rb.rotation();
-                world.set(entity, t_id, t);
-            }
+        if self.sys_writeback_dynamics != 0 {
+            world.run_system(self.sys_writeback_dynamics, 0.0);
         }
     }
 
@@ -926,6 +943,7 @@ impl PhysicsBackend for RapierPhysicsBackend {
             return;
         }
         self.flecs = world.as_ptr();
+        self.world_view = world as *const World;
         self.collider_id = world.component_init::<Collider>();
         self.char_id = world.component_init::<CharacterController>();
         self.transform_id = world.component_init::<TransformComponent>();
@@ -982,8 +1000,9 @@ impl PhysicsBackend for RapierPhysicsBackend {
         self._expr_char_set = Some(expr_char_set);
         self._expr_char_rm = Some(expr_char_rm);
         self.attached = true;
+        super::ecs_sync::register_sync_systems(self, world);
         log::info!(
-            "[physics] observers: Collider(OnSet) + CharacterController(OnAdd); step→prepare→writeback"
+            "[physics] Collider/CharacterController observers + PhysicsSyncIn/Writeback Flecs systems; prepare→step→writeback"
         );
     }
 

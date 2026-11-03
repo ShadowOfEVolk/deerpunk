@@ -13,6 +13,7 @@ pub mod component_inspect;
 pub mod layout_meta;
 pub mod prefab;
 pub mod prefab_layout_apply;
+pub mod property;
 pub mod scene;
 pub mod wad {
     pub use deerpunk_engine_resource::wad::*;
@@ -55,6 +56,12 @@ pub use layout_meta::{
     ComponentRole,
     LayoutDescribe,
     LayoutMeta, LayoutMetaRegistry, WireKind,
+};
+pub use property::{
+    read as property_read, read_by_path as property_read_by_path, snapshot_component_save,
+    write as property_write, write_by_path as property_write_by_path, PropertyChannel,
+    PropertyDescriptor, PropertyError, PropertyId, PropertyRegistry, PropertyStorage,
+    PropertyType, PropertyValue, sync_properties_from_layout, register_engine_layout_properties,
 };
 pub use material::{
     DrawMaterial, GpuMaterialIndex, MaterialAsset, MaterialHandle, PropertyValueSer,

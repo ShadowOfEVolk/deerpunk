@@ -246,7 +246,13 @@ impl CmdSystem {
                 log::warn!("[reload_shaders] no resources");
                 return;
             };
-            match client.reload_shaders(resources) {
+            let dither = ctx
+                .cmd
+                .cvar()
+                .get_string("r_dither")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0);
+            match client.reload_shaders(resources, dither) {
                 Ok(()) => log::info!("[reload_shaders] OK"),
                 Err(e) => log::error!("[reload_shaders] {e}"),
             }

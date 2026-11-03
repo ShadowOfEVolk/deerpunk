@@ -2,6 +2,7 @@ pub mod abi;
 pub mod backend;
 pub mod character;
 pub mod collider;
+pub mod ecs_sync;
 pub mod rapier_backend;
 pub mod run;
 pub mod voxel_query;

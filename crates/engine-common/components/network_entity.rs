@@ -1,6 +1,6 @@
 //! Marks an entity for prefab-driven network replication.
 
-use crate::network::field_path::NetFieldId;
+use crate::network::field_path::PropertyId;
 
 pub const NET_PREFAB_MAX: usize = 64;
 pub const NET_FIELDS_MAX: usize = 16;
@@ -21,8 +21,8 @@ pub struct NetworkEntity {
     pub hot_count: u8,
     pub cold_count: u8,
     pub flags: u8,
-    pub hot: [u16; NET_FIELDS_MAX],
-    pub cold: [u16; NET_FIELDS_MAX],
+    pub hot: [u32; NET_FIELDS_MAX],
+    pub cold: [u32; NET_FIELDS_MAX],
 }
 
 impl Default for NetworkEntity {
@@ -42,14 +42,14 @@ impl Default for NetworkEntity {
 }
 
 impl NetworkEntity {
-    pub fn from_paths(hot: &[NetFieldId], cold: &[NetFieldId]) -> Self {
+    pub fn from_paths(hot: &[PropertyId], cold: &[PropertyId]) -> Self {
         let mut e = Self::default();
         e.set_hot(hot);
         e.set_cold(cold);
         e
     }
 
-    pub fn from_prefab_paths(hot: &[NetFieldId], cold: &[NetFieldId], dormant: bool) -> Self {
+    pub fn from_prefab_paths(hot: &[PropertyId], cold: &[PropertyId], dormant: bool) -> Self {
         let mut e = Self::from_paths(hot, cold);
         if dormant {
             e.flags |= NET_FLAG_DORMANT;
@@ -77,39 +77,39 @@ impl NetworkEntity {
         std::str::from_utf8(&self.prefab[..n]).unwrap_or("")
     }
 
-    pub fn set_hot(&mut self, paths: &[NetFieldId]) {
+    pub fn set_hot(&mut self, paths: &[PropertyId]) {
         let n = paths.len().min(NET_FIELDS_MAX);
         self.hot_count = n as u8;
         self.hot = [0; NET_FIELDS_MAX];
         for (i, p) in paths.iter().take(n).enumerate() {
-            self.hot[i] = p.as_u16();
+            self.hot[i] = p.as_u32();
         }
     }
 
-    pub fn set_cold(&mut self, paths: &[NetFieldId]) {
+    pub fn set_cold(&mut self, paths: &[PropertyId]) {
         let n = paths.len().min(NET_FIELDS_MAX);
         self.cold_count = n as u8;
         self.cold = [0; NET_FIELDS_MAX];
         for (i, p) in paths.iter().take(n).enumerate() {
-            self.cold[i] = p.as_u16();
+            self.cold[i] = p.as_u32();
         }
     }
 
-    pub fn hot_paths(&self) -> impl Iterator<Item = NetFieldId> + '_ {
+    pub fn hot_paths(&self) -> impl Iterator<Item = PropertyId> + '_ {
         self.hot[..self.hot_count as usize]
             .iter()
-            .filter_map(|id| NetFieldId::from_u16(*id))
+            .filter_map(|id| PropertyId::decode(*id))
     }
 
-    pub fn cold_paths(&self) -> impl Iterator<Item = NetFieldId> + '_ {
+    pub fn cold_paths(&self) -> impl Iterator<Item = PropertyId> + '_ {
         self.cold[..self.cold_count as usize]
             .iter()
-            .filter_map(|id| NetFieldId::from_u16(*id))
+            .filter_map(|id| PropertyId::decode(*id))
     }
 
     /// Component keys allowed on the client for this entity.
     pub fn client_component_keys(&self) -> Vec<String> {
-        let reg = crate::network::net_field::NetFieldRegistry::global()
+        let reg = crate::property::PropertyRegistry::global()
             .lock()
             .expect("net field registry lock poisoned");
         let mut keys = vec![

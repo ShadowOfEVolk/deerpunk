@@ -1,7 +1,7 @@
 //! Prefab-driven replication wire packets (SVC payloads without command byte).
 
-use super::field_path::{Cursor, FieldValue, NetFieldId};
-use super::net_field::NetFieldKind;
+use super::field_path::{Cursor, FieldValue, PropertyId};
+use super::net_field::PropertyStorage;
 use super::prefab_net_registry::PrefabNetId;
 use super::protocol::SVC;
 use crate::scene::EntityDef;
@@ -12,16 +12,16 @@ pub struct SpawnPrefabRpc {
     pub net_id: u16,
     pub prefab: String,
     /// Cold overrides / markers (whole components as PrefabDefault, or WorldspawnMap).
-    pub cold: Vec<(NetFieldId, FieldValue)>,
+    pub cold: Vec<(PropertyId, FieldValue)>,
     /// Hot snapshot so the entity appears in the correct pose immediately.
-    pub hot: Vec<(NetFieldId, FieldValue)>,
+    pub hot: Vec<(PropertyId, FieldValue)>,
 }
 
 /// Hot-field delta for an existing NetworkEntity.
 #[derive(Clone, Debug)]
 pub struct NetDeltaRpc {
     pub net_id: u16,
-    pub fields: Vec<(NetFieldId, FieldValue)>,
+    pub fields: Vec<(PropertyId, FieldValue)>,
 }
 
 /// Destroy a networked entity on the client.
@@ -39,15 +39,15 @@ pub struct PrefabDefRpc {
 }
 
 /// `Mesh3D.uri` uses a length tag: `0` = prefab default, `1..255` = UTF-8 URI bytes.
-fn encode_field(path: NetFieldId, value: &FieldValue, out: &mut Vec<u8>) {
-    use super::net_field::NetFieldRegistry;
-    let reg = NetFieldRegistry::global()
+fn encode_field(path: PropertyId, value: &FieldValue, out: &mut Vec<u8>) {
+    use crate::property::PropertyRegistry;
+    let reg = PropertyRegistry::global()
         .lock()
         .expect("net field registry lock poisoned");
     let tagged_str = reg.get(path).map(|d| {
         matches!(
-            d.kind,
-            NetFieldKind::Mesh3dUri | NetFieldKind::DrawMaterialUri | NetFieldKind::MapKvStudioModel
+            d.storage,
+            PropertyStorage::Mesh3dUri | PropertyStorage::DrawMaterialUri | PropertyStorage::MapKvStudioModel
         )
     });
     if tagged_str == Some(true) {
@@ -66,19 +66,19 @@ fn encode_field(path: NetFieldId, value: &FieldValue, out: &mut Vec<u8>) {
     value.encode(out);
 }
 
-pub(crate) fn encode_fields(out: &mut Vec<u8>, fields: &[(NetFieldId, FieldValue)]) {
+pub(crate) fn encode_fields(out: &mut Vec<u8>, fields: &[(PropertyId, FieldValue)]) {
     out.push(fields.len().min(255) as u8);
     for (path, value) in fields.iter().take(255) {
-        out.extend_from_slice(&path.as_u16().to_le_bytes());
+        path.encode_le(out);
         encode_field(*path, value, out);
     }
 }
 
-pub(crate) fn decode_fields(c: &mut Cursor<'_>) -> Option<Vec<(NetFieldId, FieldValue)>> {
+pub(crate) fn decode_fields(c: &mut Cursor<'_>) -> Option<Vec<(PropertyId, FieldValue)>> {
     let count = c.u8()? as usize;
     let mut fields = Vec::with_capacity(count.min(32));
     for _ in 0..count {
-        let path = NetFieldId::from_u16(c.u16()?)?;
+        let path = PropertyId::decode(c.u32()?)?;
         let value = FieldValue::decode(path, c)?;
         fields.push((path, value));
     }
@@ -213,7 +213,7 @@ mod tests {
             generation: 2,
             prefab_id: PrefabNetId(3),
             cold: vec![(
-                NetFieldId::TRANSFORM_POSITION,
+                PropertyId::TRANSFORM_POSITION,
                 FieldValue::Vec3([0.0, 1.0, 0.0]),
             )],
             hot: vec![],
@@ -232,11 +232,11 @@ mod tests {
             net_id: 7,
             prefab: "player".into(),
             cold: vec![
-                (NetFieldId::CAMERA_COMPONENT, FieldValue::PrefabDefault),
-                (NetFieldId::CHARACTER_CONTROLLER, FieldValue::PrefabDefault),
+                (PropertyId::CAMERA_COMPONENT, FieldValue::PrefabDefault),
+                (PropertyId::CHARACTER_CONTROLLER, FieldValue::PrefabDefault),
             ],
             hot: vec![(
-                NetFieldId::TRANSFORM_POSITION,
+                PropertyId::TRANSFORM_POSITION,
                 FieldValue::Vec3([1.0, 2.0, 3.0]),
             )],
         };
@@ -256,7 +256,7 @@ mod tests {
         let d = NetDeltaRpc {
             net_id: 3,
             fields: vec![(
-                NetFieldId::TRANSFORM_ROTATION,
+                PropertyId::TRANSFORM_ROTATION,
                 FieldValue::Quat([0.0, 0.0, 0.0, 1.0]),
             )],
         };

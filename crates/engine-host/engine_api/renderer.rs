@@ -161,7 +161,12 @@ impl crate::Host {
         let Some(ce) = self.client_engine.as_mut() else {
             return -1;
         };
-        match ce.reload_shaders(&self.resources) {
+        let dither = self
+            .cvar
+            .get_string("r_dither")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(0);
+        match ce.reload_shaders(&self.resources, dither) {
             Ok(()) => 0,
             Err(e) => {
                 log::error!("[renderer] reload_shaders: {e}");

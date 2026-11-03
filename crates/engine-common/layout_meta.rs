@@ -63,6 +63,10 @@ bitflags::bitflags! {
         const INSPECT = 1 << 1;
         const REPLICATE_HOT = 1 << 2;
         const REPLICATE_COLD = 1 << 3;
+        /// Persist with world / entity save (layout-backed snapshot).
+        const SAVE = 1 << 4;
+        /// Console, scripts, cheats (future).
+        const SCRIPT = 1 << 5;
     }
 }
 

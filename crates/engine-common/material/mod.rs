@@ -21,7 +21,7 @@ pub mod pipeline_desc;
 pub use shader_meta::{
     PropDefault, PropertyKind, RenderPass, ShaderMeta, ShaderPropertyMeta,
 };
-pub use preprocessor::{ShaderPreprocessor, ShaderError};
+pub use preprocessor::{ShaderPreprocessor, ShaderError, screen_dither_preprocessor_defines};
 pub use asset::{MaterialAsset, PropertyValueSer};
 pub use handle::{GpuMaterialIndex, MaterialHandle, ShaderId, SHADER_ID_NONE, MATERIAL_HANDLE_NONE};
 pub use component::DrawMaterial;

@@ -67,6 +67,17 @@ impl std::fmt::Display for ShaderError {
 
 impl std::error::Error for ShaderError {}
 
+/// Screen dither variant for [`internal://shaders/inc/dither.wgsl`].
+///
+/// `mode` matches game `r_dither`: 0 = Bayer, 1 = blue interleaved, 2 = white hash.
+pub fn screen_dither_preprocessor_defines(mode: i32) -> Vec<String> {
+    match mode {
+        1 => vec!["DEERPUNK_DITHER_BLUE".to_string()],
+        2 => vec!["DEERPUNK_DITHER_WHITE".to_string()],
+        _ => Vec::new(),
+    }
+}
+
 /// Result of preprocessing: metadata + cleaned WGSL.
 pub struct PreprocessedShader {
     pub meta: ShaderMeta,

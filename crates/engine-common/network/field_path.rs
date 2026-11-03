@@ -1,6 +1,9 @@
 //! Wire values and decode cursor for network replication.
 
-pub use super::net_field::{FieldPathId, NetFieldId};
+pub use crate::property::PropertyId;
+
+pub type NetFieldId = PropertyId;
+pub type FieldPathId = PropertyId;
 
 /// Wire value for one replicated field.
 #[derive(Clone, Debug)]
@@ -38,15 +41,15 @@ impl FieldValue {
         }
     }
 
-    pub fn decode(field: NetFieldId, data: &mut Cursor<'_>) -> Option<Self> {
-        use super::net_field::{NetFieldKind, NetFieldRegistry};
-        let reg = NetFieldRegistry::global()
+    pub fn decode(field: PropertyId, data: &mut Cursor<'_>) -> Option<Self> {
+        use crate::property::{PropertyRegistry, PropertyStorage};
+        let reg = PropertyRegistry::global()
             .lock()
             .ok()?;
         let desc = reg.get(field)?;
-        match &desc.kind {
-            NetFieldKind::WholeComponent { .. } => Some(Self::PrefabDefault),
-            NetFieldKind::Mesh3dUri | NetFieldKind::DrawMaterialUri | NetFieldKind::MapKvStudioModel => {
+        match &desc.storage {
+            PropertyStorage::WholeComponent { .. } => Some(Self::PrefabDefault),
+            PropertyStorage::Mesh3dUri | PropertyStorage::DrawMaterialUri | PropertyStorage::MapKvStudioModel => {
                 let tag = data.u8()?;
                 if tag == 0 {
                     Some(Self::PrefabDefault)
@@ -55,8 +58,8 @@ impl FieldValue {
                     Some(Self::Str(String::from_utf8_lossy(bytes).into_owned()))
                 }
             }
-            NetFieldKind::WorldspawnMap => Some(Self::Str(data.string()?)),
-            NetFieldKind::Memory { wire, .. } => decode_wire(*wire, data),
+            PropertyStorage::WorldspawnMap => Some(Self::Str(data.string()?)),
+            PropertyStorage::Memory { wire, .. } => decode_wire(*wire, data),
         }
     }
 }
@@ -97,6 +100,11 @@ impl<'a> Cursor<'a> {
     pub fn u16(&mut self) -> Option<u16> {
         let s = self.take(2)?;
         Some(u16::from_le_bytes([s[0], s[1]]))
+    }
+
+    pub fn u32(&mut self) -> Option<u32> {
+        let s = self.take(4)?;
+        Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
     }
 
     pub fn f32(&mut self) -> Option<f32> {

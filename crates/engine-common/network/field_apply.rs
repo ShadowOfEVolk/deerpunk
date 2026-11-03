@@ -1,4 +1,4 @@
-//! Read/write replicated fields via [`NetFieldRegistry`] + DPK1 layout metadata.
+//! Read/write replicated fields via [`PropertyRegistry`] + DPK1 layout metadata.
 
 use std::path::Path;
 
@@ -13,31 +13,31 @@ use crate::components::{
 };
 use crate::layout_meta::WireKind;
 use crate::material::DrawMaterial;
-use crate::network::field_path::{FieldValue, NetFieldId};
-use crate::network::net_field::{NetFieldKind, NetFieldRegistry};
+use crate::network::field_path::{FieldValue, PropertyId};
+use crate::property::{PropertyStorage, PropertyRegistry};
 use crate::resource::{MeshRegistry, ResourceManager};
 use crate::world::{EntityId, World};
 
 pub const MAPKV_STUDIO_MODEL_KEY: &str = "model";
 
-pub fn read_field(world: &World, entity: EntityId, field: NetFieldId) -> Option<FieldValue> {
-    let reg = NetFieldRegistry::global()
+pub fn read_field(world: &World, entity: EntityId, field: PropertyId) -> Option<FieldValue> {
+    let reg = PropertyRegistry::global()
         .lock()
         .expect("net field registry lock poisoned");
     let desc = reg.get(field)?;
-    match &desc.kind {
-        NetFieldKind::WholeComponent { .. } => Some(FieldValue::PrefabDefault),
-        NetFieldKind::Mesh3dUri => read_mesh3d_uri(world, entity)
+    match &desc.storage {
+        PropertyStorage::WholeComponent { .. } => Some(FieldValue::PrefabDefault),
+        PropertyStorage::Mesh3dUri => read_mesh3d_uri(world, entity)
             .map(FieldValue::Str)
             .or(Some(FieldValue::PrefabDefault)),
-        NetFieldKind::DrawMaterialUri => read_draw_material_uri(world, entity)
+        PropertyStorage::DrawMaterialUri => read_draw_material_uri(world, entity)
             .map(FieldValue::Str)
             .or(Some(FieldValue::PrefabDefault)),
-        NetFieldKind::MapKvStudioModel => read_mapkv_studio_model(world, entity)
+        PropertyStorage::MapKvStudioModel => read_mapkv_studio_model(world, entity)
             .map(FieldValue::Str)
             .or(Some(FieldValue::PrefabDefault)),
-        NetFieldKind::WorldspawnMap => read_worldspawn_map(world, entity),
-        NetFieldKind::Memory {
+        PropertyStorage::WorldspawnMap => read_worldspawn_map(world, entity),
+        PropertyStorage::Memory {
             offset,
             wire,
             component,
@@ -53,7 +53,7 @@ pub fn read_field(world: &World, entity: EntityId, field: NetFieldId) -> Option<
     }
 }
 
-pub fn cold_field_value(world: &World, entity: EntityId, field: NetFieldId) -> FieldValue {
+pub fn cold_field_value(world: &World, entity: EntityId, field: PropertyId) -> FieldValue {
     read_field(world, entity, field).unwrap_or(FieldValue::PrefabDefault)
 }
 
@@ -63,21 +63,21 @@ pub fn stream_in_field_snapshot(
     world: &World,
     entity: EntityId,
     net: &NetworkEntity,
-) -> (Vec<(NetFieldId, FieldValue)>, Vec<(NetFieldId, FieldValue)>) {
-    let hot_paths: HashSet<u16> = net.hot_paths().map(|p| p.as_u16()).collect();
+) -> (Vec<(PropertyId, FieldValue)>, Vec<(PropertyId, FieldValue)>) {
+    let hot_paths: HashSet<u32> = net.hot_paths().map(|p| p.as_u32()).collect();
 
-    let mut cold: Vec<(NetFieldId, FieldValue)> = net
+    let mut cold: Vec<(PropertyId, FieldValue)> = net
         .cold_paths()
         .map(|p| (p, cold_field_value(world, entity, p)))
         .collect();
-    let mut cold_paths: HashSet<u16> = cold.iter().map(|(p, _)| p.as_u16()).collect();
+    let mut cold_paths: HashSet<u32> = cold.iter().map(|(p, _)| p.as_u32()).collect();
 
     for path in [
-        NetFieldId::TRANSFORM_POSITION,
-        NetFieldId::TRANSFORM_ROTATION,
-        NetFieldId::TRANSFORM_SCALE,
+        PropertyId::TRANSFORM_POSITION,
+        PropertyId::TRANSFORM_ROTATION,
+        PropertyId::TRANSFORM_SCALE,
     ] {
-        let id = path.as_u16();
+        let id = path.as_u32();
         if hot_paths.contains(&id) || cold_paths.contains(&id) {
             continue;
         }
@@ -89,8 +89,8 @@ pub fn stream_in_field_snapshot(
 
     let studio_id = world.component_init::<StudioModel>();
     if world.has(entity, studio_id) {
-        let path = NetFieldId::MAPKV_STUDIO_MODEL;
-        let id = path.as_u16();
+        let path = PropertyId::MAPKV_STUDIO_MODEL;
+        let id = path.as_u32();
         if !hot_paths.contains(&id) && !cold_paths.contains(&id) {
             if let Some(uri) = read_mapkv_studio_model(world, entity) {
                 if !uri.is_empty() {
@@ -101,8 +101,8 @@ pub fn stream_in_field_snapshot(
         }
     }
 
-    for path in [NetFieldId::MESH3D_MESH, NetFieldId::DRAW_MATERIAL_URI] {
-        let id = path.as_u16();
+    for path in [PropertyId::MESH3D_MESH, PropertyId::DRAW_MATERIAL_URI] {
+        let id = path.as_u32();
         if hot_paths.contains(&id) || cold_paths.contains(&id) {
             continue;
         }
@@ -114,7 +114,7 @@ pub fn stream_in_field_snapshot(
         }
     }
 
-    let hot: Vec<(NetFieldId, FieldValue)> = net
+    let hot: Vec<(PropertyId, FieldValue)> = net
         .hot_paths()
         .filter_map(|p| read_field(world, entity, p).map(|v| (p, v)))
         .collect();
@@ -122,7 +122,7 @@ pub fn stream_in_field_snapshot(
     (cold, hot)
 }
 
-pub fn apply_field(world: &World, entity: EntityId, field: NetFieldId, value: &FieldValue) {
+pub fn apply_field(world: &World, entity: EntityId, field: PropertyId, value: &FieldValue) {
     let _ = apply_field_ex(world, None, None, None, entity, field, value);
 }
 
@@ -132,25 +132,25 @@ pub fn apply_field_ex(
     gamedir: Option<&Path>,
     resources: Option<&ResourceManager>,
     entity: EntityId,
-    field: NetFieldId,
+    field: PropertyId,
     value: &FieldValue,
 ) -> bool {
-    let reg = NetFieldRegistry::global()
+    let reg = PropertyRegistry::global()
         .lock()
         .expect("net field registry lock poisoned");
     let Some(desc) = reg.get(field) else {
         return false;
     };
-    match (&desc.kind, value) {
-        (NetFieldKind::WholeComponent { .. }, FieldValue::PrefabDefault) => true,
-        (NetFieldKind::Mesh3dUri, FieldValue::PrefabDefault) => true,
-        (NetFieldKind::DrawMaterialUri, FieldValue::PrefabDefault) => true,
-        (NetFieldKind::MapKvStudioModel, FieldValue::PrefabDefault) => true,
-        (NetFieldKind::MapKvStudioModel, FieldValue::Str(uri)) => {
+    match (&desc.storage, value) {
+        (PropertyStorage::WholeComponent { .. }, FieldValue::PrefabDefault) => true,
+        (PropertyStorage::Mesh3dUri, FieldValue::PrefabDefault) => true,
+        (PropertyStorage::DrawMaterialUri, FieldValue::PrefabDefault) => true,
+        (PropertyStorage::MapKvStudioModel, FieldValue::PrefabDefault) => true,
+        (PropertyStorage::MapKvStudioModel, FieldValue::Str(uri)) => {
             apply_mapkv_studio_model(world, entity, uri);
             true
         }
-        (NetFieldKind::Mesh3dUri, FieldValue::Str(uri)) => {
+        (PropertyStorage::Mesh3dUri, FieldValue::Str(uri)) => {
             if uri.is_empty() {
                 return true;
             }
@@ -163,19 +163,19 @@ pub fn apply_field_ex(
             }
             true
         }
-        (NetFieldKind::DrawMaterialUri, FieldValue::Str(uri)) => {
+        (PropertyStorage::DrawMaterialUri, FieldValue::Str(uri)) => {
             if uri.is_empty() {
                 return true;
             }
             crate::scene::set_draw_material_uri(world, entity, uri);
             true
         }
-        (NetFieldKind::WorldspawnMap, FieldValue::Str(map)) => {
+        (PropertyStorage::WorldspawnMap, FieldValue::Str(map)) => {
             apply_worldspawn_map(world, entity, map);
             true
         }
         (
-            NetFieldKind::Memory {
+            PropertyStorage::Memory {
                 component,
                 offset,
                 wire,
@@ -233,6 +233,17 @@ fn read_memory_field(
         }
         _ => None,
     }
+}
+
+pub fn apply_memory_at(
+    world: &World,
+    entity: EntityId,
+    component_id: crate::world::ComponentId,
+    offset: u32,
+    wire: WireKind,
+    value: &FieldValue,
+) -> bool {
+    apply_memory_field(world, entity, component_id, offset, wire, value)
 }
 
 fn apply_memory_field(

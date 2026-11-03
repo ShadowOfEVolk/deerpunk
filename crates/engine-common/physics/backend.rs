@@ -4,7 +4,8 @@
 //! Rapier (or Null) + shape/parts arenas.
 //!
 //! Frame phases (names match game-lib):
-//! `physics.prepare` → `physics.sim.step` → `physics.writeback`.
+//! `physics.prepare` (ECS → Rapier: BVH + `PhysicsSyncIn` system) → `physics.sim.step` → `physics.writeback` (`PhysicsWriteback*` systems).
+//! Colliders attach via Flecs `Collider` OnSet; gamelib teleports via `set_body_transform`.
 
 use super::abi::{Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle};
 
@@ -102,7 +103,7 @@ pub trait PhysicsBackend: Send {
     /// Initial / gameplay velocity for dynamic bodies keyed by ECS entity id.
     fn set_body_linvel(&mut self, entity: u64, linvel: [f32; 3]);
 
-    /// `physics.prepare` — CharacterController.velocity → KCC desired move; sync rigid bodies.
+    /// `physics.prepare` — BVH + manual `ecs_run(PhysicsSyncIn)`.
     fn prepare(&mut self, world: &crate::world::World, dt: f32);
 
     /// `physics.sim.step` — Rapier world step.

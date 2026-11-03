@@ -449,14 +449,11 @@ impl Host {
             self.gamelib_schedule.run(dt);
         }
         let _ = self.server_mut().frame(dt);
-        println!("packets");
         let packets = self.server_mut().replication_packets();
         if !packets.is_empty() {
             self.deliver_s2c_broadcast(&packets);
         }
-        println!("cmds");
         self.deliver_usercmd_acks();
-        println!("inspector");
         self.poll_server_inspector();
         self.time_secs += dt;
     }

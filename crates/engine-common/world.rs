@@ -351,7 +351,7 @@ impl World {
             match decode_layout_meta(&desc.layout_meta) {
                 Ok(layout) => {
                     let _ = self.layout_meta.register(id, layout.clone());
-                    crate::network::net_field::sync_net_fields_from_layout(id, &layout);
+                    crate::property::sync_properties_from_layout(id, &layout);
                 }
                 Err(e) => {
                     log::error!("component '{}' layout meta: {e}", desc.name);
@@ -580,6 +580,21 @@ impl World {
             sys::ecs_progress(self.inner, dt);
         }
         self.flush_deferred_destroys();
+    }
+
+    /// Run a Flecs system outside the default pipeline (e.g. physics sync systems).
+    pub fn run_system(&self, system_id: SystemId, dt: f32) {
+        if system_id == 0 {
+            return;
+        }
+        unsafe {
+            sys::ecs_run(
+                self.inner,
+                system_id as sys::ecs_entity_t,
+                dt,
+                std::ptr::null_mut(),
+            );
+        }
     }
 
     // ── Debug ──────────────────────────────────────────────────

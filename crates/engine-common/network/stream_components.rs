@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 use crate::components::{Material, Mesh3D, NetworkEntity, StudioModel, TransformComponent, Worldspawn};
 use crate::material::DrawMaterial;
 use crate::network::field_apply::read_field;
-use crate::network::field_path::{FieldValue, NetFieldId};
-use crate::network::net_field::{NetFieldKind, NetFieldRegistry};
+use crate::network::field_path::{FieldValue, PropertyId};
+use crate::property::{PropertyStorage, PropertyRegistry};
 use crate::world::{EntityId, World};
 
 /// Server-side: ECS → component JSON merged into client prefab spawn.
@@ -18,7 +18,7 @@ pub fn build_stream_in_components(
     net: &NetworkEntity,
 ) -> HashMap<String, Value> {
     let mut components = HashMap::new();
-    let hot: std::collections::HashSet<u16> = net.hot_paths().map(|p| p.as_u16()).collect();
+    let hot: std::collections::HashSet<u32> = net.hot_paths().map(|p| p.as_u32()).collect();
 
     for path in net.cold_paths() {
         match read_field(world, entity, path) {
@@ -37,11 +37,11 @@ pub fn build_stream_in_components(
     export_draw_material(world, entity, &mut components);
 
     for path in [
-        NetFieldId::TRANSFORM_POSITION,
-        NetFieldId::TRANSFORM_ROTATION,
-        NetFieldId::TRANSFORM_SCALE,
+        PropertyId::TRANSFORM_POSITION,
+        PropertyId::TRANSFORM_ROTATION,
+        PropertyId::TRANSFORM_SCALE,
     ] {
-        let id = path.as_u16();
+        let id = path.as_u32();
         if hot.contains(&id) {
             continue;
         }
@@ -51,11 +51,11 @@ pub fn build_stream_in_components(
     }
 
     if world.has(entity, world.component_init::<StudioModel>()) {
-        let path = NetFieldId::MAPKV_STUDIO_MODEL;
-        if !hot.contains(&path.as_u16())
+        let path = PropertyId::MAPKV_STUDIO_MODEL;
+        if !hot.contains(&path.as_u32())
             && !net
                 .cold_paths()
-                .any(|p| p.as_u16() == path.as_u16())
+                .any(|p| p.as_u32() == path.as_u32())
         {
             if let Some(FieldValue::Str(uri)) = read_field(world, entity, path) {
                 if !uri.is_empty() {
@@ -69,27 +69,27 @@ pub fn build_stream_in_components(
 }
 
 fn merge_field_into_components(
-    path: NetFieldId,
+    path: PropertyId,
     value: &FieldValue,
     out: &mut HashMap<String, Value>,
 ) {
     match value {
-        FieldValue::Str(s) if path == NetFieldId::MESH3D_MESH => {
+        FieldValue::Str(s) if path == PropertyId::MESH3D_MESH => {
             patch_component(out, "Mesh3D", json!({ "uri": s }));
         }
-        FieldValue::Str(s) if path == NetFieldId::DRAW_MATERIAL_URI => {
+        FieldValue::Str(s) if path == PropertyId::DRAW_MATERIAL_URI => {
             patch_component(out, "DrawMaterial", json!({ "uri": s }));
         }
-        FieldValue::Str(map) if path == NetFieldId::WORLDSPAWN_MAP => {
+        FieldValue::Str(map) if path == PropertyId::WORLDSPAWN_MAP => {
             patch_component(out, "Worldspawn", json!({ "map": map }));
         }
-        FieldValue::Vec3(v) if path == NetFieldId::TRANSFORM_POSITION => {
+        FieldValue::Vec3(v) if path == PropertyId::TRANSFORM_POSITION => {
             patch_transform(out, "position", v);
         }
-        FieldValue::Vec3(v) if path == NetFieldId::TRANSFORM_SCALE => {
+        FieldValue::Vec3(v) if path == PropertyId::TRANSFORM_SCALE => {
             patch_transform(out, "scale", v);
         }
-        FieldValue::Quat(v) if path == NetFieldId::TRANSFORM_ROTATION => {
+        FieldValue::Quat(v) if path == PropertyId::TRANSFORM_ROTATION => {
             let entry = out
                 .entry("TransformComponent".into())
                 .or_insert_with(|| json!({}));
@@ -100,17 +100,17 @@ fn merge_field_into_components(
                 );
             }
         }
-        FieldValue::Str(s) if path == NetFieldId::MAPKV_STUDIO_MODEL => {
+        FieldValue::Str(s) if path == PropertyId::MAPKV_STUDIO_MODEL => {
             patch_component(out, "MapKv", json!({ "model": s }));
         }
         FieldValue::U32(v) => {
-            let reg = NetFieldRegistry::global()
+            let reg = PropertyRegistry::global()
                 .lock()
                 .expect("net field registry lock poisoned");
             let Some(desc) = reg.get(path) else {
                 return;
             };
-            let NetFieldKind::Memory { component, field, .. } = &desc.kind else {
+            let PropertyStorage::Memory { component, field, .. } = &desc.storage else {
                 return;
             };
             let entry = out
@@ -127,16 +127,16 @@ fn merge_field_into_components(
 fn merge_whole_component_from_ecs(
     world: &World,
     entity: EntityId,
-    path: NetFieldId,
+    path: PropertyId,
     out: &mut HashMap<String, Value>,
 ) {
-    let reg = NetFieldRegistry::global()
+    let reg = PropertyRegistry::global()
         .lock()
         .expect("net field registry lock poisoned");
     let Some(desc) = reg.get(path) else {
         return;
     };
-    let NetFieldKind::WholeComponent { component } = &desc.kind else {
+    let PropertyStorage::WholeComponent { component } = &desc.storage else {
         return;
     };
     match component.as_str() {
