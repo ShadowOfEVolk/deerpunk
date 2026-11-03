@@ -444,7 +444,9 @@ impl RapierPhysicsBackend {
         let mut best: Option<RayCastHit> = None;
         for (entity, handles) in &self.voxel_entities {
             for &h in handles {
-                let Some(vol) = self.voxel_shapes.get(h) else { continue };
+                let Some(vol) = self.voxel_shapes.get(h) else {
+                    continue;
+                };
                 if let Some(hit) =
                     super::voxel_query::cast_ray_volume(vol, origin, dir, max_dist, *entity)
                 {
@@ -474,7 +476,9 @@ impl RapierPhysicsBackend {
         let mut best: Option<CapsuleCastHit> = None;
         for (entity, handles) in &self.voxel_entities {
             for &h in handles {
-                let Some(vol) = self.voxel_shapes.get(h) else { continue };
+                let Some(vol) = self.voxel_shapes.get(h) else {
+                    continue;
+                };
                 if let Some(hit) = super::voxel_query::cast_capsule_volume(
                     vol,
                     center,
@@ -550,10 +554,9 @@ impl PhysicsBackend for RapierPhysicsBackend {
 
     fn create_shape(&mut self, abi: &[u8]) -> ShapeHandle {
         match decode_shape(abi) {
-            Some(ShapeGeom::VoxelVolume { origin, solid }) => {
-                self.voxel_shapes
-                    .insert(super::voxel_query::VoxelVolume { origin, solid })
-            }
+            Some(ShapeGeom::VoxelVolume { origin, solid }) => self
+                .voxel_shapes
+                .insert(super::voxel_query::VoxelVolume { origin, solid }),
             Some(geom) => self.shapes.insert(geom),
             None => {
                 log::warn!("[physics] create_shape: bad ABI ({} bytes)", abi.len());
@@ -637,19 +640,22 @@ impl PhysicsBackend for RapierPhysicsBackend {
             compute_impact_geometry_on_penetration: true,
         };
         // QueryPipeline: normal1/witness1 = hit collider, world space.
-        let rapier_hit = queries.cast_shape(&pose, d, shape.as_ref(), opts).map(|(ch, hit)| {
-            let toi = hit.time_of_impact;
-            let start_solid = matches!(hit.status, ShapeCastStatus::PenetratingOrWithinTargetDist);
-            let n = hit.normal1;
-            let point = hit.witness1;
-            CapsuleCastHit {
-                toi,
-                normal: [n.x, n.y, n.z],
-                point: [point.x, point.y, point.z],
-                start_solid,
-                entity: self.entity_for_collider(ch),
-            }
-        });
+        let rapier_hit = queries
+            .cast_shape(&pose, d, shape.as_ref(), opts)
+            .map(|(ch, hit)| {
+                let toi = hit.time_of_impact;
+                let start_solid =
+                    matches!(hit.status, ShapeCastStatus::PenetratingOrWithinTargetDist);
+                let n = hit.normal1;
+                let point = hit.witness1;
+                CapsuleCastHit {
+                    toi,
+                    normal: [n.x, n.y, n.z],
+                    point: [point.x, point.y, point.z],
+                    start_solid,
+                    entity: self.entity_for_collider(ch),
+                }
+            });
         // Merge with voxel-volume hits (DDA, no Rapier).
         let voxel_hit = self.cast_capsule_volumes(center, half_height, radius, dir, max_dist);
         merge_capsule(rapier_hit, voxel_hit)
@@ -683,17 +689,19 @@ impl PhysicsBackend for RapierPhysicsBackend {
         let filter = player_query_filter(exclude);
         let queries = self.world.inner.query_pipeline_with_filter(filter);
         let ray = Ray::new(Vec3::from_array(origin), d);
-        let rapier_hit = queries.cast_ray_and_get_normal(&ray, max_dist, true).map(|(ch, hit)| {
-            let toi = hit.time_of_impact;
-            let n = hit.normal;
-            let point = ray.point_at(toi);
-            RayCastHit {
-                fraction: if max_dist > 0.0 { toi / max_dist } else { 1.0 },
-                normal: [n.x, n.y, n.z],
-                point: [point.x, point.y, point.z],
-                entity: self.entity_for_collider(ch),
-            }
-        });
+        let rapier_hit = queries
+            .cast_ray_and_get_normal(&ray, max_dist, true)
+            .map(|(ch, hit)| {
+                let toi = hit.time_of_impact;
+                let n = hit.normal;
+                let point = ray.point_at(toi);
+                RayCastHit {
+                    fraction: if max_dist > 0.0 { toi / max_dist } else { 1.0 },
+                    normal: [n.x, n.y, n.z],
+                    point: [point.x, point.y, point.z],
+                    entity: self.entity_for_collider(ch),
+                }
+            });
         // Merge with voxel-volume hits (DDA, no Rapier).
         let voxel_hit = self.cast_ray_volumes(origin, dir, max_dist);
         merge_ray(rapier_hit, voxel_hit)
@@ -756,6 +764,22 @@ impl PhysicsBackend for RapierPhysicsBackend {
             rotation_xyzw[3],
         );
         rb.set_position(Pose::from_parts(Vec3::from_array(position), rot), true);
+    }
+
+    fn set_body_linvel(&mut self, entity: u64, linvel: [f32; 3]) {
+        if self.voxel_entities.contains_key(&entity) || self.characters.contains_key(&entity) {
+            return;
+        }
+        let Some(&handle) = self.world.body_map.get(&entity) else {
+            return;
+        };
+        let Some(rb) = self.world.inner.bodies.get_mut(handle) else {
+            return;
+        };
+        if !rb.is_dynamic() {
+            return;
+        }
+        rb.set_linvel(Vec3::from_array(linvel), true);
     }
 
     fn prepare(&mut self, world: &World, dt: f32) {

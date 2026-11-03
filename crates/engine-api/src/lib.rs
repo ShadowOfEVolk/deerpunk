@@ -11,6 +11,7 @@ pub mod components;
 pub mod dynamic_load;
 pub mod resources;
 pub mod schedule;
+pub mod server;
 pub mod ui;
 pub mod version;
 pub mod methoddb;
@@ -40,6 +41,7 @@ pub struct EngineApi {
     pub client: client::ClientApi,
     pub client_world: client_world::ClientWorldApi,
     pub schedule: schedule::ScheduleApi,
+    pub server: server::ServerApi,
     pub input: input::InputApi,
     pub physics: physics::PhysicsApiResolved,
     pub renderer: renderer::RendererApiResolved,
@@ -79,6 +81,7 @@ impl EngineApi {
             client: client::ClientApi::new(ctx, resolver),
             client_world: client_world::ClientWorldApi::new(ctx, resolver),
             schedule: schedule::ScheduleApi::new(ctx, resolver),
+            server: server::ServerApi::new(ctx, resolver),
             input: input::InputApi::new(ctx, resolver),
             physics: physics::PhysicsApiResolved::new(ctx, resolver),
             renderer: renderer::RendererApiResolved::new(ctx, resolver),

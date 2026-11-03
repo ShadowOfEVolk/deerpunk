@@ -94,6 +94,9 @@ fn resolve_mesh3d_uri_str(
         .ok_or_else(|| format!("Mesh3D load failed: {kind} (asset={:?})", handle.id()))?;
     let verts = mesh.positions.len();
     let indices = mesh.indices.len();
+    if verts == 0 || indices == 0 {
+        panic!("mesh pool growth failed (vert_count={verts} idx_count={indices})");
+    }
     // Overwrite the handle; the previous slot is reclaimed by the per-frame sweep.
     m.mesh = meshes.insert(mesh);
     log::info!(

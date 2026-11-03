@@ -5,30 +5,31 @@ use deerpunk_engine_client::render_extractor;
 pub type Entity = u64;
 
 pub mod gamelib_abi;
+pub mod gamelib_system;
 pub use gamelib_abi::{ScheduleSystemFn, WorldQueryCallback};
 
 pub mod binds;
+mod client_sync;
 pub mod cmd;
 pub mod cmd_completion;
 pub mod config_io;
 pub mod console;
 pub mod cvar;
-mod client_sync;
 #[cfg(any(feature = "client", feature = "full"))]
 mod demo_console;
 mod engine_methoddb;
-mod net_console;
-mod net_tick;
-mod server_thread;
-mod main_cmd_proxy;
 pub mod fs;
 pub mod gameinfo;
 pub mod inspector;
+mod main_cmd_proxy;
 mod mesh_components;
 mod mesh_upload;
 pub mod move_state;
+mod net_console;
+mod net_tick;
 mod physics_trace;
 pub mod schedule;
+mod server_thread;
 mod spawn_prefab;
 pub mod stdin_cmd;
 pub mod system_profiler;
@@ -50,8 +51,8 @@ pub mod engine_api;
 pub use deerpunk_engine_common::world;
 
 pub use crate::cmd::CmdCallback;
-use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::decode_client_command_payload;
+use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::{UserCmd, UserCmdAckRpc};
@@ -162,6 +163,8 @@ pub struct Host {
     next_client_sound_id: u32,
     /// Listen-server: main reads this after [`apply_set_server_enabled`] on the sim thread.
     listen_enabled_sink: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Gamelib systems from `v1:schedule:add_system` (server thread only).
+    pub(crate) gamelib_schedule: Schedule,
 }
 
 #[cfg(any(feature = "client", feature = "full"))]
@@ -254,6 +257,7 @@ impl Host {
             time_secs: 0.0,
             next_client_sound_id: 1,
             listen_enabled_sink: None,
+            gamelib_schedule: Schedule::new(),
         }
     }
 
@@ -322,6 +326,7 @@ impl Host {
             time_secs: 0.0,
             next_client_sound_id: 1,
             listen_enabled_sink: None,
+            gamelib_schedule: Schedule::new(),
         }
     }
 
@@ -396,10 +401,13 @@ impl Host {
             return -1;
         };
         log::info!("[host] start_listen_map '{world}' (main → server thread)");
-        if let Err(e) = st.cmd_sender().send(server_thread::ServerThreadCmd::StartMap {
-            world: world.to_string(),
-            seed,
-        }) {
+        if let Err(e) = st
+            .cmd_sender()
+            .send(server_thread::ServerThreadCmd::StartMap {
+                world: world.to_string(),
+                seed,
+            })
+        {
             log::error!("[host] start_listen_map send failed: {e}");
             return -1;
         }
@@ -416,7 +424,11 @@ impl Host {
         }
     }
 
-    pub(crate) fn server_thread_tick(&mut self, dt: f32, enabled_flag: &std::sync::atomic::AtomicBool) {
+    pub(crate) fn server_thread_tick(
+        &mut self,
+        dt: f32,
+        enabled_flag: &std::sync::atomic::AtomicBool,
+    ) {
         self.drain_loopback_client_packets();
         self.tick_net_server(dt);
         let on = self.server().enabled;
@@ -424,6 +436,7 @@ impl Host {
         if !on {
             return;
         }
+        self.server_mut().sim_time_secs += dt as f64;
         let skin = self.cvar.get_f32_or("ph_capsule_skin", 0.5);
         self.server_mut().physics.set_capsule_skin(skin);
         if let Some(ref dll) = self.server_mut().dll {
@@ -431,12 +444,19 @@ impl Host {
                 dll.frame(dt);
             }
         }
+        {
+            let _g = system_profiler::scope("gamelib.schedule");
+            self.gamelib_schedule.run(dt);
+        }
         let _ = self.server_mut().frame(dt);
+        println!("packets");
         let packets = self.server_mut().replication_packets();
         if !packets.is_empty() {
             self.deliver_s2c_broadcast(&packets);
         }
+        println!("cmds");
         self.deliver_usercmd_acks();
+        println!("inspector");
         self.poll_server_inspector();
         self.time_secs += dt;
     }
@@ -934,7 +954,11 @@ impl Host {
     }
 
     fn tick_lan(&mut self) {
-        if self.server_engine.as_ref().is_some_and(|e| e.lan_advertiser.is_some()) {
+        if self
+            .server_engine
+            .as_ref()
+            .is_some_and(|e| e.lan_advertiser.is_some())
+        {
             let state = self.lan_advertise_state();
             if let Some(adv) = self.server_engine.as_mut().unwrap().lan_advertiser.as_mut() {
                 adv.tick(&state);
@@ -1030,7 +1054,10 @@ impl Host {
                 return 0;
             };
         let _ = unsafe { self.flush_pending_albedos_world(&*world_ptr) };
-        self.client_engine.as_mut().map(|c| c.last_atlas_slot).unwrap_or(0)
+        self.client_engine
+            .as_mut()
+            .map(|c| c.last_atlas_slot)
+            .unwrap_or(0)
     }
 
     /// Legacy hook (no-op). Albedo/lightmap upload is via material URIs in gamelib.
@@ -1080,12 +1107,37 @@ impl Host {
         {
             let _g = system_profiler::scope("host.console");
             if let Some(client) = self.client_engine.as_mut() {
-                client
-                    .console
-                    .tick_input(&self.cvar, &mut client.input);
+                client.console.tick_input(&self.cvar, &mut client.input);
                 let cons_open = console::Console::visible(&self.cvar);
                 client.set_console_open(cons_open);
                 binds::global().tick(&client.input, &self.cmd, cons_open);
+            }
+        }
+
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            let _g = system_profiler::scope("host.net");
+            self.tick_net_client(delta_time);
+        }
+
+        {
+            let _g = system_profiler::scope("host.replicate");
+            #[cfg(any(feature = "client", feature = "full"))]
+            if self.client_engine.as_mut().unwrap().demo_player.is_some() {
+                self.tick_demo_playback(delta_time);
+            } else {
+                self.sync_client_world();
+                self.demo_record_view_frame();
+            }
+            #[cfg(not(any(feature = "client", feature = "full")))]
+            self.sync_client_world();
+        }
+
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            let _g = system_profiler::scope("client.ecs");
+            if let Some(client) = self.client_engine.as_mut() {
+                client.tick_world(delta_time);
             }
         }
 
@@ -1103,30 +1155,12 @@ impl Host {
             }
         }
 
-        {
-            let _g = system_profiler::scope("host.net");
-            #[cfg(any(feature = "client", feature = "full"))]
-            self.tick_net_client(delta_time);
-        }
-
-        {
-            let _g = system_profiler::scope("host.replicate");
-            #[cfg(any(feature = "client", feature = "full"))]
-            if self.client_engine.as_mut().unwrap().demo_player.is_some() {
-                self.tick_demo_playback(delta_time);
-            } else {
-                self.sync_client_world();
-                self.demo_record_view_frame();
-            }
-            #[cfg(not(any(feature = "client", feature = "full")))]
-            self.sync_client_world();
-        }
-
         // After SVC/demo apply so LightStyle UM hits GPU same frame.
         #[cfg(any(feature = "client", feature = "full"))]
         if self.client_in_play()
             || self.client_engine.as_mut().unwrap().demo_player.is_some()
-            || (self.client_net_active() && self.client_engine.as_mut().unwrap().join_phase != ClientSessionPhase::Idle)
+            || (self.client_net_active()
+                && self.client_engine.as_mut().unwrap().join_phase != ClientSessionPhase::Idle)
         {
             let _g = system_profiler::scope("host.lightstyles");
             self.tick_lightstyles();
@@ -1162,9 +1196,7 @@ impl Host {
         let Some(client) = self.client_engine.as_mut() else {
             return;
         };
-        client
-            .console
-            .tick_draw(&self.cvar, &self.cmd, &self.cvar);
+        client.console.tick_draw(&self.cvar, &self.cmd, &self.cvar);
         let (view_yaw, view_pitch) = view.map(|v| (v.yaw, v.pitch)).unwrap_or((0.0, 0.0));
         deerpunk_engine_client::infobox::tick(
             show_fps,
@@ -1217,12 +1249,20 @@ impl Host {
 
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn client_set_view_net_id(&mut self, net_id: u16) {
-        self.client_engine.as_mut().unwrap().rep.set_view_net_id(net_id);
+        self.client_engine
+            .as_mut()
+            .unwrap()
+            .rep
+            .set_view_net_id(net_id);
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn client_set_lightstyle(&mut self, style: u8, pattern: &str) {
-        self.client_engine.as_mut().unwrap().lightstyles.set_pattern(style as usize, pattern);
+        self.client_engine
+            .as_mut()
+            .unwrap()
+            .lightstyles
+            .set_pattern(style as usize, pattern);
     }
 
     /// Send a registered UserMessage (`slot = None` → broadcast remotes).
@@ -1694,14 +1734,23 @@ impl Host {
             if !self.client_in_play() {
                 return;
             }
-            self.client_engine.as_mut().unwrap().network.send_c2s(packet);
+            self.client_engine
+                .as_mut()
+                .unwrap()
+                .network
+                .send_c2s(packet);
             return;
         }
         let server_on = self
             .server_thread
             .as_ref()
             .map(|s| s.is_enabled())
-            .unwrap_or_else(|| self.server_engine.as_ref().map(|e| e.enabled).unwrap_or(false));
+            .unwrap_or_else(|| {
+                self.server_engine
+                    .as_ref()
+                    .map(|e| e.enabled)
+                    .unwrap_or(false)
+            });
         if !self.client_in_play() || !server_on {
             return;
         }
@@ -1903,10 +1952,9 @@ impl Host {
         }
         let pawn = self.local_client_entity();
         if let Some(client) = self.client_engine.as_mut() {
-            if let (Some(v), Some(pawn)) = (
-                client.demo_player.as_ref().and_then(|p| p.last_view),
-                pawn,
-            ) {
+            if let (Some(v), Some(pawn)) =
+                (client.demo_player.as_ref().and_then(|p| p.last_view), pawn)
+            {
                 use deerpunk_engine_client::client_engine::LocalViewStamp;
                 deerpunk_engine_client::local_view::stamp_view_on_entity(
                     &client.world,
@@ -1973,10 +2021,10 @@ impl Host {
                 self.drain_loopback();
 
                 let cons_open = self.cvar.get_bool_or("cl_console_show", false);
-                self.client_engine
-                    .as_mut()
-                    .unwrap()
-                    .set_text_input_active(cons_open);
+                if let Some(ce) = self.client_engine.as_mut() {
+                    let ui_open = ce.ui_controller.any_visible();
+                    ce.set_text_input_active(cons_open || ui_open);
+                }
 
                 self.client_engine
                     .as_mut()
@@ -2042,8 +2090,7 @@ impl Host {
                 let (client, registry) = self.split_client_registry();
                 let mut scene =
                     client.extract_scene_view(registry, view_ent, early_cull, draw_distance);
-                scene.cull =
-                    deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
+                scene.cull = deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
                 let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;
                 self.client_engine
                     .as_mut()
@@ -2065,8 +2112,7 @@ impl Host {
                         &self.mesh_registry,
                     );
                     if let Some(client) = self.client_engine.as_mut() {
-                        draw.primitives
-                            .extend(client.take_game_debug().primitives);
+                        draw.primitives.extend(client.take_game_debug().primitives);
                         *client.debug_draw() = draw;
                     }
                 }

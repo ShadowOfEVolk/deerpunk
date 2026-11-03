@@ -17,6 +17,7 @@ pub mod field_apply;
 pub mod field_path;
 pub mod net_field;
 pub mod packet_log;
+pub mod prefab_net_registry;
 pub mod prefab_rep;
 pub mod stream_components;
 pub mod stream_rep;
@@ -24,6 +25,7 @@ pub mod stream_rep;
 pub use stream_components::build_stream_in_components;
 pub use field_path::{FieldPathId, FieldValue, NetFieldId};
 pub use net_field::{NetFieldDescriptor, NetFieldKind, NetFieldRegistry};
+pub use prefab_net_registry::{PrefabNetId, PrefabNetRegistry};
 pub use prefab_rep::{NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, SpawnPrefabRpc};
 pub use stream_rep::{StreamEntityUpdate, StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc};
 pub use packet_log::{

@@ -11,6 +11,7 @@ pub fn set_prefab_engine_api(api: &'static EngineApi) {
 }
 
 /// Write a component during prefab apply when the type is registered on both worlds.
+/// Prefer in-place `get_raw` (StreamIn / updates). Server-only fallback to `set` on first add.
 #[inline]
 pub fn set_component_copy<T: Copy>(
     api: &EngineApi,
@@ -19,7 +20,17 @@ pub fn set_component_copy<T: Copy>(
     value: T,
 ) {
     if api.client_world.is_alive(entity) {
-        api.client_world.set(entity, component_id, value);
+        if let Some(ptr) = api.client_world.get_raw(entity, component_id) {
+            unsafe {
+                *(ptr as *mut T) = value;
+            }
+        }
+        return;
+    }
+    if let Some(ptr) = api.world.get_raw(entity, component_id) {
+        unsafe {
+            *(ptr as *mut T) = value;
+        }
     } else {
         api.world.set(entity, component_id, value);
     }

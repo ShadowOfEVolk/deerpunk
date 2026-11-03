@@ -76,6 +76,8 @@ type TraceLineFn = extern "C" fn(
     *mut PhysicsTraceResult,
 ) -> i32;
 
+type SetBodyLinvelFn = extern "C" fn(*mut u8, u64, f32, f32, f32) -> i32;
+
 /// Rapier segment trace (`v1:physics:trace_line`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +109,7 @@ pub struct PhysicsApiResolved {
     destroy_parts_fn: DestroyPartsFn,
     cast_capsule_fn: CastCapsuleFn,
     trace_line_fn: TraceLineFn,
+    set_body_linvel_fn: SetBodyLinvelFn,
 }
 
 unsafe impl Send for PhysicsApiResolved {}
@@ -126,6 +129,9 @@ impl PhysicsApiResolved {
             },
             cast_capsule_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:cast_capsule")) },
             trace_line_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:trace_line")) },
+            set_body_linvel_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:physics:set_body_linvel"))
+            },
         }
     }
 
@@ -203,5 +209,10 @@ impl PhysicsApiResolved {
         } else {
             None
         }
+    }
+
+    /// Set linear velocity for a dynamic Rapier body bound to `entity` (`0` = ok, `-1` = miss).
+    pub fn set_body_linvel(&self, entity: u64, linvel: [f32; 3]) -> bool {
+        (self.set_body_linvel_fn)(self.ctx, entity, linvel[0], linvel[1], linvel[2]) >= 0
     }
 }

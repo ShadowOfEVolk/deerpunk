@@ -74,6 +74,27 @@ impl PrefabManager {
         self.defs.clear();
     }
 
+    /// All `gamedir/prefabs/*.prefab` classnames (sorted).
+    pub fn list_disk_classnames(gamedir: &Path) -> Vec<String> {
+        let dir = gamedir.join("prefabs");
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = read
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let path = e.path();
+                if path.extension()?.to_str()? != "prefab" {
+                    return None;
+                }
+                path.file_stem()?.to_str().map(|s| s.to_string())
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     pub fn resolve(
         &mut self,
         gamedir: &Path,

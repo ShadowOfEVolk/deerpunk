@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use deerpunk_engine_common::components::NetworkEntity;
-use deerpunk_engine_common::network::field_apply::read_field;
-use deerpunk_engine_common::network::build_stream_in_components;
+use deerpunk_engine_common::network::field_apply::{read_field, stream_in_field_snapshot};
 use deerpunk_engine_common::network::field_path::{FieldValue, NetFieldId};
 use deerpunk_engine_common::network::{
-    PrefabDefRpc, StreamEntityUpdate, StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc,
+    PrefabDefRpc, PrefabNetId, PrefabNetRegistry, StreamEntityUpdate, StreamInRpc, StreamOutRpc,
+    StreamUpdateBatchRpc,
 };
 use deerpunk_engine_common::scene::PrefabManager;
 use deerpunk_engine_common::world::{EntityId, World};
@@ -24,6 +24,9 @@ pub struct ServerPrefabReplication {
     last_hot: HashMap<u16, Vec<(NetFieldId, FieldValue)>>,
     /// `net_id` → stream generation (bumps on each `stream.in`).
     generation: HashMap<u16, u8>,
+    prefab_ids: PrefabNetRegistry,
+    /// Extra classnames registered before connect (dynamic spawns).
+    catalog_prefabs: HashSet<String>,
 }
 
 impl ServerPrefabReplication {
@@ -38,6 +41,14 @@ impl ServerPrefabReplication {
         *self = Self::new();
     }
 
+    /// Register a classname so its [`PrefabDefRpc`] is sent at connect even if no entity exists yet.
+    pub fn catalog_prefab(&mut self, classname: &str) {
+        let name = classname.trim();
+        if !name.is_empty() {
+            self.catalog_prefabs.insert(name.to_string());
+        }
+    }
+
     pub fn net_id_of(&self, entity: EntityId) -> Option<u16> {
         self.entity_to_net.get(&entity).copied()
     }
@@ -49,17 +60,41 @@ impl ServerPrefabReplication {
     }
 
     /// Prefab bodies for all classnames referenced in the current world (connect init).
-    pub fn prefab_definition_packets(&self, gamedir: &Path, world: &World) -> Vec<Vec<u8>> {
-        let names = self.collect_prefab_names(world);
+    pub fn prefab_definition_packets(&mut self, gamedir: &Path, world: &World) -> Vec<Vec<u8>> {
+        self.prefab_ids.clear();
+        let names = self.collect_prefab_catalog(gamedir, world);
+        let assigned = PrefabNetRegistry::assign_ids_sorted(&names);
         let mut pm = PrefabManager::new();
-        let mut out = Vec::with_capacity(names.len());
-        for name in names {
+        let mut out = Vec::with_capacity(assigned.len());
+        for (prefab_id, name) in assigned {
+            if let Err(e) = self.prefab_ids.register(prefab_id, &name) {
+                log::warn!("[prefab_rep] id map: {e}");
+                continue;
+            }
             match pm.resolve(gamedir, &name) {
-                Ok(def) => out.push(PrefabDefRpc { name, def }.to_packet()),
+                Ok(def) => out.push(
+                    PrefabDefRpc {
+                        prefab_id,
+                        name,
+                        def,
+                    }
+                    .to_packet(),
+                ),
                 Err(e) => log::warn!("[prefab_rep] skip def '{name}': {e}"),
             }
         }
         out
+    }
+
+    fn collect_prefab_catalog(&self, gamedir: &Path, world: &World) -> Vec<String> {
+        let mut set: HashSet<String> = self.collect_prefab_names(world).into_iter().collect();
+        set.extend(self.catalog_prefabs.iter().cloned());
+        for name in PrefabManager::list_disk_classnames(gamedir) {
+            set.insert(name);
+        }
+        let mut names: Vec<String> = set.into_iter().collect();
+        names.sort();
+        names
     }
 
     fn collect_prefab_names(&self, world: &World) -> Vec<String> {
@@ -85,13 +120,36 @@ impl ServerPrefabReplication {
         self.emit_network_spawns(world, true)
     }
 
-    /// Per-frame: new NetworkEntity spawns, hot deltas, destroys.
+    /// Per-frame: new NetworkEntity spawns, destroys (before hot), hot deltas.
     pub fn tick(&mut self, world: &World) -> Vec<Vec<u8>> {
         let mut packets = Vec::new();
         packets.extend(self.emit_network_spawns(world, false));
-        packets.extend(self.emit_hot_deltas(world));
         packets.extend(self.emit_destroys(world));
+        packets.extend(self.emit_hot_deltas(world));
         packets
+    }
+
+    fn drop_binding(&mut self, entity: EntityId, net_id: u16) {
+        self.entity_to_net.remove(&entity);
+        self.net_to_entity.remove(&net_id);
+        self.last_hot.remove(&net_id);
+        self.generation.remove(&net_id);
+    }
+
+    /// True when `entity_to_net` still refers to this live [`NetworkEntity`] (guards id reuse).
+    fn binding_valid(&self, world: &World, entity: EntityId, net_id: u16, ne_id: u64) -> bool {
+        if entity == 0 || !world.is_alive(entity) || !world.has(entity, ne_id) {
+            return false;
+        }
+        if self.net_to_entity.get(&net_id) != Some(&entity) {
+            return false;
+        }
+        let ptr = world.get_raw(entity, ne_id);
+        if ptr.is_null() {
+            return false;
+        }
+        let net = unsafe { &*(ptr as *const NetworkEntity) };
+        net.net_id == net_id
     }
 
     fn alloc_net_id(&mut self) -> u16 {
@@ -137,11 +195,17 @@ impl ServerPrefabReplication {
             };
             net.net_id = net_id;
 
-            let components = build_stream_in_components(world, entity, net);
-            let hot: Vec<_> = net
-                .hot_paths()
-                .filter_map(|p| read_field(world, entity, p).map(|v| (p, v)))
-                .collect();
+            let (cold, hot) = stream_in_field_snapshot(world, entity, net);
+            let prefab_id = self
+                .prefab_ids
+                .id_of(&prefab)
+                .unwrap_or(PrefabNetId::INVALID);
+            if !prefab_id.is_valid() {
+                log::warn!(
+                    "[prefab_rep] unknown prefab id for '{prefab}' ent={entity:#x} — skip stream.in"
+                );
+                return;
+            }
 
             self.entity_to_net.insert(entity, net_id);
             self.net_to_entity.insert(net_id, entity);
@@ -155,8 +219,8 @@ impl ServerPrefabReplication {
             let rpc = StreamInRpc {
                 net_id,
                 generation,
-                prefab,
-                components,
+                prefab_id,
+                cold,
                 hot,
             };
             out.push(rpc.to_packet());
@@ -170,7 +234,7 @@ impl ServerPrefabReplication {
         let tracked: Vec<(EntityId, u16)> =
             self.entity_to_net.iter().map(|(&e, &n)| (e, n)).collect();
         for (entity, net_id) in tracked {
-            if !world.has(entity, ne_id) {
+            if !self.binding_valid(world, entity, net_id, ne_id) {
                 continue;
             }
             let ptr = world.get_raw(entity, ne_id) as *const NetworkEntity;
@@ -220,18 +284,14 @@ impl ServerPrefabReplication {
 
     fn emit_destroys(&mut self, world: &World) -> Vec<Vec<u8>> {
         let ne_id = world.component_init::<NetworkEntity>();
-        let mut dead = Vec::new();
-        for (&entity, &net_id) in &self.entity_to_net {
-            if !world.has(entity, ne_id) {
-                dead.push((entity, net_id));
-            }
-        }
+        let tracked: Vec<(EntityId, u16)> =
+            self.entity_to_net.iter().map(|(&e, &n)| (e, n)).collect();
         let mut out = Vec::new();
-        for (entity, net_id) in dead {
-            self.entity_to_net.remove(&entity);
-            self.net_to_entity.remove(&net_id);
-            self.last_hot.remove(&net_id);
-            self.generation.remove(&net_id);
+        for (entity, net_id) in tracked {
+            if self.binding_valid(world, entity, net_id, ne_id) {
+                continue;
+            }
+            self.drop_binding(entity, net_id);
             out.push(StreamOutRpc { net_id }.to_packet());
         }
         out

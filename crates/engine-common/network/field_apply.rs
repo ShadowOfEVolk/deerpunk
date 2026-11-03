@@ -38,16 +38,17 @@ pub fn read_field(world: &World, entity: EntityId, field: NetFieldId) -> Option<
             .or(Some(FieldValue::PrefabDefault)),
         NetFieldKind::WorldspawnMap => read_worldspawn_map(world, entity),
         NetFieldKind::Memory {
-            component_id,
             offset,
             wire,
             component,
             field: fname,
+            ..
         } => {
             if component == "Worldspawn" && fname == "map" {
                 return read_worldspawn_map(world, entity);
             }
-            read_memory_field(world, entity, *component_id, *offset, *wire)
+            let cid = world.component_lookup(component)?;
+            read_memory_field(world, entity, cid, *offset, *wire)
         }
     }
 }
@@ -96,6 +97,19 @@ pub fn stream_in_field_snapshot(
                     cold.push((path, FieldValue::Str(uri)));
                     cold_paths.insert(id);
                 }
+            }
+        }
+    }
+
+    for path in [NetFieldId::MESH3D_MESH, NetFieldId::DRAW_MATERIAL_URI] {
+        let id = path.as_u16();
+        if hot_paths.contains(&id) || cold_paths.contains(&id) {
+            continue;
+        }
+        if let Some(val) = read_field(world, entity, path) {
+            if !matches!(val, FieldValue::PrefabDefault) {
+                cold.push((path, val));
+                cold_paths.insert(id);
             }
         }
     }
@@ -162,13 +176,21 @@ pub fn apply_field_ex(
         }
         (
             NetFieldKind::Memory {
-                component_id,
+                component,
                 offset,
                 wire,
                 ..
             },
             value,
-        ) => apply_memory_field(world, entity, *component_id, *offset, *wire, value),
+        ) => {
+            let Some(cid) = world.component_lookup(component) else {
+                log::warn!(
+                    "[net] apply_field: unknown component \"{component}\" on this world"
+                );
+                return false;
+            };
+            apply_memory_field(world, entity, cid, *offset, *wire, value)
+        }
         (_, FieldValue::PrefabDefault) => true,
         _ => {
             log::warn!("[net] apply_field mismatch field={field:?} value={value:?}");

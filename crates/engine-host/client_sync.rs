@@ -28,7 +28,11 @@ impl Host {
 
     #[cfg(any(feature = "client", feature = "full"))]
     pub(crate) fn drain_loopback_from_server(&mut self) {
+        use deerpunk_engine_common::network::protocol::SVC;
         for packet in self.loopback.receive_server_packets() {
+            if packet.first() == Some(&(SVC::StreamIn as u8)) {
+                log::info!("[host] loopback SVC StreamIn ({} bytes)", packet.len());
+            }
             self.apply_local_s2c(&packet);
         }
     }

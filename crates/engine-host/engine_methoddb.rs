@@ -28,6 +28,7 @@ use deerpunk_engine_common::physics::ColliderPart;
 use deerpunk_engine_api::components::ComponentRegisterDesc;
 use deerpunk_engine_api::resources::ResourceLoaderDesc;
 use crate::gamelib_abi::ScheduleSystemFn;
+use crate::gamelib_abi::WorldProgressSystemFn;
 
 #[methoddb::namespace(name = "v1:net", on_host, scope = ["server", "client"])]
 impl crate::Host {
@@ -718,6 +719,11 @@ impl crate::Host {
         self.server_mut().world.destroy(entity);
     }
 
+    #[methoddb::bind(name = "destroy_deferred")]
+    pub fn api_world_destroy_deferred(&mut self, entity: u64) {
+        self.server_mut().world.destroy_deferred(entity);
+    }
+
     #[methoddb::bind(name = "component_register")]
     pub fn api_world_component_register(&mut self, desc: &ComponentRegisterDesc) -> u64 {
         crate::engine_api::components::register_component_desc(self, desc)
@@ -763,6 +769,12 @@ impl crate::Host {
             0
         }
     }
+
+    /// Monotonic simulation time (seconds) while the server is enabled.
+    #[methoddb::bind(name = "sim_time_secs")]
+    pub fn api_server_sim_time_secs(&self) -> f32 {
+        self.server().sim_time_secs as f32
+    }
 }
 
 #[methoddb::namespace(name = "v1:schedule", on_host, scope = ["server", "client"])]
@@ -770,15 +782,24 @@ impl crate::Host {
     #[methoddb::bind(name = "add_system")]
     pub fn api_schedule_add_system(
         &mut self,
-        _system_fn: ScheduleSystemFn,
-        _user_data: *mut c_void,
-    ) {}
+        system_fn: ScheduleSystemFn,
+        user_data: *mut c_void,
+    ) {
+        self.gamelib_schedule.add_named(
+            "gamelib",
+            crate::schedule::CallbackSystem::new("gamelib", system_fn, user_data),
+        );
+    }
 
     #[methoddb::bind(name = "clear")]
-    pub fn api_schedule_clear(&mut self) {}
+    pub fn api_schedule_clear(&mut self) {
+        self.gamelib_schedule.clear();
+    }
 
     #[methoddb::bind(name = "run")]
-    pub fn api_schedule_run(&mut self, _delta_time: f32) {}
+    pub fn api_schedule_run(&mut self, delta_time: f32) {
+        self.gamelib_schedule.run(delta_time);
+    }
 }
 
 #[methoddb::namespace(name = "v1:engine", on_host, scope = ["server", "client"])]
@@ -898,6 +919,14 @@ impl crate::Host {
     #[methoddb::bind(name = "destroy_parts")]
     pub fn api_physics_destroy_parts(&mut self, handle: u32) -> i32 {
         self.server_mut().physics.destroy_parts(handle);
+        0
+    }
+
+    #[methoddb::bind(name = "set_body_linvel")]
+    pub fn api_physics_set_body_linvel(&mut self, entity: u64, vx: f32, vy: f32, vz: f32) -> i32 {
+        self.server_mut()
+            .physics
+            .set_body_linvel(entity, [vx, vy, vz]);
         0
     }
 
@@ -1357,6 +1386,35 @@ impl crate::Host {
             }
         }
     }
+
+    #[methoddb::bind(name = "system_register")]
+    pub fn api_world_system_register(
+        &mut self,
+        name: &str,
+        query: &str,
+        run: WorldProgressSystemFn,
+        user_data: *mut c_void,
+        interval_secs: f32,
+    ) -> u64 {
+        crate::gamelib_system::register_progress_system(
+            &self.server_mut().world,
+            name,
+            query,
+            run,
+            user_data,
+            interval_secs,
+        )
+    }
+
+    #[methoddb::bind(name = "system_set_interval")]
+    pub fn api_world_system_set_interval(&mut self, system_id: u64, interval_secs: f32) -> i32 {
+        crate::gamelib_system::set_progress_system_interval(
+            &self.server_mut().world,
+            system_id,
+            interval_secs,
+        );
+        0
+    }
 }
 
 #[cfg(any(feature = "client", feature = "full"))]
@@ -1512,6 +1570,42 @@ impl crate::Host {
             written += 1;
         }
         written
+    }
+
+    #[methoddb::bind(name = "register_observer")]
+    pub fn api_client_world_register_observer(
+        &mut self,
+        query_ptr: *mut u8,
+        query_len: usize,
+        events: u32,
+        callback_ptr: u64,
+    ) -> i32 {
+        if callback_ptr == 0 {
+            return 0;
+        }
+        let callback: extern "C" fn(u64) = unsafe { std::mem::transmute(callback_ptr) };
+        let Some(ce) = self.client_engine.as_mut() else {
+            return 0;
+        };
+        if query_ptr.is_null() || query_len == 0 || callback as usize == 0 {
+            return 0;
+        }
+        let query = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(query_ptr, query_len)) };
+        let on_add = events & 1 != 0;
+        let on_set = events & 2 != 0;
+        match deerpunk_engine_common::ecs_observer::register_client_observer(
+            &ce.world,
+            query,
+            on_add,
+            on_set,
+            callback,
+        ) {
+            Ok(()) => 1,
+            Err(e) => {
+                log::error!("[client_world] register_observer '{query}': {e}");
+                0
+            }
+        }
     }
 }
 

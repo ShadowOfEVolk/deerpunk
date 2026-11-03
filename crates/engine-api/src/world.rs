@@ -7,6 +7,9 @@ use crate::Resolver;
 pub type EntityId = u64;
 pub type ComponentId = u64;
 
+/// `v1:world:system_register` callback (Flecs OnUpdate).
+pub type WorldProgressSystemFn = extern "C" fn(*mut c_void);
+
 fn resolve(r: Resolver, name: &str) -> *const () {
     let bytes = name.as_bytes();
     let ptr = r(bytes.as_ptr(), bytes.len());
@@ -25,6 +28,7 @@ pub struct WorldApiResolved {
     spawn_fn: extern "C" fn(*mut u8) -> u64,
     spawn_bundle_fn: extern "C" fn(*mut u8, *const u64, *const *mut c_void, usize) -> u64,
     destroy_fn: extern "C" fn(*mut u8, u64),
+    destroy_deferred_fn: extern "C" fn(*mut u8, u64),
     clear_fn: extern "C" fn(*mut u8),
     query_fn:
         extern "C" fn(*mut u8, *const u64, usize, *const u64, usize, *mut u64, usize) -> usize,
@@ -39,6 +43,17 @@ pub struct WorldApiResolved {
     ),
     spawn_prefab_fn: extern "C" fn(*mut u8, *const u8, usize, *const SpawnPrefabOpts) -> u64,
     component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
+    system_register_fn: extern "C" fn(
+        *mut u8,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        WorldProgressSystemFn,
+        *mut c_void,
+        f32,
+    ) -> u64,
+    system_set_interval_fn: extern "C" fn(*mut u8, u64, f32) -> i32,
 }
 
 unsafe impl Send for WorldApiResolved {}
@@ -55,6 +70,9 @@ impl WorldApiResolved {
             spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn")) },
             spawn_bundle_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn_bundle")) },
             destroy_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:destroy")) },
+            destroy_deferred_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:world:destroy_deferred"))
+            },
             clear_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:clear")) },
             query_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query")) },
             query_count_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_count")) },
@@ -64,6 +82,12 @@ impl WorldApiResolved {
             spawn_prefab_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn_prefab")) },
             component_register_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:world:component_register"))
+            },
+            system_register_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:world:system_register"))
+            },
+            system_set_interval_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:world:system_set_interval"))
             },
         }
     }
@@ -137,6 +161,11 @@ impl WorldApiResolved {
 
     pub fn destroy(&self, entity: EntityId) {
         (self.destroy_fn)(self.ctx, entity);
+    }
+
+    /// Queue destroy until after the current `ecs_progress` (see engine [`World::simulate`]).
+    pub fn destroy_deferred(&self, entity: EntityId) {
+        (self.destroy_deferred_fn)(self.ctx, entity);
     }
 
     pub fn clear(&self) {
@@ -217,6 +246,32 @@ impl WorldApiResolved {
         ctx: *mut c_void,
     ) {
         (self.query_execute_fn)(self.ctx, query_id, callback, ctx);
+    }
+
+    /// Register a Flecs system (runs during host `ecs_progress` / OnUpdate).
+    /// `interval_secs`: Flecs `ecs_system_desc_t::interval` (0 = every progress step).
+    pub fn system_register(
+        &self,
+        name: &str,
+        query: &str,
+        run: WorldProgressSystemFn,
+        user_data: *mut c_void,
+        interval_secs: f32,
+    ) -> u64 {
+        (self.system_register_fn)(
+            self.ctx,
+            name.as_ptr(),
+            name.len(),
+            query.as_ptr(),
+            query.len(),
+            run,
+            user_data,
+            interval_secs,
+        )
+    }
+
+    pub fn system_set_interval(&self, system_id: u64, interval_secs: f32) {
+        let _ = (self.system_set_interval_fn)(self.ctx, system_id, interval_secs);
     }
 
     /// Trace a line against the server BSP world mesh.

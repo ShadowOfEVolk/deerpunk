@@ -48,6 +48,9 @@ pub struct Input {
     /// UTF-8 bytes from SDL TextInput (fixed ring, no heap).
     text_bytes: [u8; TEXT_RING_CAP],
     text_len: u8,
+    /// SDL keycodes for RmlUi (`push_ui_key` / `drain_ui_keys`), same frame as poll.
+    ui_keys: [(i32, bool); 16],
+    ui_key_count: u8,
 }
 
 impl Default for Input {
@@ -63,6 +66,8 @@ impl Default for Input {
             mouse_wheel: 0.0,
             text_bytes: [0u8; TEXT_RING_CAP],
             text_len: 0,
+            ui_keys: [(0, false); 16],
+            ui_key_count: 0,
         }
     }
 }
@@ -179,11 +184,28 @@ impl Input {
         self.mouse_buttons_prev = 0;
         self.mouse_wheel = 0.0;
         self.text_len = 0;
+        self.ui_key_count = 0;
+    }
+
+    pub fn push_ui_key(&mut self, sdl_keycode: i32, down: bool) {
+        let n = self.ui_key_count as usize;
+        if n >= self.ui_keys.len() {
+            return;
+        }
+        self.ui_keys[n] = (sdl_keycode, down);
+        self.ui_key_count += 1;
+    }
+
+    pub fn drain_ui_keys(&mut self) -> impl Iterator<Item = (i32, bool)> + '_ {
+        let n = self.ui_key_count as usize;
+        self.ui_key_count = 0;
+        self.ui_keys[..n].iter().copied()
     }
 
     /// Drop keyboard state (e.g. while in-game console has focus).
     pub fn clear_keys(&mut self) {
         self.keymap = [0u8; KEYMAP_SIZE];
+        self.ui_key_count = 0;
     }
 
     pub fn push_text(&mut self, text: &str) {

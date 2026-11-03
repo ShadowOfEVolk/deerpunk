@@ -338,12 +338,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     };
 
     let (layout_meta_setup, layout_meta_desc) = if has_layout {
+        let component_role = if both {
+            quote! { deerpunk_engine_common::layout_meta::ComponentRole::Replicated }
+        } else if client {
+            quote! { deerpunk_engine_common::layout_meta::ComponentRole::ClientOnly }
+        } else {
+            quote! { deerpunk_engine_common::layout_meta::ComponentRole::ServerOnly }
+        };
         (
             quote! {
                 static __LAYOUT_META: ::std::sync::LazyLock<Vec<u8>> = ::std::sync::LazyLock::new(|| {
-                    deerpunk_engine_common::layout_meta::encode(
-                        &<#layout as deerpunk_engine_common::layout_meta::LayoutDescribe>::layout_meta(),
-                    )
+                    let mut meta = <#layout as deerpunk_engine_common::layout_meta::LayoutDescribe>::layout_meta();
+                    meta.role = #component_role;
+                    deerpunk_engine_common::layout_meta::encode(&meta)
                 });
             },
             quote! {

@@ -1,22 +1,19 @@
 //! Entity streaming: visibility baseline (`stream.in`), leave (`stream.out`), batched hot updates.
 
-use std::collections::HashMap;
-
-use serde_json::Value;
-
 use super::field_path::{Cursor, FieldPathId, FieldValue};
+use super::prefab_net_registry::PrefabNetId;
 use super::prefab_rep::{decode_fields, encode_fields};
 use super::protocol::SVC;
 
-/// Client should create/refresh shadow entity from prefab + component overrides + hot fields.
+/// Client spawns from registered [`PrefabNetId`] + cold/hot net fields (no prefab JSON on wire).
 #[derive(Clone, Debug)]
 pub struct StreamInRpc {
     pub net_id: u16,
     /// Bumps when the same `net_id` is reused after `stream.out` (anti-ghost).
     pub generation: u8,
-    pub prefab: String,
-    /// Prefab-shaped component JSON (e.g. `Mesh3D.uri`, `Worldspawn.map`).
-    pub components: HashMap<String, Value>,
+    pub prefab_id: PrefabNetId,
+    /// Cold snapshot (whole components + rare fields from [`NetworkEntity::cold`]).
+    pub cold: Vec<(FieldPathId, FieldValue)>,
     pub hot: Vec<(FieldPathId, FieldValue)>,
 }
 
@@ -38,33 +35,13 @@ pub struct StreamEntityUpdate {
     pub fields: Vec<(FieldPathId, FieldValue)>,
 }
 
-fn encode_components(out: &mut Vec<u8>, components: &HashMap<String, Value>) {
-    let json = serde_json::to_vec(components).unwrap_or_default();
-    let n = json.len().min(65535);
-    out.extend_from_slice(&(n as u16).to_le_bytes());
-    out.extend_from_slice(&json[..n]);
-}
-
-fn decode_components(c: &mut Cursor<'_>) -> Option<HashMap<String, Value>> {
-    let n = c.u16()? as usize;
-    let bytes = c.take(n)?;
-    let v: Value = serde_json::from_slice(bytes).ok()?;
-    match v {
-        Value::Object(map) => Some(map.into_iter().collect()),
-        _ => Some(HashMap::new()),
-    }
-}
-
 impl StreamInRpc {
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(128);
+        let mut out = Vec::with_capacity(64);
         out.extend_from_slice(&self.net_id.to_le_bytes());
         out.push(self.generation);
-        let name = self.prefab.as_bytes();
-        let n = name.len().min(255);
-        out.push(n as u8);
-        out.extend_from_slice(&name[..n]);
-        encode_components(&mut out, &self.components);
+        out.extend_from_slice(&self.prefab_id.0.to_le_bytes());
+        encode_fields(&mut out, &self.cold);
         encode_fields(&mut out, &self.hot);
         out
     }
@@ -73,14 +50,14 @@ impl StreamInRpc {
         let mut c = Cursor::new(payload);
         let net_id = c.u16()?;
         let generation = c.u8()?;
-        let prefab = c.string()?;
-        let components = decode_components(&mut c)?;
+        let prefab_id = PrefabNetId(c.u16()?);
+        let cold = decode_fields(&mut c)?;
         let hot = decode_fields(&mut c)?;
         Some(Self {
             net_id,
             generation,
-            prefab,
-            components,
+            prefab_id,
+            cold,
             hot,
         })
     }
@@ -142,3 +119,4 @@ impl StreamUpdateBatchRpc {
         p
     }
 }
+

@@ -1,4 +1,6 @@
 use crate::system_profiler;
+use crate::gamelib_abi::ScheduleSystemFn;
+use std::ffi::c_void;
 
 pub trait System: Send {
     fn run(&mut self, delta_time: f32);
@@ -10,6 +12,31 @@ impl<F: FnMut(f32) + Send> System for F {
     }
 }
 
+/// Gamelib-registered callback (`v1:schedule:add_system`).
+pub struct CallbackSystem {
+    name: &'static str,
+    func: ScheduleSystemFn,
+    user_data: *mut c_void,
+}
+
+impl CallbackSystem {
+    pub fn new(name: &'static str, func: ScheduleSystemFn, user_data: *mut c_void) -> Self {
+        Self {
+            name,
+            func,
+            user_data,
+        }
+    }
+}
+
+// Gamelib registers on the server thread; user_data lifetime is gamelib-owned.
+unsafe impl Send for CallbackSystem {}
+
+impl System for CallbackSystem {
+    fn run(&mut self, delta_time: f32) {
+        (self.func)(delta_time, self.user_data);
+    }
+}
 struct NamedSystem {
     name: &'static str,
     system: Box<dyn System>,

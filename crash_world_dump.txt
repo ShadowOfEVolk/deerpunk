@@ -1,6 +1,6 @@
 === World Dump (panic) ===
-Actually alive (scanned): 305
-Entity slots: count=305, alive=305
+Actually alive (scanned): 365
+Entity slots: count=367, alive=365
   0x00000001 'Component' : Component, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000002 'Identifier' : Component, Relationship, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000003 'Poly' : Component, (Identifier,Name), (Identifier,Symbol), (ChildOf,flecs.core)
@@ -248,61 +248,121 @@ Entity slots: count=305, alive=305
   0x00000027 'ParentComponent' : Component, (Identifier,Name), (Identifier,Symbol)
   0x00000028 'MeshDrawHidden' : Component, (Identifier,Name), (Identifier,Symbol)
   0x00000029 'MeshDrawAux' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x0000002a 'RenderLayer' : Component, (Identifier,Name), (Identifier,Symbol)
-  0x000001d7 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001d8 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001d9 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001da '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001db '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001dc '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001dd '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001de '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001df '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e0 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e1 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e2 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e3 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e4 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e5 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e6 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e7 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e8 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001e9 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001ea '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001eb '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001ec '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D
-  0x000001ed 'player' : TransformComponent, NetworkEntity, (Identifier,Name)
-  0x000001ee '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001ef '(unnamed)' : TransformComponent, CameraComponent, ParentComponent
-  0x000001f0 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, RenderLayer
-  0x000001f1 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f2 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f3 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f4 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f5 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f6 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f7 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f8 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001f9 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001fa '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001fb '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001fc '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001fd '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001fe '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x000001ff '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000200 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000201 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000202 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000203 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000204 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000205 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000206 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000207 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000208 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x00000209 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x0000020a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x0000020b '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x0000020c '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x0000020d '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x0000020e '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
-  0x0000020f '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial
+  0x0000002a 'WorldTransformComponent' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x0000002b 'RenderLayer' : Component, (Identifier,Name), (Identifier,Symbol)
+  0x000001d7 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001d8 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001d9 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001da '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001db '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001dc '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001dd '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001de '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001df '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e0 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e1 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e2 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e3 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e4 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e5 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e6 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e7 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e8 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001e9 '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001ea '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001eb '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001ec '(unnamed)' : TransformComponent, DrawMaterial, SkinnedMesh3D, WorldTransformComponent
+  0x000001ed 'player' : TransformComponent, NetworkEntity, WorldTransformComponent, (Identifier,Name)
+  0x000001ee '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001ef '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f0 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f1 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f2 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f3 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f4 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f5 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f6 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f7 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f8 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001f9 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001fa '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001fb '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001fc '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001fd '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001fe '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x000001ff '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000200 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000201 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000202 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000203 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000204 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000205 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000206 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000207 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000208 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawHidden, WorldTransformComponent
+  0x00000209 '(unnamed)' : TransformComponent, CameraComponent, ParentComponent, WorldTransformComponent
+  0x0000020a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawHidden, WorldTransformComponent, RenderLayer
+  0x0000020b '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000020c '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000020d '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000020e '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000020f '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000210 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000211 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000212 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000213 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000214 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000215 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000216 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000217 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000218 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000219 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000021a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000021b '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000021c '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000021d '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000021e '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000021f '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000220 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000221 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000222 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000223 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000224 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000225 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000226 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000227 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000228 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000229 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000022a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000022b '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000022c '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000022d '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000022e '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000022f '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000230 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000231 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000232 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000233 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000234 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000235 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000236 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000237 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000238 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000239 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000023a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000023b '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000023c '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000023d '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000023e '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000023f '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000240 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000241 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000242 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000243 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000244 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000245 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000246 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000247 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000248 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x00000249 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent
+  0x0000024a '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, WorldTransformComponent

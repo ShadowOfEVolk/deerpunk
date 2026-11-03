@@ -305,6 +305,27 @@ impl UiRuntime {
         unsafe { ffi::rmlui_process_mouse_wheel(self.ctx, -delta) };
     }
 
+    pub fn key_down(&self, rml_key: i32) {
+        if self.ctx.is_null() || rml_key == 0 {
+            return;
+        }
+        unsafe { ffi::rmlui_process_key_down(self.ctx, rml_key) };
+    }
+
+    pub fn key_up(&self, rml_key: i32) {
+        if self.ctx.is_null() || rml_key == 0 {
+            return;
+        }
+        unsafe { ffi::rmlui_process_key_up(self.ctx, rml_key) };
+    }
+
+    pub fn text_input(&self, codepoint: u32) {
+        if self.ctx.is_null() || codepoint == 0 {
+            return;
+        }
+        unsafe { ffi::rmlui_process_text_input(self.ctx, codepoint) };
+    }
+
     /// Update RmlUi and collect GPU geometry for the wgpu UI pass.
     pub fn frame(&self) -> Option<UiFrame> {
         if !self.is_ready() {

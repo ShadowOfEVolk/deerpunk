@@ -99,6 +99,9 @@ pub trait PhysicsBackend: Send {
 
     fn set_body_transform(&mut self, entity: u64, position: [f32; 3], rotation_xyzw: [f32; 4]);
 
+    /// Initial / gameplay velocity for dynamic bodies keyed by ECS entity id.
+    fn set_body_linvel(&mut self, entity: u64, linvel: [f32; 3]);
+
     /// `physics.prepare` — CharacterController.velocity → KCC desired move; sync rigid bodies.
     fn prepare(&mut self, world: &crate::world::World, dt: f32);
 
@@ -152,6 +155,8 @@ impl PhysicsBackend for NullPhysics {
     fn remove_body(&mut self, _entity: u64) {}
 
     fn set_body_transform(&mut self, _entity: u64, _position: [f32; 3], _rotation_xyzw: [f32; 4]) {}
+
+    fn set_body_linvel(&mut self, _entity: u64, _linvel: [f32; 3]) {}
 
     fn prepare(&mut self, _world: &crate::world::World, _dt: f32) {}
 

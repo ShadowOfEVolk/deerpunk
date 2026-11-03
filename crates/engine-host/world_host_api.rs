@@ -3,17 +3,14 @@
 use std::ffi::c_void;
 impl crate::Host {
     pub fn clear_server_world(&mut self) {
-        let ids: Vec<u64> = self
-            .server_engine
-            .as_ref()
-            .expect("server thread")
-            .world
+        let world = &mut self.server_engine.as_mut().expect("server thread").world;
+        world.clear_deferred_destroy();
+        let ids: Vec<u64> = world
             .inspect_entities()
             .into_iter()
             .map(|e| e.id)
             .collect();
         log::info!("[world] clear — destroying {} entities", ids.len());
-        let world = &mut self.server_engine.as_mut().expect("server thread").world;
         for id in ids {
             world.destroy(id);
         }

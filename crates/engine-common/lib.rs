@@ -12,11 +12,13 @@ pub mod goldsrc_lightstyle;
 pub mod component_inspect;
 pub mod layout_meta;
 pub mod prefab;
+pub mod prefab_layout_apply;
 pub mod scene;
 pub mod wad {
     pub use deerpunk_engine_resource::wad::*;
 }
 pub mod world;
+pub mod ecs_observer;
 pub mod ecs_validate;
 
 pub mod coord;
@@ -50,6 +52,7 @@ pub use layout_meta::{
     decode as decode_layout_meta, encode as encode_layout_meta, layout_to_json_schema,
     draw_material_layout, mesh3d_layout, transform_component_layout, worldspawn_layout, FieldFlags,
     FieldMeta, FieldId,
+    ComponentRole,
     LayoutDescribe,
     LayoutMeta, LayoutMetaRegistry, WireKind,
 };

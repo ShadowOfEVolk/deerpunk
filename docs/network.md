@@ -116,7 +116,11 @@ Entities that must appear on clients carry **`NetworkEntity`**. The server spawn
 | Static spawn | `net_id == 0` scene entities (e.g. world root) |
 | Stream in/out | Interest management for large worlds |
 
-Prefab JSON is sent once per connect (`PrefabDef`) so clients know component layouts before deltas arrive.
+At connect, the server sends one [`PrefabDef`](../../crates/engine-common/network/prefab_rep.rs) per classname (sorted catalog from map entities + `gamedir/prefabs/*.prefab`). Each packet carries a stable **`prefab_id` (u16)** and the full prefab JSON body. Client builds `prefab_id → classname` and caches defs locally.
+
+[`StreamIn`](../../crates/engine-common/network/stream_rep.rs) then references **`prefab_id` only** (no UTF-8 classname, no component JSON blob). Payload is **`cold` + `hot` net fields** (`NetFieldId` + typed values), same encoding as spawn cold/hot. Client flow: spawn filtered prefab from cache → apply cold → apply hot; **one** `World::simulate` per frame in host update (after net apply, before gamelib `frame` / `pre_render`).
+
+**Component roles (DPK1 v2):** each registered layout carries `ComponentRole` — `ServerOnly` (sim, skip on client spawn), `ClientOnly` (local view), `Replicated` (both worlds + net fields). Gamelib `#[game_component(both|client|…)]` sets the role on register. Client `StreamIn` allow-list uses [`LayoutMetaRegistry::client_receives_prefab_component`](../../crates/engine-common/layout_meta.rs), not hardcoded name lists.
 
 ---
 

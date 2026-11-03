@@ -52,6 +52,8 @@ pub struct ServerEngine {
     pub network: ServerNet,
     /// Monotonic server sim tick (for UserCmdAck).
     pub sim_tick: u32,
+    /// Accumulated simulation time while the server is enabled (seconds).
+    pub sim_time_secs: f64,
     /// Queued `CLC::ClientCommand` lines per player slot (drained by server gamelib).
     pub pending_client_commands: Vec<(u32, String)>,
 }
@@ -73,6 +75,7 @@ impl ServerEngine {
             slots_play: SlotPlayGate::default(),
             network: ServerNet::default(),
             sim_tick: 0,
+            sim_time_secs: 0.0,
             pending_client_commands: Vec::new(),
         }
     }
@@ -93,6 +96,9 @@ impl ServerEngine {
 
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
+        if !on {
+            self.sim_time_secs = 0.0;
+        }
         log::info!("[server] world enabled={on}");
     }
 
@@ -105,8 +111,7 @@ impl ServerEngine {
     }
 
     pub fn on_udp_player_connected(&mut self, slot: u32) {
-        self.players
-            .connect_remote(slot, format!("player{slot}"));
+        self.players.connect_remote(slot, format!("player{slot}"));
     }
 
     pub fn on_udp_player_disconnected(&mut self, slot: u32) {
@@ -122,21 +127,26 @@ impl ServerEngine {
             return Ok(());
         }
         {
+            println!("simulate");
             let _g = profile::Scope::new("server.ecs");
             self.world.simulate(delta_time);
         }
         {
+            println!("phys");
             let _g = profile::Scope::new("physics.sim.step");
             self.physics.step(delta_time);
         }
         {
+            println!("phys prepare");
             let _g = profile::Scope::new("physics.prepare");
             self.physics.prepare(&self.world, delta_time);
         }
         {
+            println!("phys writeback");
             let _g = profile::Scope::new("physics.writeback");
             self.physics.writeback(&self.world);
         }
+        println!("frame ok");
         Ok(())
     }
 

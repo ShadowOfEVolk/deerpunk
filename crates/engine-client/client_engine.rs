@@ -66,7 +66,7 @@ struct ServerLoopSound {
 pub struct ClientEngine {
     pub(crate) app: App,
     renderer: Renderer,
-    /// Client-side ECS (replicated renderables / linked cameras). Not simulated.
+    /// Client ECS mirror (replicated entities, render hooks). One [`World::simulate`] per frame in host update.
     pub world: World,
     extractor: Option<RenderExtractor>,
     pub input: Input,
@@ -366,6 +366,11 @@ impl ClientEngine {
         let engine = self as *mut ClientEngine;
         // SAFETY: `apply_packet` only uses disjoint fields of `ClientEngine` vs `rep`.
         unsafe { (*rep).apply_packet(&mut *engine, meshes, gamedir, resources, packet) }
+    }
+
+    /// Single client [`ecs_progress`] for this frame (after net apply, before gamelib `pre_render`).
+    pub fn tick_world(&mut self, dt: f32) {
+        self.world.simulate(dt.max(0.0));
     }
 
     pub fn refresh_stream_meshes(
@@ -1009,8 +1014,6 @@ impl ClientEngine {
         }
 
         let wheel = self.input.take_mouse_wheel();
-
-        // Feed OS mouse into ImGui (console / debug windows).
         {
             let (mx, my) = self.input.mouse_position();
             let b = self.input.mouse_buttons();
@@ -1043,6 +1046,16 @@ impl ClientEngine {
                 }
                 if !self.console_open && wheel != 0.0 {
                     ui.mouse_wheel(wheel);
+                }
+                if !self.console_open {
+                    crate::ui_rml_input::feed_rml_keys(ui, self.input.drain_ui_keys());
+                    let mut buf = [0u8; 128];
+                    let n = self.input.take_text(&mut buf);
+                    if n > 0 {
+                        if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                            crate::ui_rml_input::feed_rml_text(ui, s);
+                        }
+                    }
                 }
                 if let Some(frame) = ui.frame() {
                     static LOG_ONCE: std::sync::atomic::AtomicBool =

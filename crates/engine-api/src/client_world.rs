@@ -31,6 +31,13 @@ pub struct ClientWorldApi {
         *mut u64,
         usize,
     ) -> usize,
+        register_observer_fn: extern "C" fn(
+        *mut u8,
+        *mut u8,
+        usize,
+        u32,
+        u64,
+    ) -> i32,
 }
 
 unsafe impl Send for ClientWorldApi {}
@@ -51,7 +58,35 @@ impl ClientWorldApi {
                 std::mem::transmute(resolve(r, "v1:client_world:component_register"))
             },
             query_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:query")) },
+            register_observer_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:client_world:register_observer"))
+            },
         }
+    }
+
+    /// Flecs observer on the client world. `events`: bit0 OnAdd, bit1 OnSet.
+    pub fn register_observer(
+        &self,
+        query: &str,
+        on_add: bool,
+        on_set: bool,
+        callback: extern "C" fn(u64),
+    ) -> bool {
+        let mut flags = 0u32;
+        if on_add {
+            flags |= 1;
+        }
+        if on_set {
+            flags |= 2;
+        }
+        let cb_ptr: u64 = unsafe { std::mem::transmute(callback) };
+        (self.register_observer_fn)(
+            self.ctx,
+            query.as_ptr() as *mut u8,
+            query.len(),
+            flags,
+            cb_ptr,
+        ) != 0
     }
 
     pub fn spawn(&self) -> EntityId {

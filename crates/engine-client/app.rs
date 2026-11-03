@@ -125,6 +125,7 @@ impl App {
                     ..
                 } => {
                     input.set_key(scancode as u16, true);
+                    input.push_ui_key(scancode as i32, true);
                 }
                 Event::KeyUp {
                     scancode: Some(scancode),
@@ -132,6 +133,7 @@ impl App {
                     ..
                 } => {
                     input.set_key(scancode as u16, false);
+                    input.push_ui_key(scancode as i32, false);
                 }
                 Event::TextInput { text, .. } => {
                     input.push_text(&text);

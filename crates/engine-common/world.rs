@@ -58,6 +58,8 @@ enum PrefabApplierKind {
 #[derive(Clone, Copy)]
 struct PrefabApplier {
     component_id: ComponentId,
+    /// Flecs storage size (FFI gamelib prefab apply uses this for first add).
+    component_size: usize,
     kind: PrefabApplierKind,
 }
 
@@ -68,12 +70,36 @@ pub struct SystemDescriptor {
     pub phase: u64,
 }
 
+/// Gamelib callback for [`World::register_progress_system`].
+pub type ProgressSystemFn = extern "C" fn(*mut c_void);
+
+struct ProgressSystemSlot {
+    run: ProgressSystemFn,
+    user_data: *mut c_void,
+}
+
+unsafe extern "C-unwind" fn progress_system_bridge(it: *mut sys::ecs_iter_t) {
+    unsafe {
+        if it.is_null() {
+            return;
+        }
+        let it_ref = &*it;
+        if it_ref.ctx.is_null() {
+            return;
+        }
+        let slot = &*(it_ref.ctx as *const ProgressSystemSlot);
+        (slot.run)(slot.user_data);
+    }
+}
+
 pub struct World {
     inner: *mut sys::ecs_world_t,
     queries: Vec<*mut sys::ecs_query_t>,
     prefab_appliers: Mutex<HashMap<String, PrefabApplier>>,
     inspect: ComponentInspectRegistry,
     layout_meta: LayoutMetaRegistry,
+    /// Entities to [`Self::destroy`] after each [`Self::simulate`] (safe from Flecs OnUpdate).
+    deferred_destroy: Mutex<Vec<EntityId>>,
 }
 
 unsafe impl Send for World {}
@@ -89,6 +115,7 @@ impl World {
             prefab_appliers: Mutex::new(HashMap::new()),
             inspect: ComponentInspectRegistry::new(),
             layout_meta: LayoutMetaRegistry::new(),
+            deferred_destroy: Mutex::new(Vec::new()),
         }
     }
 
@@ -168,11 +195,44 @@ impl World {
         };
         match applier.kind {
             PrefabApplierKind::Native(apply) => {
-                apply(self, meshes, gamedir, resources, entity, applier.component_id, value)?;
+                apply(
+                    self,
+                    meshes,
+                    gamedir,
+                    resources,
+                    entity,
+                    applier.component_id,
+                    value,
+                )?;
             }
             PrefabApplierKind::Ffi { user, apply } => {
+                if crate::prefab_layout_apply::try_apply_prefab_json(
+                    self,
+                    entity,
+                    applier.component_id,
+                    value,
+                )
+                .is_ok()
+                {
+                    return Ok(true);
+                }
+                if !self.has(entity, applier.component_id) && applier.component_size > 0 {
+                    let buf = vec![0u8; applier.component_size];
+                    self.set_raw(
+                        entity,
+                        applier.component_id,
+                        buf.as_ptr() as *const std::ffi::c_void,
+                        applier.component_size,
+                    );
+                }
                 let cbor = value_to_cbor(value)?;
-                let code = apply(user, entity, applier.component_id, cbor.as_ptr(), cbor.len());
+                let code = apply(
+                    user,
+                    entity,
+                    applier.component_id,
+                    cbor.as_ptr(),
+                    cbor.len(),
+                );
                 if code != 0 {
                     return Err(format!("prefab apply '{name}' failed (code={code})"));
                 }
@@ -196,6 +256,7 @@ impl World {
             prefab_key.to_string(),
             PrefabApplier {
                 component_id,
+                component_size: 0,
                 kind: PrefabApplierKind::Native(apply),
             },
         );
@@ -257,6 +318,7 @@ impl World {
                     desc.name.clone(),
                     PrefabApplier {
                         component_id: id,
+                        component_size: desc.size as usize,
                         kind: PrefabApplierKind::Ffi {
                             user: desc.prefab_apply_user,
                             apply,
@@ -270,12 +332,9 @@ impl World {
             || desc.inspect_dump_ffi.is_some_and(|f| f as usize != 0)
         {
             if let Some(dump) = desc.inspect_dump_native {
-                let _ = self.inspect.register_native(
-                    &desc.name,
-                    id,
-                    &desc.inspect_schema_cbor,
-                    dump,
-                );
+                let _ =
+                    self.inspect
+                        .register_native(&desc.name, id, &desc.inspect_schema_cbor, dump);
             } else if let Some(dump) = desc.inspect_dump_ffi {
                 if dump as usize != 0 {
                     let _ = self.inspect.register_ffi(
@@ -295,14 +354,22 @@ impl World {
                     crate::network::net_field::sync_net_fields_from_layout(id, &layout);
                 }
                 Err(e) => {
-                    log::error!(
-                        "component '{}' layout meta: {e}",
-                        desc.name
-                    );
+                    log::error!("component '{}' layout meta: {e}", desc.name);
                 }
             }
         }
         id
+    }
+
+    /// Resolve a registered component type id by Flecs symbol name (e.g. `ItemDropComponent`).
+    pub fn component_lookup(&self, name: &str) -> Option<ComponentId> {
+        let c_name = CString::new(name).ok()?;
+        let id = unsafe { sys::ecs_lookup(self.inner, c_name.as_ptr()) };
+        if id == 0 {
+            None
+        } else {
+            Some(id)
+        }
     }
 
     // ── Entity CRUD ────────────────────────────────────────────
@@ -398,6 +465,33 @@ impl World {
         unsafe { sys::ecs_delete(self.inner, entity) }
     }
 
+    /// Queue delete until after the current / next [`Self::simulate`] (`ecs_progress` completes first).
+    /// Use from gamelib Flecs systems instead of [`Self::destroy`].
+    pub fn destroy_deferred(&self, entity: EntityId) {
+        if entity == 0 {
+            return;
+        }
+        self.deferred_destroy.lock().unwrap().push(entity);
+    }
+
+    pub fn clear_deferred_destroy(&self) {
+        self.deferred_destroy.lock().unwrap().clear();
+    }
+
+    /// Apply all [`Self::destroy_deferred`] queues (also called at end of [`Self::simulate`]).
+    pub fn flush_deferred_destroys(&self) {
+        let pending: Vec<EntityId> = {
+            let mut q = self.deferred_destroy.lock().unwrap();
+            std::mem::take(&mut *q)
+        };
+
+        for entity in pending {
+            if entity != 0 && self.is_alive(entity) {
+                self.destroy(entity);
+            }
+        }
+    }
+
     pub fn is_alive(&self, entity: EntityId) -> bool {
         unsafe { sys::ecs_is_alive(self.inner, entity) }
     }
@@ -428,10 +522,64 @@ impl World {
         }
     }
 
+    /// Register a gamelib callback as a Flecs system (`EcsOnUpdate`, runs in [`Self::simulate`]).
+    pub fn register_progress_system(
+        &self,
+        name: &str,
+        query: &str,
+        run: ProgressSystemFn,
+        user_data: *mut std::ffi::c_void,
+        interval_secs: f32,
+    ) -> SystemId {
+        let name_static: &'static str = Box::leak(name.to_string().into_boxed_str());
+        let query_static: &'static str = Box::leak(query.to_string().into_boxed_str());
+        let slot = Box::leak(Box::new(ProgressSystemSlot { run, user_data }));
+        let c_name = CString::new(name_static).expect("system name contains null byte");
+        let c_query = CString::new(query_static).expect("system query contains null byte");
+        unsafe {
+            let mut entity_desc: sys::ecs_entity_desc_t = std::mem::zeroed();
+            entity_desc.id = 0;
+            entity_desc.name = c_name.as_ptr();
+            let mut flecs_desc: sys::ecs_system_desc_t = std::mem::zeroed();
+            flecs_desc.entity = sys::ecs_entity_init(self.inner, &entity_desc);
+            flecs_desc.query.expr = c_query.as_ptr();
+            flecs_desc.callback = Some(progress_system_bridge);
+            flecs_desc.ctx = slot as *mut ProgressSystemSlot as *mut c_void;
+            flecs_desc.phase = sys::EcsOnUpdate;
+            flecs_desc.interval = interval_secs.max(0.0);
+            let id: SystemId = sys::ecs_system_init(self.inner, &flecs_desc).into();
+            log::info!(
+                target: "ecs",
+                "registered progress system '{name_static}' query='{query_static}' id={id} interval={}s",
+                flecs_desc.interval
+            );
+            id
+        }
+    }
+
+    /// Change Flecs [`ecs_system_desc_t::interval`] for a gamelib progress system.
+    pub fn set_progress_system_interval(&self, system_id: SystemId, interval_secs: f32) {
+        if system_id == 0 {
+            return;
+        }
+        unsafe {
+            let mut desc: sys::ecs_system_desc_t = std::mem::zeroed();
+            desc.entity = system_id as sys::ecs_entity_t;
+            desc.interval = interval_secs.max(0.0);
+            sys::ecs_system_update(self.inner, system_id as sys::ecs_entity_t, &desc);
+            log::info!(
+                target: "ecs",
+                "progress system id={system_id} interval={}s",
+                desc.interval
+            );
+        }
+    }
+
     pub fn simulate(&self, dt: f32) {
         unsafe {
             sys::ecs_progress(self.inner, dt);
         }
+        self.flush_deferred_destroys();
     }
 
     // ── Debug ──────────────────────────────────────────────────
@@ -662,9 +810,7 @@ impl World {
 
                 let components: Vec<String> = raw_parts
                     .iter()
-                    .filter(|p| {
-                        is_game_component_token(p) || self.inspect.contains(p)
-                    })
+                    .filter(|p| is_game_component_token(p) || self.inspect.contains(p))
                     .cloned()
                     .collect();
                 if components.is_empty() {

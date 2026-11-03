@@ -8,8 +8,8 @@ use deerpunk_engine_common::network::field_apply::apply_field_ex;
 use deerpunk_engine_common::network::field_path::{FieldValue, NetFieldId};
 use deerpunk_engine_common::network::protocol::SVC;
 use deerpunk_engine_common::network::{
-    NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, SpawnPrefabRpc, StreamInRpc, StreamOutRpc,
-    StreamUpdateBatchRpc,
+    NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, PrefabNetId, PrefabNetRegistry, SpawnPrefabRpc,
+    StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc,
 };
 use deerpunk_engine_common::scene::PrefabManager;
 use deerpunk_engine_common::scene::spawn_prefab_filtered_with_component_overrides_cached;
@@ -19,18 +19,17 @@ use deerpunk_engine_common::world::{EntityId, World};
 use crate::client_engine::ClientEngine;
 use crate::draw_material_resolve::resolve_draw_material_uri;
 
-/// Server-authoritative sim; client replica only needs render + controller + net fields.
-const CLIENT_SKIP_PREFAB_COMPONENTS: &[&str] = &["PlayerMovement", "PlayerUse", "FallRescue"];
-
-fn client_prefab_component_allowed(name: &str) -> bool {
-    !CLIENT_SKIP_PREFAB_COMPONENTS
-        .iter()
-        .any(|s| s.eq_ignore_ascii_case(name))
+/// Server-authoritative sim; client replica uses [`LayoutMetaRegistry::client_receives_prefab_component`].
+fn client_prefab_component_allowed(world: &World, name: &str) -> bool {
+    world
+        .layout_registry()
+        .client_receives_prefab_component(name)
 }
 
 #[derive(Default)]
 pub struct ClientPrefabReplication {
     network_prefabs: PrefabManager,
+    prefab_ids: PrefabNetRegistry,
     /// net_id → (client entity, stream generation)
     map: HashMap<u16, (EntityId, u8)>,
     static_entities: Vec<EntityId>,
@@ -47,6 +46,7 @@ impl ClientPrefabReplication {
         self.static_entities.clear();
         self.view_net_id = None;
         self.network_prefabs.clear_cache();
+        self.prefab_ids.clear();
     }
 
     pub fn replicated_entities(&self) -> Vec<EntityId> {
@@ -185,8 +185,15 @@ impl ClientPrefabReplication {
         } else if cmd == SVC::PrefabDef as u8 {
             match PrefabDefRpc::decode(payload) {
                 Some(rpc) => {
+                    if let Err(e) = self.prefab_ids.register(rpc.prefab_id, &rpc.name) {
+                        log::warn!("[stream] PrefabDef id: {e}");
+                    }
                     self.network_prefabs.insert_cached(&rpc.name, rpc.def);
-                    log::info!("[stream] PrefabDef '{}'", rpc.name);
+                    log::info!(
+                        "[stream] PrefabDef id={} '{}'",
+                        rpc.prefab_id.0,
+                        rpc.name
+                    );
                     true
                 }
                 None => {
@@ -209,6 +216,22 @@ impl ClientPrefabReplication {
         resources: &ResourceManager,
         rpc: StreamInRpc,
     ) -> Result<(), String> {
+        let prefab = self
+            .prefab_ids
+            .name_of(rpc.prefab_id)
+            .ok_or_else(|| format!("unknown prefab_id {}", rpc.prefab_id.0))?
+            .to_string();
+        let trace_drop = prefab == "item_drop";
+        if trace_drop {
+            log::info!(
+                "[stream/item_drop] 1 begin net_id={} gen={} prefab_id={} cold={} hot={}",
+                rpc.net_id,
+                rpc.generation,
+                rpc.prefab_id.0,
+                rpc.cold.len(),
+                rpc.hot.len()
+            );
+        }
         if rpc.net_id != 0 {
             if let Some((old, gen)) = self.map.get(&rpc.net_id) {
                 if gen == &rpc.generation {
@@ -219,17 +242,12 @@ impl ClientPrefabReplication {
         }
 
         let mut allow_keys: Vec<String> = vec!["TransformComponent".into()];
-        for key in rpc.components.keys() {
-            if client_prefab_component_allowed(key) && !allow_keys.iter().any(|x| x == key) {
-                allow_keys.push(key.clone());
-            }
-        }
         if rpc.net_id != 0 {
             allow_keys.push("NetworkEntity".into());
         }
-        if let Some(def) = self.network_prefabs.get_cached(&rpc.prefab) {
+        if let Some(def) = self.network_prefabs.get_cached(&prefab) {
             for name in def.components.keys() {
-                if !client_prefab_component_allowed(name) {
+                if !client_prefab_component_allowed(&client.world, name) {
                     continue;
                 }
                 if !allow_keys.iter().any(|x| x == name) {
@@ -237,20 +255,28 @@ impl ClientPrefabReplication {
                 }
             }
         }
-        allow_keys.retain(|k| client_prefab_component_allowed(k));
+        allow_keys.retain(|k| client_prefab_component_allowed(&client.world, k));
         let allow: Vec<&str> = allow_keys.iter().map(|s| s.as_str()).collect();
+        let empty_overrides = HashMap::new();
 
+        if trace_drop {
+            log::info!("[stream/item_drop] 2 spawn_prefab allow={allow_keys:?}");
+        }
         let entity = spawn_prefab_filtered_with_component_overrides_cached(
             &client.world,
             meshes,
             gamedir,
             resources,
-            &rpc.prefab,
+            &prefab,
             Some(&allow),
-            &rpc.components,
+            &empty_overrides,
             Some(&self.network_prefabs),
         )
         .map_err(|e| e.message)?;
+
+        if trace_drop {
+            log::info!("[stream/item_drop] 3 spawned ent={entity:#x}");
+        }
 
         if rpc.net_id != 0 {
             let ne_id = client.world.component_init::<NetworkEntity>();
@@ -259,7 +285,7 @@ impl ClientPrefabReplication {
                 if !ptr.is_null() {
                     unsafe {
                         (*ptr).net_id = rpc.net_id;
-                        (*ptr).set_prefab(&rpc.prefab);
+                        (*ptr).set_prefab(&prefab);
                     }
                 }
             }
@@ -268,18 +294,36 @@ impl ClientPrefabReplication {
             self.static_entities.push(entity);
         }
 
-        self.apply_hot_fields(client, meshes, gamedir, resources, entity, &rpc.hot);
+        if trace_drop {
+            log::info!("[stream/item_drop] 4 cold_fields");
+        }
+        self.apply_net_fields(client, meshes, gamedir, resources, entity, &rpc.cold);
 
+        if trace_drop {
+            log::info!("[stream/item_drop] 5 hot_fields");
+        }
+        self.apply_net_fields(client, meshes, gamedir, resources, entity, &rpc.hot);
+
+        if trace_drop {
+            log::info!("[stream/item_drop] 6 resolve_draw_material");
+        }
         let _ = resolve_draw_material_uri(client, resources, entity);
+        if trace_drop {
+            log::info!("[stream/item_drop] 7 mesh_adopt");
+        }
         client.mesh_adopt_entity(meshes, entity);
-        client.world.simulate(0.0);
+        if trace_drop {
+            log::info!("[stream/item_drop] 8 done");
+        }
         log::info!(
-            "[stream] in prefab='{}' net_id={} gen={} ent={:#x} components={}",
-            rpc.prefab,
+            "[stream] in prefab='{}' id={} net_id={} gen={} ent={:#x} cold={} hot={}",
+            prefab,
+            rpc.prefab_id.0,
             rpc.net_id,
             rpc.generation,
             entity,
-            rpc.components.len()
+            rpc.cold.len(),
+            rpc.hot.len()
         );
         Ok(())
     }
@@ -302,7 +346,6 @@ impl ClientPrefabReplication {
     ) {
         if let Some((entity, _)) = self.map.remove(&net_id) {
             Self::destroy_client_entity(client, meshes, entity);
-            client.world.simulate(0.0);
             log::info!("[stream] out net_id={}", net_id);
         }
     }
@@ -336,7 +379,7 @@ impl ClientPrefabReplication {
         self.apply_hot_fields(client, meshes, gamedir, resources, entity, fields);
     }
 
-    fn apply_hot_fields(
+    fn apply_net_fields(
         &self,
         client: &mut ClientEngine,
         meshes: &mut MeshRegistry,
@@ -361,5 +404,17 @@ impl ClientPrefabReplication {
             }
             apply_field_ex(world, Some(meshes), Some(gamedir), Some(resources), entity, *path, value);
         }
+    }
+
+    fn apply_hot_fields(
+        &self,
+        client: &mut ClientEngine,
+        meshes: &mut MeshRegistry,
+        gamedir: &Path,
+        resources: &ResourceManager,
+        entity: EntityId,
+        fields: &[(NetFieldId, FieldValue)],
+    ) {
+        self.apply_net_fields(client, meshes, gamedir, resources, entity, fields);
     }
 }

@@ -2,6 +2,7 @@
 
 use super::field_path::{Cursor, FieldValue, NetFieldId};
 use super::net_field::NetFieldKind;
+use super::prefab_net_registry::PrefabNetId;
 use super::protocol::SVC;
 use crate::scene::EntityDef;
 
@@ -29,9 +30,10 @@ pub struct NetDestroyRpc {
     pub net_id: u16,
 }
 
-/// Server-authored prefab (`prefabs/{name}.prefab` body as JSON).
+/// Server-authored prefab (`prefabs/{name}.prefab` body as JSON) + stable wire id.
 #[derive(Clone, Debug)]
 pub struct PrefabDefRpc {
+    pub prefab_id: PrefabNetId,
     pub name: String,
     pub def: EntityDef,
 }
@@ -147,7 +149,8 @@ impl PrefabDefRpc {
         let name = self.name.as_bytes();
         let n = name.len().min(255);
         let jlen = json.len().min(512 * 1024);
-        let mut out = Vec::with_capacity(8 + n + jlen);
+        let mut out = Vec::with_capacity(10 + n + jlen);
+        out.extend_from_slice(&self.prefab_id.0.to_le_bytes());
         out.push(n as u8);
         out.extend_from_slice(&name[..n]);
         out.extend_from_slice(&(jlen as u32).to_le_bytes());
@@ -157,6 +160,7 @@ impl PrefabDefRpc {
 
     pub fn decode(payload: &[u8]) -> Option<Self> {
         let mut c = Cursor::new(payload);
+        let prefab_id = PrefabNetId(c.u16()?);
         let name = c.string()?;
         let jlen = {
             let s = c.take(4)?;
@@ -164,7 +168,11 @@ impl PrefabDefRpc {
         };
         let json = c.take(jlen)?;
         let def: EntityDef = serde_json::from_slice(json).ok()?;
-        Some(Self { name, def })
+        Some(Self {
+            prefab_id,
+            name,
+            def,
+        })
     }
 
     pub fn to_packet(&self) -> Vec<u8> {
@@ -196,6 +204,27 @@ impl NetDestroyRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::prefab_net_registry::PrefabNetId;
+
+    #[test]
+    fn stream_in_roundtrip() {
+        let rpc = super::super::stream_rep::StreamInRpc {
+            net_id: 9,
+            generation: 2,
+            prefab_id: PrefabNetId(3),
+            cold: vec![(
+                NetFieldId::TRANSFORM_POSITION,
+                FieldValue::Vec3([0.0, 1.0, 0.0]),
+            )],
+            hot: vec![],
+        };
+        let bytes = rpc.encode();
+        let decoded = super::super::stream_rep::StreamInRpc::decode(&bytes).unwrap();
+        assert_eq!(decoded.net_id, 9);
+        assert_eq!(decoded.generation, 2);
+        assert_eq!(decoded.prefab_id.0, 3);
+        assert_eq!(decoded.cold.len(), 1);
+    }
 
     #[test]
     fn spawn_roundtrip() {

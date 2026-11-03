@@ -74,6 +74,7 @@ Use `deerpunk_engine_api::EngineApi` (or `deerpunk_engine_sdk`) to wrap the reso
 |--------|---------|
 | `spawn` | Create empty entity |
 | `destroy` | Destroy entity (server scope) |
+| `destroy_deferred` | Queue destroy until after `ecs_progress` (use from Flecs OnUpdate systems) |
 | `has` / `get` / `set` / `remove` | Component access on authoritative world |
 | `clear` | Clear world (stub / limited) |
 | `free_value` | Companion for `get` lifetime |
@@ -82,6 +83,8 @@ Use `deerpunk_engine_api::EngineApi` (or `deerpunk_engine_sdk`) to wrap the reso
 | `component_register` | Register component type (server) |
 | `query` / `query_count` / `query_matches` | Entity queries |
 | `query_prepare` / `query_execute` | Prepared queries |
+| `system_register` | Gamelib Flecs OnUpdate system (`query`, callback, `user_data`, **`interval_secs`**) |
+| `system_set_interval` | Update Flecs `interval` on an existing system id |
 
 Authoritative simulation and physics run on the **server world**. Clients receive replicated state; see [network.md](network.md).
 
@@ -192,6 +195,7 @@ User messages are the usual way to send game-specific payloads (inventory, chunk
 | Method | Purpose |
 |--------|---------|
 | `set_enabled` / `is_enabled` / `activated` | Server module toggles |
+| `sim_time_secs` | Monotonic sim seconds while server enabled (read-only; host advances each tick) |
 
 ---
 

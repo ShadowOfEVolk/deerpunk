@@ -90,11 +90,11 @@ pub fn describe_svc_payload(packet: &[u8]) -> String {
         Some(SVC::StreamIn) => {
             if let Some(r) = StreamInRpc::decode(payload) {
                 format!(
-                    "net_id={} gen={} prefab='{}' components={} hot={}",
+                    "net_id={} gen={} prefab_id={} cold={} hot={}",
                     r.net_id,
                     r.generation,
-                    r.prefab,
-                    r.components.len(),
+                    r.prefab_id.0,
+                    r.cold.len(),
                     r.hot.len()
                 )
             } else {

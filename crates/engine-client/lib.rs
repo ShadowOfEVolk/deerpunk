@@ -41,6 +41,7 @@ pub mod render_extract_cache;
 pub mod render_extractor;
 pub mod scene;
 pub mod ui_controller;
+mod ui_rml_input;
 
 pub use ui_controller::UiController;
 pub use audio::{AudioBackend, AudioInitContext, AudioListener, FmodEventInfo, NullAudio};

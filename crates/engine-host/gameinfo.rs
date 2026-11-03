@@ -1,10 +1,7 @@
-//! Xash-style `gameinfo.txt` key-value descriptor.
-
 use std::collections::HashMap;
 use std::path::Path;
 
 /// Parsed game descriptor. `gamefolder` is always the gamedir directory name
-/// (FWGS ignores the `gamedir` key for that purpose).
 #[derive(Debug, Clone)]
 pub struct GameInfo {
     pub gamefolder: String,
@@ -26,6 +23,7 @@ impl GameInfo {
             .and_then(|s| s.to_str())
             .unwrap_or("game")
             .to_string();
+
         let mut info = Self::defaults(&gamefolder);
 
         let gi = gamedir.join("gameinfo.txt");

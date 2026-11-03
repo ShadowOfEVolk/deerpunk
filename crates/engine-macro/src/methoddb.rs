@@ -179,6 +179,7 @@ enum AbiType {
     ConstComponentRegisterDescPtr,
     ConstSpawnPrefabOptsPtr,
     ScheduleSystemFn,
+    WorldProgressSystemFn,
 }
 
 fn path_last_ident(path: &syn::Path) -> Option<&Ident> {
@@ -336,6 +337,13 @@ fn classify_ty(ty: &Type) -> syn::Result<AbiType> {
                 .unwrap_or(false)
             {
                 Ok(AbiType::ScheduleSystemFn)
+            } else if path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .any(|i| i == "WorldProgressSystemFn")
+            {
+                Ok(AbiType::WorldProgressSystemFn)
             } else {
                 Err(syn::Error::new_spanned(ty, "unsupported type for methoddb bind"))
             }
@@ -688,6 +696,14 @@ fn generate_tramp(
                 let cb = format_ident!("__arg{}", arg_idx);
                 ffi_params.push(quote! {
                     #cb: extern "C" fn(f32, *mut std::ffi::c_void)
+                });
+                rust_args.push(quote! { #cb });
+                arg_idx += 1;
+            }
+            AbiType::WorldProgressSystemFn => {
+                let cb = format_ident!("__arg{}", arg_idx);
+                ffi_params.push(quote! {
+                    #cb: extern "C" fn(*mut std::ffi::c_void)
                 });
                 rust_args.push(quote! { #cb });
                 arg_idx += 1;

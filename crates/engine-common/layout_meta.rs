@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use crate::world::ComponentId;
 
 pub const MAGIC: &[u8; 4] = b"DPK1";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 /// Stable per-field id inside one component type (`0..n-1` or assigned explicitly).
 pub type FieldId = u16;
@@ -66,6 +66,34 @@ bitflags::bitflags! {
     }
 }
 
+/// Which worlds / replication stream may carry this component type.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComponentRole {
+    /// Server ECS only (sim, AI, physics authority). Never applied on client `StreamIn`.
+    ServerOnly = 0,
+    /// Client ECS only (view, FX). Server does not replicate; local spawn only.
+    ClientOnly = 1,
+    /// Registered on both worlds; net fields + client prefab spawn when listed in prefab.
+    Replicated = 2,
+}
+
+impl ComponentRole {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            0 => Self::ServerOnly,
+            1 => Self::ClientOnly,
+            2 => Self::Replicated,
+            _ => return None,
+        })
+    }
+
+    /// Should this component type be instantiated on the client from a replicated prefab spawn?
+    pub fn client_prefab_spawn(self) -> bool {
+        matches!(self, Self::Replicated | Self::ClientOnly)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldMeta {
     pub id: FieldId,
@@ -83,6 +111,7 @@ pub struct LayoutMeta {
     pub name: String,
     pub size: u32,
     pub align: u32,
+    pub role: ComponentRole,
     pub fields: Vec<FieldMeta>,
 }
 
@@ -163,6 +192,38 @@ impl LayoutMetaRegistry {
             .ok()
             .and_then(|m| m.get(&component_id).map(|e| e.layout.clone()))
     }
+
+    /// Resolve replication role for prefab filtering (`StreamIn` client spawn).
+    pub fn prefab_role(&self, component_name: &str) -> ComponentRole {
+        self.get_by_name(component_name)
+            .map(|m| m.role)
+            .unwrap_or_else(|| engine_default_component_role(component_name))
+    }
+
+    pub fn client_receives_prefab_component(&self, component_name: &str) -> bool {
+        self.prefab_role(component_name).client_prefab_spawn()
+    }
+}
+
+/// Fallback when a prefab component has no DPK1 registration on the client yet.
+pub fn engine_default_component_role(name: &str) -> ComponentRole {
+    match name {
+        // Server simulation (never mirror on client replica).
+        "PlayerMovement" | "PlayerUse" | "FallRescue" => ComponentRole::ServerOnly,
+        // Engine / presentation replicated through prefab + net fields.
+        "TransformComponent"
+        | "NetworkEntity"
+        | "Mesh3D"
+        | "DrawMaterial"
+        | "Material"
+        | "Worldspawn"
+        | "MapKv"
+        | "StudioModel"
+        | "CharacterController"
+        | "CameraComponent" => ComponentRole::Replicated,
+        // Gamelib types without layout blob default to server-only (safe).
+        _ => ComponentRole::ServerOnly,
+    }
 }
 
 // ── Encode / decode (DPK1) ─────────────────────────────────────────
@@ -174,6 +235,7 @@ pub fn encode(meta: &LayoutMeta) -> Vec<u8> {
     write_str(&mut out, &meta.name);
     out.extend_from_slice(&meta.size.to_le_bytes());
     out.extend_from_slice(&meta.align.to_le_bytes());
+    out.push(meta.role as u8);
     let n = meta.fields.len().min(0xffff);
     out.extend_from_slice(&(n as u16).to_le_bytes());
     for f in meta.fields.iter().take(n) {
@@ -196,13 +258,20 @@ pub fn decode(bytes: &[u8]) -> Result<LayoutMeta, String> {
     if bytes.get(0..4) != Some(MAGIC) {
         return Err("layout meta: bad magic".into());
     }
-    if bytes[4] != VERSION {
-        return Err(format!("layout meta: unsupported version {}", bytes[4]));
+    let version = bytes[4];
+    if version != 1 && version != VERSION {
+        return Err(format!("layout meta: unsupported version {version}"));
     }
     let mut pos = 5usize;
     let name = read_str(bytes, &mut pos)?;
     let size = read_u32(bytes, &mut pos)?;
     let align = read_u32(bytes, &mut pos)?;
+    let role = if version >= 2 {
+        ComponentRole::from_u8(read_u8(bytes, &mut pos)?)
+            .ok_or_else(|| "layout meta: bad component role".to_string())?
+    } else {
+        ComponentRole::Replicated
+    };
     let n = read_u16(bytes, &mut pos)? as usize;
     let mut fields = Vec::with_capacity(n);
     for _ in 0..n {
@@ -231,6 +300,7 @@ pub fn decode(bytes: &[u8]) -> Result<LayoutMeta, String> {
         name,
         size,
         align,
+        role,
         fields,
     })
 }
@@ -368,6 +438,7 @@ pub fn transform_component_layout() -> LayoutMeta {
         name: "TransformComponent".into(),
         size: size_of::<TransformComponent>() as u32,
         align: align_of::<TransformComponent>() as u32,
+        role: ComponentRole::Replicated,
         fields: vec![
             FieldMeta {
                 id: 0,
@@ -412,6 +483,7 @@ pub fn worldspawn_layout() -> LayoutMeta {
         name: "Worldspawn".into(),
         size: size_of::<Worldspawn>() as u32,
         align: align_of::<Worldspawn>() as u32,
+        role: ComponentRole::Replicated,
         fields: vec![FieldMeta {
             id: 0,
             name: "map".into(),
@@ -434,6 +506,7 @@ pub fn draw_material_layout() -> LayoutMeta {
         name: "DrawMaterial".into(),
         size: size_of::<DrawMaterial>() as u32,
         align: align_of::<DrawMaterial>() as u32,
+        role: ComponentRole::Replicated,
         fields: vec![FieldMeta {
             id: 0,
             name: "uri".into(),
@@ -456,6 +529,7 @@ pub fn mesh3d_layout() -> LayoutMeta {
         name: "Mesh3D".into(),
         size: size_of::<Mesh3D>() as u32,
         align: align_of::<Mesh3D>() as u32,
+        role: ComponentRole::Replicated,
         fields: vec![FieldMeta {
             id: 0,
             name: "uri".into(),
@@ -479,6 +553,7 @@ pub fn studio_model_layout() -> LayoutMeta {
         name: "StudioModel".into(),
         size: size_of::<StudioModel>() as u32,
         align: align_of::<StudioModel>() as u32,
+        role: ComponentRole::Replicated,
         fields: vec![
             FieldMeta {
                 id: 0,
