@@ -879,6 +879,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "deerpunk-engine-common",
+ "deerpunk-engine-ffi",
  "glam 0.33.3",
  "imgui",
  "imgui-wgpu",

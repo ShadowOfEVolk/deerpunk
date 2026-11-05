@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-ffi = { path = "../engine-ffi" }
 inventory = "0.3"
 glam = { version = "0.33", features = ["serde"] }
 tiny-skia.workspace = true

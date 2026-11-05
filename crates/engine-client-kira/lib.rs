@@ -1,8 +1,10 @@
 //! Kira audio backend — datapack `sound_events` / `sound_banks` + clips via [`ResourceManager`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
 use deerpunk_engine_client::audio::{AudioBackend, AudioInitContext, AudioListener, FmodEventInfo};
 use deerpunk_engine_common::resource::{path_to_file_uri, AudioClip, ResourceManager};
 use deerpunk_engine_common::sound_event::{
@@ -19,11 +21,49 @@ use kira::tween::Tween;
 use rand::Rng;
 use walkdir::WalkDir;
 
+/// Decode `.ogg`/`.wav` off the main thread; results merged in [`KiraBackend::drain_warm_results`].
+struct SfxWarmWorker {
+    job_tx: Sender<(String, PathBuf)>,
+    result_rx: Receiver<(String, Result<StaticSoundData, FromFileError>)>,
+    join: JoinHandle<()>,
+    inflight: HashSet<String>,
+}
+
+impl SfxWarmWorker {
+    fn spawn() -> Self {
+        let (job_tx, job_rx) = mpsc::channel::<(String, PathBuf)>();
+        let (result_tx, result_rx) = mpsc::channel();
+        let join = thread::Builder::new()
+            .name("kira-sfx-warm".into())
+            .spawn(move || {
+                while let Ok((uri, path)) = job_rx.recv() {
+                    let decoded = StaticSoundData::from_file(&path);
+                    if result_tx.send((uri, decoded)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("kira-sfx-warm thread");
+        Self {
+            job_tx,
+            result_rx,
+            join,
+            inflight: HashSet::new(),
+        }
+    }
+
+    fn stop(mut self) {
+        drop(self.job_tx);
+        let _ = self.join.join();
+    }
+}
+
 pub struct KiraBackend {
     manager: Option<AudioManager<DefaultBackend>>,
     events: SoundEventRegistry,
     gamedir: PathBuf,
     clip_cache: HashMap<String, StaticSoundData>,
+    warm: Option<SfxWarmWorker>,
     attached: HashMap<u64, kira::sound::static_sound::StaticSoundHandle>,
     /// Looping 2D instances keyed by host `sound_id` (music — streamed from disk).
     loop_streams: HashMap<u32, StreamingSoundHandle<FromFileError>>,
@@ -38,6 +78,7 @@ impl Default for KiraBackend {
             events: SoundEventRegistry::default(),
             gamedir: PathBuf::new(),
             clip_cache: HashMap::new(),
+            warm: None,
             attached: HashMap::new(),
             loop_streams: HashMap::new(),
             last_volume: 1.0,
@@ -99,9 +140,17 @@ impl KiraBackend {
         }
     }
 
-    /// Decode short SFX clips once at startup so gameplay plays don't hitch the mixer.
-    fn warm_sfx_clip_cache(&mut self) {
-        let mut to_load: Vec<(String, PathBuf)> = Vec::new();
+    fn ensure_warm_worker(&mut self) {
+        if self.warm.is_none() {
+            self.warm = Some(SfxWarmWorker::spawn());
+        }
+    }
+
+    /// Queue unique SFX clips for background decode (music stays streamed on play).
+    fn enqueue_sfx_warm(&mut self) -> u32 {
+        self.ensure_warm_worker();
+
+        let mut jobs: Vec<(String, PathBuf)> = Vec::new();
         for def in self.events.events.values() {
             for clip_rel in Self::clips_for_def(def) {
                 if clip_rel.contains("/music/") || clip_rel.contains("\\music\\") {
@@ -111,15 +160,43 @@ impl KiraBackend {
                 if self.clip_cache.contains_key(&uri) {
                     continue;
                 }
-                to_load.push((uri, self.resolve_clip_path(clip_rel)));
+                if self
+                    .warm
+                    .as_ref()
+                    .is_some_and(|w| w.inflight.contains(&uri))
+                {
+                    continue;
+                }
+                jobs.push((uri, self.resolve_clip_path(clip_rel)));
             }
         }
-        for (uri, path) in to_load {
-            match StaticSoundData::from_file(&path) {
-                Ok(d) => {
-                    self.clip_cache.insert(uri, d);
+
+        let Some(warm) = self.warm.as_mut() else {
+            return 0;
+        };
+        let mut queued = 0u32;
+        for (uri, path) in jobs {
+            warm.inflight.insert(uri.clone());
+            if warm.job_tx.send((uri.clone(), path)).is_ok() {
+                queued += 1;
+            } else {
+                warm.inflight.remove(&uri);
+            }
+        }
+        queued
+    }
+
+    fn drain_warm_results(&mut self) {
+        let Some(warm) = self.warm.as_mut() else {
+            return;
+        };
+        while let Ok((uri, result)) = warm.result_rx.try_recv() {
+            warm.inflight.remove(&uri);
+            match result {
+                Ok(data) => {
+                    self.clip_cache.insert(uri, data);
                 }
-                Err(e) => log::warn!("[kira] warm {}: {e}", path.display()),
+                Err(e) => log::warn!("[kira] warm decode {uri}: {e}"),
             }
         }
     }
@@ -406,11 +483,11 @@ impl AudioBackend for KiraBackend {
         };
         self.manager = Some(manager);
         self.events = discover_datapack_events(ctx.gamedir);
-        self.warm_sfx_clip_cache();
+        let queued = self.enqueue_sfx_warm();
         log::info!(
-            "[kira] ready — {} event(s), {} cached clip(s), gamedir={}",
+            "[kira] ready — {} event(s), {} clip(s) queued for background decode, gamedir={}",
             self.events.events.len(),
-            self.clip_cache.len(),
+            queued,
             ctx.gamedir.display()
         );
         true
@@ -420,10 +497,14 @@ impl AudioBackend for KiraBackend {
         for (k, v) in &registry.events {
             self.events.insert(k.clone(), v.clone());
         }
-        self.warm_sfx_clip_cache();
+        let queued = self.enqueue_sfx_warm();
+        if queued > 0 {
+            log::info!("[kira] queued {queued} new clip(s) for background decode");
+        }
     }
 
     fn update(&mut self, listener: &AudioListener, attached: &[(u64, [f32; 3])], volume: f32) {
+        self.drain_warm_results();
         self.last_listener = *listener;
         if let Some(m) = self.manager.as_mut() {
             if (volume - self.last_volume).abs() > 0.001 {
@@ -543,6 +624,9 @@ impl AudioBackend for KiraBackend {
         self.attached.clear();
         self.loop_streams.clear();
         self.clip_cache.clear();
+        if let Some(warm) = self.warm.take() {
+            warm.stop();
+        }
         self.manager = None;
     }
 

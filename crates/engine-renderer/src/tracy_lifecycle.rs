@@ -13,10 +13,11 @@ mod imp {
     }
 
     pub fn shutdown() {
-        if tracy_client::Client::is_running() {
-            unsafe {
-                tracy_client::sys::___tracy_shutdown_profiler();
-            }
+        if unsafe { tracy_client::sys::___tracy_profiler_started() == 0 } {
+            return;
+        }
+        unsafe {
+            tracy_client::sys::___tracy_shutdown_profiler();
         }
     }
 }
@@ -25,6 +26,18 @@ mod imp {
 pub fn tracy_ensure_started() {
     #[cfg(feature = "tracy")]
     imp::ensure_started();
+}
+
+/// True while the global Tracy profiler is active (`___tracy_profiler_started`).
+pub fn tracy_active() -> bool {
+    #[cfg(feature = "tracy")]
+    {
+        unsafe { tracy_client::sys::___tracy_profiler_started() != 0 }
+    }
+    #[cfg(not(feature = "tracy"))]
+    {
+        false
+    }
 }
 
 /// Stop Tracy worker thread; call after render/client teardown, no zones active.

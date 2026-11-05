@@ -159,6 +159,30 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_godrays",
+    "1",
+    "Screen-space sun shafts in tonemap pass (0/1).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_godray_intensity",
+    "0.58",
+    "God ray brightness multiplier.",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_godray_decay",
+    "0.94",
+    "Per-sample decay along sun direction (0.5–0.99).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_godray_density",
+    "0.92",
+    "Sample step scale toward sun (higher = longer rays).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_sky_turbidity",
     "3.0",
     "Hosek-Wilkie atmosphere turbidity 1..10 (higher = hazier).",

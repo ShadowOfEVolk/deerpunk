@@ -97,6 +97,11 @@ Authoritative simulation and physics run on the **server world**. Clients receiv
 
 Client-side ECS for presentation: extra meshes, particles, local-only entities. Same shape as world (`spawn`, `get`, `set`, `query`, …) but does not affect server authority.
 
+| Method | Purpose |
+|--------|---------|
+| `system_register` | Flecs OnUpdate on client world (runs in host `client.tick_world` / `ecs_progress`) |
+| `system_set_interval` | Throttle interval for a registered client system |
+
 **Safe wrapper:** `crates/engine-api/src/client_world.rs`
 
 ---

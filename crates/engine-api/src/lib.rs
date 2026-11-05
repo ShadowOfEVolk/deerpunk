@@ -23,6 +23,7 @@ pub mod materials;
 pub mod bone_buffer;
 pub mod mesh;
 pub mod log;
+pub mod profile;
 
 pub use dynamic_load::{drop_dynamic, pack as pack_dynamic_load, DynamicLoad};
 pub use deerpunk_engine_ffi::{
@@ -56,6 +57,7 @@ pub struct EngineApi {
     pub bone_buffer: bone_buffer::BoneBufferApi,
     pub mesh: mesh::MeshApi,
     pub log: log::LogApi,
+    pub profile: profile::ProfileApi,
 
     pub frame: extern "C" fn(*mut u8, f32) -> i32,
     pub shutdown: extern "C" fn(*mut u8),
@@ -96,6 +98,7 @@ impl EngineApi {
             bone_buffer: bone_buffer::BoneBufferApi::new(ctx, resolver),
             mesh: mesh::MeshApi::new(ctx, resolver),
             log: log::LogApi::new(ctx, resolver),
+            profile: profile::ProfileApi::new(ctx, resolver),
 
             frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },
             shutdown: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:shutdown")) },

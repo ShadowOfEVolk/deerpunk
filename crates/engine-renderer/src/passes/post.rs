@@ -34,6 +34,9 @@ impl Renderer {
             exposure,
             tonemap_mode,
             game_time,
+            self.scene_sun_dir,
+            ctx.snapshot.view_proj,
+            ctx.snapshot.camera_pos,
             Some(ctx.prof),
         );
         lap_ms(ctx.lap);

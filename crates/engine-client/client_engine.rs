@@ -1149,6 +1149,10 @@ impl ClientEngine {
             let post_idx = 0usize;
             let post = &self.camera_compose_scratch[post_idx];
             let geometry = scene.as_ref().map(|s| &s.geometry);
+            let gamelib_ui_render = self
+                .dll
+                .as_ref()
+                .and_then(|d| d.gamelib_ui_render_fn());
             if game_frame_fn.is_some() {
                 if let Err(e) = self.renderer.render_to_surface_compose_with_game_frame(
                     &self.camera_compose_scratch,
@@ -1156,6 +1160,7 @@ impl ClientEngine {
                     geometry,
                     game_frame_fn,
                     game_frame_ctx,
+                    gamelib_ui_render,
                     &self.shader_registry,
                 ) {
                     self.handle_surface_frame_error(e);
@@ -1185,11 +1190,16 @@ impl ClientEngine {
         }
         if !rendered_surface {
             let snapshot = RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear);
+            let gamelib_ui_render = self
+                .dll
+                .as_ref()
+                .and_then(|d| d.gamelib_ui_render_fn());
             if game_frame_fn.is_some() {
                 if let Err(e) = self.renderer.render_to_surface_with_game_frame(
                     &snapshot,
                     game_frame_fn,
                     game_frame_ctx,
+                    gamelib_ui_render,
                     &self.shader_registry,
                 ) {
                     self.handle_surface_frame_error(e);

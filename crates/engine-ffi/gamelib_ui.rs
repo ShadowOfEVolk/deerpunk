@@ -1,0 +1,55 @@
+//! Gamelib-owned Dear ImGui pass (separate context + wgpu rasterization in the client DLL).
+
+pub const GAMELIB_UI_API_VERSION: u32 = 1;
+
+/// Swapchain color format token (see engine-host `gamelib_ui_format_token`).
+pub const GAMELIB_SURFACE_BGRA8_SRGB: u32 = 1;
+pub const GAMELIB_SURFACE_RGBA8_SRGB: u32 = 2;
+pub const GAMELIB_SURFACE_BGRA8: u32 = 3;
+pub const GAMELIB_SURFACE_RGBA8: u32 = 4;
+
+#[repr(C)]
+pub struct GamelibUiBuildArgs {
+    pub version: u32,
+    /// Host wgpu Device pointer (same process, same wgpu version as the executable).
+    pub device: *mut std::ffi::c_void,
+    /// Host wgpu Queue pointer.
+    pub queue: *mut std::ffi::c_void,
+    /// Surface format discriminant (wgpu TextureFormat as u32).
+    pub surface_format: u32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[repr(C)]
+pub struct GamelibUiRenderArgs {
+    pub version: u32,
+    pub encoder: *mut std::ffi::c_void,
+    /// Swapchain (or final composite) color target view.
+    pub color_view: *mut std::ffi::c_void,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl GamelibUiBuildArgs {
+    pub fn valid_gpu(&self) -> bool {
+        self.version == GAMELIB_UI_API_VERSION
+            && !self.device.is_null()
+            && !self.queue.is_null()
+            && self.width > 0.0
+            && self.height > 0.0
+    }
+}
+
+impl GamelibUiRenderArgs {
+    pub fn valid(&self) -> bool {
+        self.version == GAMELIB_UI_API_VERSION
+            && !self.encoder.is_null()
+            && !self.color_view.is_null()
+            && self.width > 0.0
+            && self.height > 0.0
+    }
+}
+
+pub type GamelibUiBuildFn = unsafe extern "C" fn(*const GamelibUiBuildArgs) -> i32;
+pub type GamelibUiRenderFn = unsafe extern "C" fn(*const GamelibUiRenderArgs) -> i32;

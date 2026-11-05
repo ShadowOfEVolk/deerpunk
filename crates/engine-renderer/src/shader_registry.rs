@@ -241,6 +241,15 @@ impl ShaderDef {
                 b.group == 0 && b.binding == 1 && b.kind == BindingKind::Uniform
             })
     }
+
+    /// `#@shader pass=mesh_transparent` — alpha blend, depth write off.
+    pub fn mesh_transparent(&self) -> bool {
+        self.meta.pass == Some(RenderPass::MeshTransparent)
+    }
+
+    pub fn mesh_queue(&self) -> u32 {
+        self.meta.queue
+    }
 }
 
 /// Canonicalize defines: sorted, comma-joined. Empty → "".

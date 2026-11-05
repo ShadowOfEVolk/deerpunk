@@ -487,7 +487,8 @@ pub struct Renderer {
     mesh_lm_surface_pipeline_layout: wgpu::PipelineLayout,
     /// Per-shader opaque mesh pipelines (`ShaderId` from registry).
     /// `(shader_id, format, skinned_bind_group_layout)` — static draws use `false`, skinned draws `true`.
-    shader_mesh_pipelines: HashMap<(ShaderId, wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
+    shader_mesh_pipelines:
+        HashMap<(ShaderId, wgpu::TextureFormat, bool, bool), wgpu::RenderPipeline>,
     /// Key: (albedo_tex_slot, lightmap_gpu) — id 0 = white fallback.
     mesh_lm_surface_bgs: HashMap<(u32, u32), wgpu::BindGroup>,
     repeat_sampler: wgpu::Sampler,
@@ -2630,12 +2631,24 @@ impl Renderer {
         self.postfx.grain_downscale = downscale;
     }
 
+    pub fn set_godrays(&mut self, enabled: bool, strength: f32, decay: f32, density: f32) {
+        self.postfx.godray_strength = if enabled { strength.max(0.0) } else { 0.0 };
+        self.postfx.godray_decay = decay.clamp(0.5, 0.99);
+        self.postfx.godray_density = density.clamp(0.2, 2.0);
+    }
+
     // ── ImGui ────────────────────────────────────────────────────
 
     pub fn imgui_context_ptr(&self) -> *mut std::ffi::c_void {
         self.imgui_ctx.as_ref().map_or(std::ptr::null_mut(), |ctx| {
             ctx as *const imgui::Context as *mut std::ffi::c_void
         })
+    }
+
+    pub fn swapchain_layout(&self) -> Option<(u32, u32, wgpu::TextureFormat)> {
+        self.surface_config
+            .as_ref()
+            .map(|c| (c.width, c.height, c.format))
     }
 
     /// Feed OS mouse into ImGui IO (call once per frame before render).
@@ -2743,7 +2756,7 @@ impl Renderer {
             shaders,
         );
 
-        self.finish_surface_encoder(encoder, current, &surface_view, None);
+        self.finish_surface_encoder(encoder, current, &surface_view, None, None);
         Ok(())
     }
 
@@ -2802,7 +2815,7 @@ impl Renderer {
             shaders,
         );
 
-        self.finish_surface_encoder(encoder, current, &surface_view, None);
+        self.finish_surface_encoder(encoder, current, &surface_view, None, None);
         Ok(())
     }
 
@@ -2813,6 +2826,7 @@ impl Renderer {
         geometry: Option<&crate::snapshot::SceneGeometry>,
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
+        gamelib_ui_render: Option<deerpunk_engine_ffi::GamelibUiRenderFn>,
         shaders: &ShaderRegistry,
     ) -> Result<(), FrameError> {
         self.process_lum_readback();
@@ -2867,7 +2881,13 @@ impl Renderer {
             Some(&surface_view),
             shaders,
         );
-        self.finish_surface_encoder(encoder, current, &surface_view, Some(game_frame_ui_ms));
+        self.finish_surface_encoder(
+            encoder,
+            current,
+            &surface_view,
+            Some(game_frame_ui_ms),
+            gamelib_ui_render,
+        );
         Ok(())
     }
 
@@ -3020,6 +3040,7 @@ impl Renderer {
         snapshot: &RenderSnapshot,
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
+        gamelib_ui_render: Option<deerpunk_engine_ffi::GamelibUiRenderFn>,
         shaders: &ShaderRegistry,
     ) -> Result<(), FrameError> {
         self.render_to_surface_compose_with_game_frame(
@@ -3028,6 +3049,7 @@ impl Renderer {
             None,
             game_frame_fn,
             game_frame_ctx,
+            gamelib_ui_render,
             shaders,
         )
     }
@@ -3038,9 +3060,29 @@ impl Renderer {
         current: wgpu::SurfaceTexture,
         surface_view: &wgpu::TextureView,
         game_frame_ui_ms: Option<f32>,
+        gamelib_ui_render: Option<deerpunk_engine_ffi::GamelibUiRenderFn>,
     ) {
         let _ = self.device.poll(wgpu::PollType::Poll);
         let tail_start = std::time::Instant::now();
+
+        if let Some(f) = gamelib_ui_render {
+            let (sw, sh) = self
+                .surface_config
+                .as_ref()
+                .map(|c| (c.width as f32, c.height as f32))
+                .unwrap_or((800.0, 600.0));
+            let args = deerpunk_engine_ffi::GamelibUiRenderArgs {
+                version: deerpunk_engine_ffi::GAMELIB_UI_API_VERSION,
+                encoder: (&mut encoder as *mut wgpu::CommandEncoder).cast::<std::ffi::c_void>(),
+                color_view: surface_view as *const wgpu::TextureView as *mut std::ffi::c_void,
+                width: sw,
+                height: sh,
+            };
+            unsafe {
+                let _ = f(&args);
+            }
+        }
+
         self.imgui_end_frame_and_render(&mut encoder, surface_view);
         let after_imgui_ms = tail_start.elapsed().as_secs_f32() * 1000.0;
 
@@ -4084,6 +4126,7 @@ impl Renderer {
         lm_surface: bool,
         extended_vertex: bool,
         skinned_vertex: bool,
+        transparent: bool,
     ) -> wgpu::RenderPipeline {
         let shader = self
             .device
@@ -4140,7 +4183,11 @@ impl Renderer {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: None,
+                        blend: if transparent {
+                            Some(wgpu::BlendState::ALPHA_BLENDING)
+                        } else {
+                            None
+                        },
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -4160,8 +4207,12 @@ impl Renderer {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_write_enabled: Some(!transparent),
+                    depth_compare: Some(if transparent {
+                        wgpu::CompareFunction::LessEqual
+                    } else {
+                        wgpu::CompareFunction::Less
+                    }),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
@@ -4179,7 +4230,11 @@ impl Renderer {
         format: wgpu::TextureFormat,
         skinned_layout: bool,
     ) -> &wgpu::RenderPipeline {
-        let key = (shader_id, format, skinned_layout);
+        let transparent = shaders
+            .get(shader_id)
+            .map(|d| d.mesh_transparent())
+            .unwrap_or(false);
+        let key = (shader_id, format, skinned_layout, transparent);
         if !self.shader_mesh_pipelines.contains_key(&key) {
             let def = shaders
                 .get(shader_id)
@@ -4193,6 +4248,7 @@ impl Renderer {
                 lm_surface,
                 extended,
                 skinned,
+                transparent,
             );
             self.shader_mesh_pipelines.insert(key, p);
         }

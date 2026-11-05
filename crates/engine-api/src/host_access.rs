@@ -17,6 +17,17 @@ pub struct HostAccessApi {
     client_apply_mesh_uri_fn: extern "C" fn(*mut u8, u64, *const u8, usize) -> i32,
     register_main_console_fn: extern "C" fn(*mut u8, *const u8, usize) -> i32,
     start_listen_map_fn: extern "C" fn(*mut u8, *const u8, usize, i32) -> i32,
+    loader_queue_set_fn: extern "C" fn(
+        *mut u8,
+        i32,
+        i32,
+        i32,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+    ),
+    loader_queue_clear_fn: extern "C" fn(*mut u8),
 }
 
 unsafe impl Send for HostAccessApi {}
@@ -43,6 +54,12 @@ impl HostAccessApi {
             },
             start_listen_map_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:host:start_listen_map"))
+            },
+            loader_queue_set_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:host:loader_queue_set"))
+            },
+            loader_queue_clear_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:host:loader_queue_clear"))
             },
         }
     }
@@ -72,5 +89,30 @@ impl HostAccessApi {
     /// Listen client: run on main thread; loads world on the server simulation thread.
     pub fn start_listen_map(&self, world: &str, seed: i32) -> i32 {
         (self.start_listen_map_fn)(self.ctx, world.as_ptr(), world.len(), seed)
+    }
+
+    /// Report startup / map load progress for engine UI hooks (also used by gamelib loading screens).
+    pub fn loader_queue_set(
+        &self,
+        active: bool,
+        done: u32,
+        total: u32,
+        status: &str,
+        hint: &str,
+    ) {
+        (self.loader_queue_set_fn)(
+            self.ctx,
+            if active { 1 } else { 0 },
+            done as i32,
+            total as i32,
+            status.as_ptr(),
+            status.len(),
+            hint.as_ptr(),
+            hint.len(),
+        );
+    }
+
+    pub fn loader_queue_clear(&self) {
+        (self.loader_queue_clear_fn)(self.ctx);
     }
 }

@@ -1,7 +1,9 @@
 //! Mesh + skinned + indirect draw pass.
 
 use std::collections::HashMap;
+use std::cmp::Ordering;
 
+use glam::Vec3;
 use deerpunk_engine_common::frame::{frame_height, frame_width};
 use deerpunk_engine_common::material::ShaderId;
 use bytemuck::Zeroable;
@@ -59,8 +61,66 @@ fn static_mesh_pipeline_key(shaders: &ShaderRegistry, shader_id: u32) -> MeshPip
     (
         shader_id,
         def.group1_uses_lightmap_array(),
-        false,
+        def.mesh_transparent(),
     )
+}
+
+fn mesh_draw_is_transparent(shaders: &ShaderRegistry, md: &crate::snapshot::MeshDraw) -> bool {
+    shaders
+        .get(md.shader_id)
+        .is_some_and(|d| d.mesh_transparent())
+}
+
+fn mesh_draw_material_sort_key(
+    shaders: &ShaderRegistry,
+    md: &crate::snapshot::MeshDraw,
+) -> (u32, u32, u32, u32, u32, u32) {
+    let queue = shaders
+        .get(md.shader_id)
+        .map(|d| d.mesh_queue())
+        .unwrap_or(0);
+    (
+        queue,
+        md.shader_id,
+        md.material_id,
+        md.texture.0,
+        md.normal.0,
+        md.orm.0,
+    )
+}
+
+/// Squared distance from camera to draw bounds (center). Used for back-to-front transparent order.
+fn mesh_draw_depth_sq(md: &crate::snapshot::MeshDraw, camera_pos: [f32; 3]) -> f32 {
+    let cam = Vec3::from_array(camera_pos);
+    if md.world_bounds.is_valid() {
+        cam.distance_squared(md.world_bounds.center())
+    } else {
+        let m = md.model_mat;
+        let origin = Vec3::new(m[3][0], m[3][1], m[3][2]);
+        cam.distance_squared(origin)
+    }
+}
+
+fn mesh_draw_sort_cmp(
+    shaders: &ShaderRegistry,
+    a: &crate::snapshot::MeshDraw,
+    b: &crate::snapshot::MeshDraw,
+    camera_pos: [f32; 3],
+) -> Ordering {
+    let ta = mesh_draw_is_transparent(shaders, a);
+    let tb = mesh_draw_is_transparent(shaders, b);
+    match (ta, tb) {
+        (false, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
+        (true, true) => {
+            let da = mesh_draw_depth_sq(a, camera_pos);
+            let db = mesh_draw_depth_sq(b, camera_pos);
+            db.partial_cmp(&da)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| mesh_draw_material_sort_key(shaders, a).cmp(&mesh_draw_material_sort_key(shaders, b)))
+        }
+        (false, false) => mesh_draw_material_sort_key(shaders, a).cmp(&mesh_draw_material_sort_key(shaders, b)),
+    }
 }
 
 use crate::draw_list::{MeshDrawListView, SkinnedDrawListView};
@@ -253,21 +313,12 @@ impl Renderer {
 
         self.mesh_draw_order.clear();
         self.mesh_draw_order.extend(0..meshes.len());
-        self.mesh_draw_order.sort_unstable_by_key(|&i| {
-            let md = &meshes.get(i);
-            let lm = ctx.shaders
-                .get(md.shader_id)
-                .map(|d| d.group1_uses_lightmap_array())
-                .unwrap_or(false);
-            (
-                md.shader_id,
-                lm as u8,
-                md.material_id,
-                md.texture.0,
-                md.normal.0,
-                md.orm.0,
-                md.lightmap_gpu,
-            )
+        let camera_pos = ctx.snapshot.camera_pos;
+        self.mesh_draw_order.sort_unstable_by(|&a, &b| {
+            let ma = meshes.get(a);
+            let mb = meshes.get(b);
+            mesh_draw_sort_cmp(ctx.shaders, ma, mb, camera_pos)
+                .then_with(|| ma.lightmap_gpu.cmp(&mb.lightmap_gpu))
         });
 
         let draw_order = std::mem::take(&mut self.mesh_draw_order);
@@ -276,6 +327,9 @@ impl Renderer {
         for &i in &draw_order {
             let md = &meshes.get(i);
             if !self.mesh_draw_batching || !md.batchable || !static_vis(i) {
+                continue;
+            }
+            if mesh_draw_is_transparent(ctx.shaders, md) {
                 continue;
             }
             if ctx

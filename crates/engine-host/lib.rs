@@ -158,6 +158,8 @@ pub struct Host {
     pub mesh_allocator_names: std::collections::HashMap<String, u32>,
     pub um: user_messages::UserMessageRegistry,
     pub inspector: inspector::Inspector,
+    /// Gamelib / host load UI (`v1:host:loader_queue_set`).
+    pub loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue,
     pub(crate) time_secs: f32,
     /// Sound ids when [`server_engine`] is absent (client-only host).
     next_client_sound_id: u32,
@@ -254,6 +256,7 @@ impl Host {
             mesh_allocator_names: std::collections::HashMap::new(),
             um: user_messages::UserMessageRegistry::default(),
             inspector: inspector::Inspector::new(),
+            loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue::default(),
             time_secs: 0.0,
             next_client_sound_id: 1,
             listen_enabled_sink: None,
@@ -307,6 +310,8 @@ impl Host {
         resources.register_loader(Box::new(deerpunk_engine_common::resource::ShaderLoader {
             root: shader_root,
         }));
+        #[cfg(feature = "tracy")]
+        deerpunk_engine_renderer::tracy_ensure_started();
         Self {
             server_engine: Some(ServerEngine::new()),
             #[cfg(any(feature = "client", feature = "full"))]
@@ -323,6 +328,7 @@ impl Host {
             mesh_allocator_names: std::collections::HashMap::new(),
             um: user_messages::UserMessageRegistry::default(),
             inspector: inspector::Inspector::new(),
+            loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue::default(),
             time_secs: 0.0,
             next_client_sound_id: 1,
             listen_enabled_sink: None,
@@ -1132,6 +1138,19 @@ impl Host {
 
         #[cfg(any(feature = "client", feature = "full"))]
         {
+            let _g = system_profiler::scope("client.dll");
+            if let Some(client) = self.client_engine.as_mut() {
+                client.clear_game_debug();
+                if let Some(ref dll) = client.dll {
+                    unsafe {
+                        dll.frame(delta_time);
+                    }
+                }
+            }
+        }
+
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
             let _g = system_profiler::scope("client.ecs");
             if let Some(client) = self.client_engine.as_mut() {
                 client.tick_world(delta_time);
@@ -1140,12 +1159,9 @@ impl Host {
 
         #[cfg(any(feature = "client", feature = "full"))]
         {
-            let _g = system_profiler::scope("client.dll");
             if let Some(client) = self.client_engine.as_mut() {
-                client.clear_game_debug();
                 if let Some(ref dll) = client.dll {
                     unsafe {
-                        dll.frame(delta_time);
                         dll.post_frame(delta_time);
                     }
                 }
@@ -1211,11 +1227,20 @@ impl Host {
             deerpunk_engine_client::mesh_alloc_debug::tick(r_showalloc, client.renderer());
         }
 
-        // Client gamelib ImGui overlays (host-owned `imgui::Context`).
+        // Gamelib Dear ImGui pass (separate context + wgpu renderer in the client DLL).
         if let Some(ref dll) = client.dll {
-            let imgui_ctx = client.renderer().imgui_context_ptr();
-            unsafe {
-                dll.imgui_frame(imgui_ctx);
+            if let Some((w, h, format)) = client.renderer().swapchain_layout() {
+                let args = deerpunk_engine_ffi::GamelibUiBuildArgs {
+                    version: deerpunk_engine_ffi::GAMELIB_UI_API_VERSION,
+                    device: (&client.renderer().device as *const _ as *mut std::ffi::c_void),
+                    queue: (&client.renderer().queue as *const _ as *mut std::ffi::c_void),
+                    surface_format: deerpunk_engine_client::gamelib_ui::gamelib_ui_format_token(format),
+                    width: w as f32,
+                    height: h as f32,
+                };
+                unsafe {
+                    let _ = dll.gamelib_ui_build(&args);
+                }
             }
         }
     }
@@ -2143,6 +2168,8 @@ impl Host {
         }
 
         self.shutdown();
+        #[cfg(feature = "tracy")]
+        deerpunk_engine_renderer::tracy_shutdown();
     }
 
     /// Persist configs and tear down DLLs. Safe to call once at exit.
@@ -2170,8 +2197,6 @@ impl Host {
         self.cmd.shutdown();
         self.cvar.shutdown();
         self.fs.shutdown();
-        #[cfg(feature = "tracy")]
-        deerpunk_engine_renderer::tracy_shutdown();
         log::info!("[host] shutdown OK");
     }
 }

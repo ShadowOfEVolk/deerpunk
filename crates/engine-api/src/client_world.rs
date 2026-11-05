@@ -1,6 +1,9 @@
 use crate::components::{no_prefab_apply, ComponentRegisterDesc};
+use crate::world::WorldProgressSystemFn;
 use crate::Resolver;
 use crate::{ComponentId, EntityId};
+
+pub use crate::world::WorldProgressSystemFn as ClientWorldProgressSystemFn;
 
 fn resolve(r: Resolver, name: &str) -> *const () {
     let bytes = name.as_bytes();
@@ -38,6 +41,17 @@ pub struct ClientWorldApi {
         u32,
         u64,
     ) -> i32,
+    system_register_fn: extern "C" fn(
+        *mut u8,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        WorldProgressSystemFn,
+        *mut std::ffi::c_void,
+        f32,
+    ) -> u64,
+    system_set_interval_fn: extern "C" fn(*mut u8, u64, f32) -> i32,
 }
 
 unsafe impl Send for ClientWorldApi {}
@@ -61,7 +75,38 @@ impl ClientWorldApi {
             register_observer_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client_world:register_observer"))
             },
+            system_register_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:client_world:system_register"))
+            },
+            system_set_interval_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:client_world:system_set_interval"))
+            },
         }
+    }
+
+    /// Flecs OnUpdate system on the client world (runs in host `client.tick_world` / `ecs_progress`).
+    pub fn system_register(
+        &self,
+        name: &str,
+        query: &str,
+        run: WorldProgressSystemFn,
+        user_data: *mut std::ffi::c_void,
+        interval_secs: f32,
+    ) -> u64 {
+        (self.system_register_fn)(
+            self.ctx,
+            name.as_ptr(),
+            name.len(),
+            query.as_ptr(),
+            query.len(),
+            run,
+            user_data,
+            interval_secs,
+        )
+    }
+
+    pub fn system_set_interval(&self, system_id: u64, interval_secs: f32) {
+        let _ = (self.system_set_interval_fn)(self.ctx, system_id, interval_secs);
     }
 
     /// Flecs observer on the client world. `events`: bit0 OnAdd, bit1 OnSet.

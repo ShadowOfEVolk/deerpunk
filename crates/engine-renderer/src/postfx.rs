@@ -12,6 +12,33 @@ const SOFT_KNEE: f32 = 0.5;
 const MAX_BRIGHTNESS: f32 = 16.0;
 const LDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+fn sun_screen_uv(
+    sun_dir: [f32; 4],
+    camera_pos: [f32; 3],
+    view_proj: [[f32; 4]; 4],
+) -> [f32; 2] {
+    use glam::{Mat4, Vec3};
+    if sun_dir[3] <= 0.001 {
+        return [-1.0, -1.0];
+    }
+    let sd = Vec3::new(sun_dir[0], sun_dir[1], sun_dir[2]);
+    if sd.length_squared() < 1e-8 {
+        return [-1.0, -1.0];
+    }
+    let sd = sd.normalize();
+    let eye = Vec3::from_array(camera_pos);
+    let vp = Mat4::from_cols_array_2d(&view_proj);
+    let wp = eye + sd * 8000.0;
+    let clip = vp * wp.extend(1.0);
+    if clip.w <= 0.001 {
+        return [-1.0, -1.0];
+    }
+    let ndc = clip.truncate() / clip.w;
+    let u = ndc.x * 0.5 + 0.5;
+    let v = 1.0 - (ndc.y * 0.5 + 0.5);
+    [u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)]
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct BloomParamsGpu {
@@ -39,7 +66,13 @@ struct TonemapGlobals {
     screen: [f32; 2],
     exposure: f32,
     tonemap_mode: f32,
-    view_proj: [[f32; 4]; 4],
+    sun_screen: [f32; 2],
+    sun_intensity: f32,
+    godray_strength: f32,
+    godray_decay: f32,
+    godray_density: f32,
+    /// World sun direction Z (up); low |Z| → golden hour boost in tonemap.
+    sun_elevation: f32,
 }
 
 pub struct PostFxShaders {
@@ -70,6 +103,9 @@ pub struct PostFx {
     pub grain_enabled: bool,
     pub grain_strength: f32,
     pub grain_downscale: f32,
+    pub godray_strength: f32,
+    pub godray_decay: f32,
+    pub godray_density: f32,
 
     full_w: u32,
     full_h: u32,
@@ -388,6 +424,9 @@ impl PostFx {
             grain_enabled: true,
             grain_strength: 0.025,
             grain_downscale: 3.0,
+            godray_strength: 0.58,
+            godray_decay: 0.96,
+            godray_density: 1.05,
             full_w: 0,
             full_h: 0,
             bloom_a: None,
@@ -772,6 +811,9 @@ impl PostFx {
         exposure: f32,
         tonemap_mode: f32,
         game_time: f32,
+        scene_sun_dir: [f32; 4],
+        view_proj: [[f32; 4]; 4],
+        camera_pos: [f32; 3],
         mut prof: Option<&mut RenderFrameProfile>,
     ) {
         let mut lap = Instant::now();
@@ -881,13 +923,14 @@ impl PostFx {
             screen: [w as f32, h as f32],
             exposure,
             tonemap_mode,
-            view_proj: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
+            sun_screen: sun_screen_uv(scene_sun_dir, camera_pos, view_proj),
+            sun_intensity: scene_sun_dir[3],
+            godray_strength: self.godray_strength,
+            godray_decay: self.godray_decay,
+            godray_density: self.godray_density,
+            sun_elevation: scene_sun_dir[2],
         };
+        let _ = game_time;
         queue.write_buffer(tonemap_uniform_buf, 0, bytemuck::bytes_of(&globals));
 
         let tonemap_bg = if use_bloom {

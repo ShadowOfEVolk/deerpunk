@@ -35,10 +35,7 @@ fn materials_load(host: &mut crate::Host, path: &str) -> u32 {
             }
         };
         match ce.load_material_from_asset(path, &asset, &host.resources) {
-            Ok(h) => {
-                log::info!("[materials] loaded uri '{path}' -> handle {}", h.0);
-                h.0
-            }
+            Ok(h) => h.0,
             Err(e) => {
                 log::error!("[materials] load uri '{path}': {e}");
                 0
@@ -54,10 +51,7 @@ fn materials_load(host: &mut crate::Host, path: &str) -> u32 {
             }
         };
         match ce.load_material_resolved(path, &source, &host.resources) {
-            Ok(handle) => {
-                log::info!("[materials] loaded '{path}' -> handle {}", handle.0);
-                handle.0
-            }
+            Ok(handle) => handle.0,
             Err(e) => {
                 log::error!("[materials] load '{path}': {e}");
                 0
@@ -139,14 +133,10 @@ fn materials_set_texture(host: &mut crate::Host, handle: u32, prop_name: &str, s
         .material_store
         .set_texture(MaterialHandle(handle), prop_name, MeshTexture(slot))
     {
-        log::info!(
-            "[materials] set_texture handle={handle} {prop_name} -> slot={slot}"
-        );
+        log::info!("[materials] set_texture handle={handle} {prop_name} -> slot={slot}");
         0
     } else {
-        log::error!(
-            "[materials] set_texture: bad handle={handle} or prop='{prop_name}'"
-        );
+        log::error!("[materials] set_texture: bad handle={handle} or prop='{prop_name}'");
         -1
     }
 }
@@ -180,12 +170,7 @@ impl crate::Host {
 
     /// Update a texture property on an existing material → 0 ok, -1 error.
     #[methoddb::bind(name = "set_texture")]
-    pub fn api_materials_set_texture(
-        &mut self,
-        handle: u32,
-        prop_name: &str,
-        slot: u32,
-    ) -> i32 {
+    pub fn api_materials_set_texture(&mut self, handle: u32, prop_name: &str, slot: u32) -> i32 {
         materials_set_texture(self, handle, prop_name, slot)
     }
 }

@@ -26,6 +26,6 @@ pub use gamelib_logger::install_gamelib_logger;
 pub use runtime::{engine, init_engine, install_engine, raw_ctx, try_engine};
 pub use deerpunk_engine_ffi::{
     ClientInitData, ComponentId, ComponentInspectDumpFn, ComponentRegisterDesc, EntityId,
-    GAMELIB_API_VERSION, GamelibInitData, PrefabComponentApplyFn, ResolverFn, ServerInitData,
-    no_inspect_dump, no_prefab_apply,
+    GAMELIB_API_VERSION, GamelibInitData, ImGuiDrawHost, ImGuiVec2, IMGUI_DRAW_HOST_VERSION,
+    PrefabComponentApplyFn, ResolverFn, ServerInitData, no_inspect_dump, no_prefab_apply,
 };

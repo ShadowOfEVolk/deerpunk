@@ -33,6 +33,8 @@ pub use client_dll::{ClientDll, ClientInitData};
 pub use deerpunk_engine_server::ClientNet;
 pub mod draw_material_resolve;
 pub mod imgui_console_input;
+pub mod imgui_host;
+pub mod gamelib_ui;
 pub mod infobox;
 pub mod mesh_alloc_debug;
 pub mod bone_buffer_pool;

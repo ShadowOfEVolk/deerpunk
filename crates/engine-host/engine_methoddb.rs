@@ -814,6 +814,27 @@ impl crate::Host {
     pub fn api_engine_shutdown(&mut self) {}
 }
 
+#[methoddb::namespace(name = "v1:profile", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    #[methoddb::bind(name = "zone_begin")]
+    pub fn api_profile_zone_begin(&self, name: &str) -> i32 {
+        deerpunk_engine_renderer::gamelib_profile::zone_begin(name);
+        0
+    }
+
+    #[methoddb::bind(name = "zone_end")]
+    pub fn api_profile_zone_end(&self) -> i32 {
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
+        0
+    }
+
+    #[methoddb::bind(name = "frame_mark")]
+    pub fn api_profile_frame_mark(&self) -> i32 {
+        deerpunk_engine_renderer::gamelib_profile::frame_mark();
+        0
+    }
+}
+
 #[methoddb::namespace(name = "v1:log", on_host, scope = ["server", "client"])]
 impl crate::Host {
     /// `level`: 1=error, 2=warn, 3=info, 4=debug, 5=trace.
@@ -1066,6 +1087,29 @@ impl crate::Host {
 
 #[methoddb::namespace(name = "v1:host", on_host, scope = ["server", "client"])]
 impl crate::Host {
+    #[methoddb::bind(name = "loader_queue_set")]
+    pub fn api_host_loader_queue_set(
+        &self,
+        active: i32,
+        done: i32,
+        total: i32,
+        status: &str,
+        hint: &str,
+    ) {
+        self.loader_queue.set(
+            active != 0,
+            done.max(0) as u32,
+            total.max(0) as u32,
+            status,
+            hint,
+        );
+    }
+
+    #[methoddb::bind(name = "loader_queue_clear")]
+    pub fn api_host_loader_queue_clear(&self) {
+        self.loader_queue.clear();
+    }
+
     #[methoddb::bind(name = "flush_pending_albedos")]
     pub fn api_host_flush_pending_albedos(&mut self) -> i32 {
         #[cfg(any(feature = "client", feature = "full"))]
@@ -1570,6 +1614,37 @@ impl crate::Host {
             written += 1;
         }
         written
+    }
+
+    #[methoddb::bind(name = "system_register")]
+    pub fn api_client_world_system_register(
+        &mut self,
+        name: &str,
+        query: &str,
+        run: crate::gamelib_system::WorldProgressSystemFn,
+        user_data: *mut c_void,
+        interval_secs: f32,
+    ) -> u64 {
+        let Some(ce) = self.client_engine.as_mut() else {
+            return 0;
+        };
+        crate::gamelib_system::register_progress_system(
+            &ce.world,
+            name,
+            query,
+            run,
+            user_data,
+            interval_secs,
+        )
+    }
+
+    #[methoddb::bind(name = "system_set_interval")]
+    pub fn api_client_world_system_set_interval(&mut self, system_id: u64, interval_secs: f32) -> i32 {
+        let Some(ce) = self.client_engine.as_mut() else {
+            return -1;
+        };
+        crate::gamelib_system::set_progress_system_interval(&ce.world, system_id, interval_secs);
+        0
     }
 
     #[methoddb::bind(name = "register_observer")]

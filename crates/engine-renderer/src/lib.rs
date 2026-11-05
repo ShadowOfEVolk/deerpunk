@@ -26,9 +26,10 @@ mod shader_fallback;
 pub mod snapshot;
 pub mod text_util;
 pub mod tracy_lifecycle;
+pub mod gamelib_profile;
 pub mod ui_pass;
 
-pub use tracy_lifecycle::{tracy_ensure_started, tracy_shutdown};
+pub use tracy_lifecycle::{tracy_active, tracy_ensure_started, tracy_shutdown};
 
 pub use asset_inventory::{AssetEntry, AssetKind};
 pub use debug_draw::{DebugColor, DebugDraw, DebugPrimitive};

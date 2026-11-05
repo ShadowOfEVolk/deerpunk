@@ -55,7 +55,9 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
     macro_rules! render_scope {
         ($label:literal) => {
             #[cfg(feature = "tracy")]
-            profiling::scope!($label);
+            if crate::tracy_active() {
+                profiling::scope!($label);
+            }
         };
     }
 

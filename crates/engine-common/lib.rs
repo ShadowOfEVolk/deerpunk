@@ -25,6 +25,7 @@ pub mod ecs_validate;
 pub mod coord;
 pub mod events;
 pub mod frame;
+pub mod loader_queue;
 pub mod material;
 pub mod physics;
 pub use deerpunk_engine_resource as resource;

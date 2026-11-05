@@ -6,7 +6,9 @@ type ClientInitFn = unsafe extern "C" fn(ClientInitData);
 type ClientFrameFn = unsafe extern "C" fn(f32);
 type ClientPostFrameFn = unsafe extern "C" fn(f32);
 type ClientPreRenderFn = unsafe extern "C" fn(f32);
-type ClientImguiFrameFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+type ClientGamelibUiBuildFn = unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiBuildArgs) -> i32;
+type ClientGamelibUiRenderFn =
+    unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiRenderArgs) -> i32;
 type ClientShutdownFn = unsafe extern "C" fn();
 type ClientAudioWorldSceneFn = unsafe extern "C" fn(u64);
 type ClientSceneFlushedFn = unsafe extern "C" fn();
@@ -18,7 +20,8 @@ pub struct ClientDll {
     frame_fn: ClientFrameFn,
     post_frame_fn: Option<ClientPostFrameFn>,
     pre_render_fn: Option<ClientPreRenderFn>,
-    imgui_frame_fn: Option<ClientImguiFrameFn>,
+    gamelib_ui_build_fn: Option<ClientGamelibUiBuildFn>,
+    gamelib_ui_render_fn: Option<ClientGamelibUiRenderFn>,
     audio_world_scene_fn: Option<ClientAudioWorldSceneFn>,
     scene_flushed_fn: Option<ClientSceneFlushedFn>,
     compose_sky_fn: Option<ClientComposeSkyFn>,
@@ -40,8 +43,13 @@ impl ClientDll {
                 .ok()
                 .map(|s| *s)
         };
-        let imgui_frame_fn = unsafe {
-            lib.get::<ClientImguiFrameFn>(b"client_imgui_frame")
+        let gamelib_ui_build_fn = unsafe {
+            lib.get::<ClientGamelibUiBuildFn>(b"client_gamelib_ui_build")
+                .ok()
+                .map(|s| *s)
+        };
+        let gamelib_ui_render_fn = unsafe {
+            lib.get::<ClientGamelibUiRenderFn>(b"client_gamelib_ui_render")
                 .ok()
                 .map(|s| *s)
         };
@@ -67,7 +75,8 @@ impl ClientDll {
             frame_fn,
             post_frame_fn,
             pre_render_fn,
-            imgui_frame_fn,
+            gamelib_ui_build_fn,
+            gamelib_ui_render_fn,
             audio_world_scene_fn,
             scene_flushed_fn,
             compose_sky_fn,
@@ -101,10 +110,24 @@ impl ClientDll {
         }
     }
 
-    pub unsafe fn imgui_frame(&self, imgui_ctx: *mut std::ffi::c_void) {
-        if let Some(f) = self.imgui_frame_fn {
-            f(imgui_ctx);
+    pub unsafe fn gamelib_ui_build(&self, args: &deerpunk_engine_ffi::GamelibUiBuildArgs) -> i32 {
+        if let Some(f) = self.gamelib_ui_build_fn {
+            f(args)
+        } else {
+            0
         }
+    }
+
+    pub unsafe fn gamelib_ui_render(&self, args: &deerpunk_engine_ffi::GamelibUiRenderArgs) -> i32 {
+        if let Some(f) = self.gamelib_ui_render_fn {
+            f(args)
+        } else {
+            0
+        }
+    }
+
+    pub fn gamelib_ui_render_fn(&self) -> Option<ClientGamelibUiRenderFn> {
+        self.gamelib_ui_render_fn
     }
 
     pub fn audio_world_scene_fn(&self) -> Option<ClientAudioWorldSceneFn> {
