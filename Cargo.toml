@@ -12,6 +12,7 @@ members = [
     "crates/engine-inspector-protocol",
     "crates/engine-macro",
     "crates/engine-renderer",
+    "crates/engine-particles",
     "crates/engine-server",
     "crates/engine-ui",
     "crates/sdk-client",
@@ -51,6 +52,7 @@ deerpunk-engine-host = { path = "crates/engine-host", default-features = false }
 deerpunk-engine-common = { path = "crates/engine-common" }
 deerpunk-engine-client = { path = "crates/engine-client" }
 deerpunk-engine-renderer = { path = "crates/engine-renderer" }
+deerpunk-engine-particles = { path = "crates/engine-particles" }
 log = { workspace = true }
 wgpu = "30"
 glam = "0.33"

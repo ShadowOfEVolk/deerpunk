@@ -73,6 +73,8 @@ struct TonemapGlobals {
     godray_density: f32,
     /// World sun direction Z (up); low |Z| → golden hour boost in tonemap.
     sun_elevation: f32,
+    /// Screen-space FXAA in tonemap pass (0..1, from `r_aa`).
+    aa_strength: f32,
 }
 
 pub struct PostFxShaders {
@@ -106,6 +108,7 @@ pub struct PostFx {
     pub godray_strength: f32,
     pub godray_decay: f32,
     pub godray_density: f32,
+    pub aa_strength: f32,
 
     full_w: u32,
     full_h: u32,
@@ -427,6 +430,7 @@ impl PostFx {
             godray_strength: 0.58,
             godray_decay: 0.96,
             godray_density: 1.05,
+            aa_strength: 0.0,
             full_w: 0,
             full_h: 0,
             bloom_a: None,
@@ -929,6 +933,7 @@ impl PostFx {
             godray_decay: self.godray_decay,
             godray_density: self.godray_density,
             sun_elevation: scene_sun_dir[2],
+            aa_strength: self.aa_strength.clamp(0.0, 1.0),
         };
         let _ = game_time;
         queue.write_buffer(tonemap_uniform_buf, 0, bytemuck::bytes_of(&globals));

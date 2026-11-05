@@ -183,6 +183,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_aa",
+    "1",
+    "Screen-space FXAA in tonemap pass (0/1).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_sky_turbidity",
     "3.0",
     "Hosek-Wilkie atmosphere turbidity 1..10 (higher = hazier).",

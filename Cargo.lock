@@ -727,6 +727,7 @@ dependencies = [
  "deerpunk-engine-client",
  "deerpunk-engine-common",
  "deerpunk-engine-host",
+ "deerpunk-engine-particles",
  "deerpunk-engine-renderer",
  "glam 0.33.3",
  "image",
@@ -871,6 +872,15 @@ name = "deerpunk-engine-network"
 version = "0.1.0"
 dependencies = [
  "socket2",
+]
+
+[[package]]
+name = "deerpunk-engine-particles"
+version = "0.1.0"
+dependencies = [
+ "deerpunk-engine-common",
+ "glam 0.33.3",
+ "log",
 ]
 
 [[package]]

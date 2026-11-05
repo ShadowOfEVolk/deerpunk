@@ -42,6 +42,8 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
         cvar.get_f32_or("r_godray_decay", 0.96),
         cvar.get_f32_or("r_godray_density", 1.05),
     );
+    let aa_on = cvar.get_f32_or("r_aa", 1.0) >= 0.5;
+    r.set_aa_strength(if aa_on { 1.0 } else { 0.0 });
     r.set_cloud_speed(cvar.get_f32_or("r_cloud_speed", 0.04));
     r.set_cloud_mode(cvar.get_f32_or("r_cloud_mode", 0.0).round() as u32);
     r.set_cloud_scale(cvar.get_f32_or("r_cloud_scale", 1.0));

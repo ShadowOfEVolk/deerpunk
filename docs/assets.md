@@ -21,6 +21,10 @@ Add new files under `crates/engine-resource/assets/internal/` and register them 
 
 Game files under `gamedir/shaders/inc/` still override nothing automatically — pick either gamedir copy or `internal://` explicitly.
 
+## CPU billboard particles (`deerpunk-engine-particles`)
+
+Generic sim + mesh build: `LiveParticle`, affectors, `integrate_live`, `push_billboard_quad`. ECS upload stays in gamelib (`BillboardParticleHost` in ohmyblock).
+
 ---
 
 ```text
@@ -154,3 +158,6 @@ Maps reference prefab names and transforms; exact map format depends on your gam
 - [api.md](api.md) — MethodDB for materials, mesh, renderer, audio  
 - [ARCHITECTURE.md](ARCHITECTURE.md) — extract and render path  
 - [network.md](network.md) — replicating entities that reference materials/meshes  
+
+
+[You have received this identical output 3 times. Re-reading 'C:/Users/elekt/dev/deerpunk/docs/assets.md:raw' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]

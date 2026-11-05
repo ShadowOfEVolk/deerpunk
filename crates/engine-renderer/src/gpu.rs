@@ -2637,6 +2637,10 @@ impl Renderer {
         self.postfx.godray_density = density.clamp(0.2, 2.0);
     }
 
+    pub fn set_aa_strength(&mut self, strength: f32) {
+        self.postfx.aa_strength = strength.clamp(0.0, 1.0);
+    }
+
     // ── ImGui ────────────────────────────────────────────────────
 
     pub fn imgui_context_ptr(&self) -> *mut std::ffi::c_void {
