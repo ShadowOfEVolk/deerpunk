@@ -11,6 +11,7 @@ use deerpunk_engine_common::resource::mesh_compact::{
 
 pub fn wgpu_vertex_format(ty: VertexAttrType) -> wgpu::VertexFormat {
     match ty {
+        VertexAttrType::Uint32 => wgpu::VertexFormat::Uint32,
         VertexAttrType::Float2 => wgpu::VertexFormat::Float32x2,
         VertexAttrType::Float3 => wgpu::VertexFormat::Float32x3,
         VertexAttrType::Float4 | VertexAttrType::Weights => wgpu::VertexFormat::Float32x4,

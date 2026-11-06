@@ -8,6 +8,8 @@ use std::hash::{Hash, Hasher};
 /// WGSL scalar layout for one vertex attribute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VertexAttrType {
+    /// Single `u32` (`Uint32` in WGSL) — e.g. per-vertex tag bits.
+    Uint32,
     Float2,
     Float3,
     Float4,
@@ -36,6 +38,7 @@ impl VertexAttrType {
             "packed_u20x3" | "u20x3" => Some(Self::PackedU20X3),
             "unorm8x4" | "rgba8" => Some(Self::Unorm8X4),
             "packed_u16x2" | "uv16" => Some(Self::PackedU16X2),
+            "uint32" | "u32" => Some(Self::Uint32),
             "light_tile" | "lighttile" => Some(Self::LightTileU32),
             _ => None,
         }
@@ -43,6 +46,7 @@ impl VertexAttrType {
 
     pub fn byte_size(self) -> u32 {
         match self {
+            Self::Uint32 => 4,
             Self::Float2 => 8,
             Self::Float3 => 12,
             Self::Float4 | Self::Joints | Self::Weights => 16,

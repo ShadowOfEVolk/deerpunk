@@ -1,6 +1,6 @@
 //! Compact chunk-style vertex encoding (matches `#@vertex` compact layout, 20-byte stride).
 
-/// Stride for `VertexLayoutSpec::compact_chunk()`.
+/// Stride for `VertexLayoutSpec::compact_chunk()` (packed pos + tint×AO + face UV + light/tile).
 pub const COMPACT_CHUNK_VERTEX_STRIDE: u32 = 20;
 
 const POSITION_BITS: u32 = 20;
@@ -62,7 +62,7 @@ pub fn encode_light_tile_u32(block_level: f32, sky_level: f32, atlas_tile: u16) 
     (light << 16) | (atlas_tile as u32)
 }
 
-/// Append one compact vertex (20 bytes) to `out`.
+/// Append one compact vertex (`COMPACT_CHUNK_VERTEX_STRIDE` bytes) to `out`.
 pub fn push_compact_vertex(
     out: &mut Vec<u8>,
     position: [f32; 3],

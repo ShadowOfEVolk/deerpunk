@@ -1,6 +1,6 @@
 === World Dump (panic) ===
-Actually alive (scanned): 280
-Entity slots: count=280, alive=280
+Actually alive (scanned): 263
+Entity slots: count=263, alive=263
   0x00000001 'Component' : Component, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000002 'Identifier' : Component, Relationship, flecs.meta.struct, flecs.meta.TypeSerializer, flecs.meta.type, (Identifier,Name), (Identifier,Symbol), (OnInstantiate,DontInherit), (ChildOf,flecs.core)
   0x00000003 'Poly' : Component, (Identifier,Name), (Identifier,Symbol), (ChildOf,flecs.core)
@@ -264,20 +264,3 @@ Entity slots: count=280, alive=280
   0x000001e2 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
   0x000001e3 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
   0x000001e4 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001e5 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001e6 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001e7 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001e8 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001e9 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001ea '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001eb '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001ec '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001ed '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001ee '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001ef '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001f0 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001f1 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001f2 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001f3 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001f4 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
-  0x000001f5 '(unnamed)' : TransformComponent, Mesh3D, DrawMaterial, MeshDrawAux, WorldTransformComponent
