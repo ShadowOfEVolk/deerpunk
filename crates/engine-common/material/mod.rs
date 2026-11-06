@@ -11,6 +11,7 @@
 //! - [`lighting`] — `SceneLighting` (scene-level, not per-material)
 
 pub mod shader_meta;
+pub mod vertex_layout;
 pub mod preprocessor;
 pub mod asset;
 pub mod handle;
@@ -20,6 +21,9 @@ pub mod pipeline_desc;
 
 pub use shader_meta::{
     PropDefault, PropertyKind, RenderPass, ShaderMeta, ShaderPropertyMeta,
+};
+pub use vertex_layout::{
+    MeshVertexChannel, VertexAttrType, VertexAttributeSpec, VertexLayoutSpec,
 };
 pub use preprocessor::{ShaderPreprocessor, ShaderError, screen_dither_preprocessor_defines};
 pub use asset::{MaterialAsset, PropertyValueSer};

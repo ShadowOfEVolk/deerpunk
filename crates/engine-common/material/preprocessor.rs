@@ -171,6 +171,16 @@ impl ShaderPreprocessor {
 
                 if let Some(rest) = directive.strip_prefix("shader ") {
                     parse_shader_line(rest, &mut meta)?;
+                } else if let Some(rest) = directive.strip_prefix("vertex ") {
+                    if meta.vertex_layout.is_some() {
+                        return Err(ShaderError::PropParse(
+                            "duplicate #@vertex directive".into(),
+                        ));
+                    }
+                    meta.vertex_layout = Some(
+                        super::vertex_layout::VertexLayoutSpec::parse_vertex_line(rest)
+                            .map_err(ShaderError::PropParse)?,
+                    );
                 } else if let Some(rest) = directive.strip_prefix("prop ") {
                     if let Some((name, kind, default)) = parse_prop_line(rest)? {
                         if let Some((prev_name, _, _)) = pending_prop.take() {

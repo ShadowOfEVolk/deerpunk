@@ -3,6 +3,9 @@
 //! Each slot also records which [`MeshAllocator`] owns its GPU region so
 //! that [`release`] can call `free` on the right allocator when refs hit
 //! zero — fixing the GPU-memory leak under streaming (voxel chunks).
+//!
+//! Uploads are keyed by `(content_id, vertex_layout_key)` so different shaders
+//! can pack the same CPU mesh with different `#@vertex` layouts.
 
 use std::collections::HashMap;
 
@@ -14,11 +17,12 @@ use crate::mesh_allocator::MeshHandle;
 /// default built-in slab allocator.
 pub type AllocatorId = u32;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Slot {
-    handle: Option<MeshHandle>,
     allocator_id: AllocatorId,
     refs: u32,
+    /// `VertexLayoutSpec::layout_key()` → GPU sub-allocation.
+    uploads: HashMap<u64, MeshHandle>,
 }
 
 /// Refcounted GPU uploads. Id `0` is invalid; ids are never reused after release.
@@ -56,17 +60,17 @@ impl MeshGpuPool {
         self.slots.insert(
             content_id,
             Slot {
-                handle: None,
                 allocator_id,
                 refs: 1,
+                uploads: HashMap::new(),
             },
         );
         self.live_count += 1;
     }
 
-    /// Decrement owners. Returns `(allocator_id, handle)` when refs hit zero
-    /// so the caller can call `allocator.free(handle)` to reclaim GPU memory.
-    pub fn release(&mut self, content_id: u64) -> Option<(AllocatorId, MeshHandle)> {
+    /// Decrement owners. Returns `(allocator_id, handles)` when refs hit zero
+    /// so the caller can call `allocator.free(handle)` on each upload.
+    pub fn release(&mut self, content_id: u64) -> Option<(AllocatorId, Vec<MeshHandle>)> {
         if content_id == MESH_CONTENT_INVALID {
             return None;
         }
@@ -77,12 +81,18 @@ impl MeshGpuPool {
             return None;
         }
         let allocator_id = slot.allocator_id;
-        let handle = slot.handle;
+        let handles: Vec<MeshHandle> = slot
+            .uploads
+            .values()
+            .copied()
+            .filter(|h| h.is_valid())
+            .collect();
         self.slots.remove(&content_id);
         self.live_count -= 1;
-        match handle {
-            Some(h) if h.is_valid() => Some((allocator_id, h)),
-            _ => None,
+        if handles.is_empty() {
+            None
+        } else {
+            Some((allocator_id, handles))
         }
     }
 
@@ -91,9 +101,9 @@ impl MeshGpuPool {
     pub fn drain_for_free(&mut self) -> Vec<(AllocatorId, MeshHandle)> {
         let mut out = Vec::new();
         for slot in self.slots.values() {
-            if let Some(h) = slot.handle {
+            for h in slot.uploads.values() {
                 if h.is_valid() {
-                    out.push((slot.allocator_id, h));
+                    out.push((slot.allocator_id, *h));
                 }
             }
         }
@@ -107,11 +117,13 @@ impl MeshGpuPool {
         self.live_count = 0;
     }
 
-    pub fn handle(&self, content_id: u64) -> Option<MeshHandle> {
+    pub fn handle(&self, content_id: u64, layout_key: u64) -> Option<MeshHandle> {
+        if self.refs(content_id) == 0 {
+            return None;
+        }
         self.slots
             .get(&content_id)
-            .and_then(|s| s.handle)
-            .filter(|_| self.refs(content_id) > 0)
+            .and_then(|s| s.uploads.get(&layout_key).copied())
     }
 
     pub fn allocator_id(&self, content_id: u64) -> AllocatorId {
@@ -121,18 +133,18 @@ impl MeshGpuPool {
             .unwrap_or(0)
     }
 
-    pub fn set_uploaded(&mut self, content_id: u64, handle: MeshHandle) {
+    pub fn set_uploaded(&mut self, content_id: u64, layout_key: u64, handle: MeshHandle) {
         let slot = self
             .slots
             .get_mut(&content_id)
             .expect("set_uploaded: content_id not retained");
-        slot.handle = Some(handle);
+        slot.uploads.insert(layout_key, handle);
     }
 
-    pub fn needs_upload(&self, content_id: u64) -> bool {
+    pub fn needs_upload(&self, content_id: u64, layout_key: u64) -> bool {
         self.slots
             .get(&content_id)
-            .map(|s| s.handle.is_none())
+            .map(|s| !s.uploads.contains_key(&layout_key))
             .unwrap_or(false)
     }
 
@@ -140,9 +152,9 @@ impl MeshGpuPool {
     pub fn live_handles(&self) -> Vec<(AllocatorId, MeshHandle)> {
         let mut out = Vec::new();
         for slot in self.slots.values() {
-            if let Some(h) = slot.handle {
+            for h in slot.uploads.values() {
                 if h.is_valid() {
-                    out.push((slot.allocator_id, h));
+                    out.push((slot.allocator_id, *h));
                 }
             }
         }

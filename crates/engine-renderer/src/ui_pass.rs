@@ -257,8 +257,7 @@ impl UiPass {
     ) {
         let w = upload.width.max(1);
         let h = upload.height.max(1);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
+        queue.write_texture(wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
@@ -379,8 +378,7 @@ impl UiPass {
         );
         queue.write_buffer(&self.vbo, 0, v_bytes);
         queue.write_buffer(&self.ibo, 0, i_bytes);
-        queue.write_buffer(
-            &self.globals_buf,
+        queue.write_buffer(&self.globals_buf,
             0,
             bytemuck::bytes_of(&UiGlobals {
                 screen: [frame.screen[0] as f32, frame.screen[1] as f32],

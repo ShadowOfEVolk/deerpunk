@@ -98,8 +98,25 @@ struct Logger {
     color_console: bool,
 }
 
+/// Symphonia (Kira OGG decode) is very chatty at INFO. Warn+ still shown.
+fn symphonia_info_suppressed(target: &str, level: Level) -> bool {
+    if level > Level::Info {
+        return false;
+    }
+    if !target.starts_with("symphonia") {
+        return false;
+    }
+    !matches!(
+        std::env::var("DEERPUNK_LOG_SYMPHONIA").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
+        if symphonia_info_suppressed(metadata.target(), metadata.level()) {
+            return false;
+        }
         metadata.level() <= self.console_level
     }
 

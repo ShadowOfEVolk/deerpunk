@@ -4,6 +4,7 @@ use crate::frame::context::FrameCtx;
 use crate::gpu::{MeshUniform, Renderer, DEPTH_FORMAT};
 use crate::render_profile::lap_ms;
 use deerpunk_engine_common::frame::{frame_height, frame_width};
+use deerpunk_engine_common::material::VertexLayoutSpec;
 
 impl Renderer {
     pub(crate) fn pass_terrain_splat(
@@ -32,8 +33,7 @@ impl Renderer {
                 _pad_cam: 0.0,
                 _pad: [0.0; 24],
             };
-            self.queue.write_buffer(
-                &self.mesh_globals_buf,
+            self.queue.write_buffer(&self.mesh_globals_buf,
                 i as u64 * uniform_size,
                 bytemuck::bytes_of(&uniform),
             );
@@ -42,7 +42,7 @@ impl Renderer {
         let terrain_handles: Vec<_> = ctx.snapshot
             .terrain_splat_draws
             .iter()
-            .map(|td| self.mesh_for_draw(&td.mesh))
+            .map(|td| self.mesh_for_draw(&td.mesh, &VertexLayoutSpec::legacy_basic()))
             .collect();
 
         let depth_view = self.ensure_depth(

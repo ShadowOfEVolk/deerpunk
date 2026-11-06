@@ -6,58 +6,91 @@ use deerpunk_engine_macro as methoddb;
 
 use deerpunk_engine_common::material::{MaterialAsset, MaterialHandle, PropertyValueSer};
 use deerpunk_engine_common::MeshTexture;
+use deerpunk_engine_common::resource::AssetId;
 
-/// Load a material into the client `MaterialStore`.
-///
-/// `path` may be a gamedir-relative `.mat` file or a resource URI
-/// (e.g. `file://maps/foo.bsp#material` from the gamelib BSP loader).
-fn materials_load(host: &mut crate::Host, path: &str) -> u32 {
-    if !path.contains('#') && !path.contains("://") {
-        if let Some(ce) = host.client_engine.as_ref() {
-            if let Some(h) = ce.material_handle_for_path(path) {
-                return h.0;
+/// Register a `.mat` / material URI in [`ResourceManager`] → [`AssetId`] (no GPU upload).
+pub(crate) fn materials_load_asset(host: &mut crate::Host, path: &str) -> u64 {
+    materials_load_asset_with_defines(host, path, "")
+}
+
+pub(crate) fn materials_load_asset_with_defines(
+    host: &mut crate::Host,
+    path: &str,
+    defines: &str,
+) -> u64 {
+    if path.is_empty() {
+        return 0;
+    }
+    let cache_key = if defines.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}#{defines}")
+    };
+    if path.contains('#') || path.contains("://") {
+        return host.resources.load::<MaterialAsset>(path).id().0;
+    }
+    let resolved = host.fs.resolve_path(path);
+    let source = match std::fs::read_to_string(&resolved) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("[materials] load asset '{path}': {e}");
+            return 0;
+        }
+    };
+    let mut asset = match MaterialAsset::from_json(&source) {
+        Ok(a) => a,
+        Err(e) => {
+            log::error!("[materials] parse '{path}': {e}");
+            return 0;
+        }
+    };
+    if !defines.is_empty() {
+        for d in defines.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !asset.shader_defines.iter().any(|x| x == d) {
+                asset.shader_defines.push(d.to_string());
             }
         }
     }
+    host.resources
+        .register_loaded(&cache_key, asset, "material")
+        .id()
+        .0
+}
 
-    let Some(ce) = host.client_engine.as_mut() else {
-        log::error!("[materials] load '{path}': no client engine");
+/// `AssetId` → client [`MaterialStore`] handle (GPU row).
+fn materials_resolve(host: &mut crate::Host, asset_id: u64) -> u32 {
+    if asset_id == 0 {
+        return 0;
+    }
+    let id = AssetId(asset_id);
+    let Some(rh) = host.resources.handle::<MaterialAsset>(id) else {
+        log::error!("[materials] resolve: unknown asset {asset_id}");
         return 0;
     };
-
-    if path.contains('#') || path.contains("://") {
-        let handle = host.resources.load::<MaterialAsset>(path);
-        let asset = match handle.try_get() {
-            Some(a) => a,
-            None => {
-                log::error!("[materials] load '{path}': resource not ready");
-                return 0;
-            }
-        };
-        match ce.load_material_from_asset(path, &asset, &host.resources) {
-            Ok(h) => h.0,
-            Err(e) => {
-                log::error!("[materials] load uri '{path}': {e}");
-                0
-            }
-        }
-    } else {
-        let resolved = host.fs.resolve_path(path);
-        let source = match std::fs::read_to_string(&resolved) {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("[materials] load '{path}': {e}");
-                return 0;
-            }
-        };
-        match ce.load_material_resolved(path, &source, &host.resources) {
-            Ok(handle) => handle.0,
-            Err(e) => {
-                log::error!("[materials] load '{path}': {e}");
-                0
-            }
+    let Some(asset) = rh.try_get() else {
+        log::error!("[materials] resolve: asset {asset_id} not loaded");
+        return 0;
+    };
+    let path = host
+        .resources
+        .uri_for(id)
+        .unwrap_or_else(|| format!("asset:{asset_id}"));
+    let Some(ce) = host.client_engine.as_mut() else {
+        log::error!("[materials] resolve '{path}': no client engine");
+        return 0;
+    };
+    match ce.load_material_from_asset(&path, &asset, &host.resources) {
+        Ok(h) => h.0,
+        Err(e) => {
+            log::error!("[materials] resolve '{path}': {e}");
+            0
         }
     }
+}
+
+/// Legacy name: same as [`materials_load_asset`].
+fn materials_load(host: &mut crate::Host, path: &str) -> u64 {
+    materials_load_asset(host, path)
 }
 
 /// Create a material at runtime.
@@ -145,10 +178,22 @@ fn materials_set_texture(host: &mut crate::Host, handle: u32, prop_name: &str, s
 
 #[methoddb::namespace(name = "v1:materials", on_host, scope = ["server", "client"])]
 impl crate::Host {
-    /// Load a `.mat` asset by path → MaterialHandle (0 = failed).
+    /// Load a `.mat` asset by path → [`AssetId`] (0 = failed). GPU: host resolve before extract.
     #[methoddb::bind(name = "load")]
-    pub fn api_materials_load(&mut self, path: &str) -> u32 {
+    pub fn api_materials_load(&mut self, path: &str) -> u64 {
         materials_load(self, path)
+    }
+
+    /// Load `.mat` with extra comma-separated shader defines (dedup key `path#defines`).
+    #[methoddb::bind(name = "load_with_defines")]
+    pub fn api_materials_load_with_defines(&mut self, path: &str, defines: &str) -> u64 {
+        materials_load_asset_with_defines(self, path, defines)
+    }
+
+    /// Resolve a material [`AssetId`] into a client `MaterialHandle` (GPU row).
+    #[methoddb::bind(name = "resolve")]
+    pub fn api_materials_resolve(&mut self, asset_id: u64) -> u32 {
+        materials_resolve(self, asset_id)
     }
 
     /// Create material at runtime: shader_path + defines + props_json → MaterialHandle.

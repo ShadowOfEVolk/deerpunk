@@ -8,7 +8,6 @@ pub mod components;
 pub mod input;
 pub mod logger;
 pub mod network;
-pub mod goldsrc_lightstyle;
 pub mod component_inspect;
 pub mod layout_meta;
 pub mod prefab;
@@ -43,7 +42,6 @@ pub use components::{
     TerrainSplatMaterial, TransformComponent, UiDocumentComponent, Worldspawn,
     NET_FIELDS_MAX, NET_PREFAB_MAX,
 };
-pub use goldsrc_lightstyle::{LightstyleTable, MAX_LIGHTSTYLES};
 pub use network::replication::{NetworkComponent, NetworkField};
 
 pub use lightmap_atlas::{LightmapAtlasLayers, LM_STYLE_SLOTS};
@@ -66,5 +64,5 @@ pub use property::{
 };
 pub use material::{
     DrawMaterial, GpuMaterialIndex, MaterialAsset, MaterialHandle, PropertyValueSer,
-    SceneLighting, ShaderError, ShaderId, ShaderMeta, ShaderPreprocessor,
+    SceneLighting, ShaderError, ShaderId, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
 };

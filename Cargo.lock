@@ -751,6 +751,7 @@ dependencies = [
 name = "deerpunk-engine-client"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "deerpunk-engine-common",
  "deerpunk-engine-ffi",
  "deerpunk-engine-renderer",

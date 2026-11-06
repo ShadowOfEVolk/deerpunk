@@ -75,7 +75,7 @@ impl ClientPrefabReplication {
                 resources,
                 entity,
             );
-            let _ = resolve_draw_material_uri(client, resources, entity);
+            let _ = resolve_draw_material_uri(client, resources, entity, false);
             client.mesh_adopt_entity(meshes, entity);
         }
     }
@@ -307,7 +307,7 @@ impl ClientPrefabReplication {
         if trace_drop {
             log::info!("[stream/item_drop] 6 resolve_draw_material");
         }
-        let _ = resolve_draw_material_uri(client, resources, entity);
+        let _ = resolve_draw_material_uri(client, resources, entity, false);
         if trace_drop {
             log::info!("[stream/item_drop] 7 mesh_adopt");
         }

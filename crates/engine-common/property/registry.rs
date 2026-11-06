@@ -184,7 +184,6 @@ impl PropertyRegistry {
             (PropertyId::CAMERA_COMPONENT, "CameraComponent"),
             (PropertyId::CHARACTER_CONTROLLER, "CharacterController"),
             (PropertyId::SOUND_EMITTER, "SoundEmitter"),
-            (PropertyId::MATERIAL, "Material"),
             (PropertyId::WORLDSPAWN, "Worldspawn"),
             (PropertyId::MESH3D, "Mesh3D"),
         ];

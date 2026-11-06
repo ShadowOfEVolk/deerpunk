@@ -2,6 +2,7 @@ mod aabb;
 mod cull;
 mod draw_list;
 mod cvars;
+pub mod upload_log;
 mod occlusion;
 mod frustum;
 mod octree;
@@ -17,6 +18,7 @@ pub mod material_store;
 pub mod mesh_alloc_debug;
 pub mod mesh_allocator;
 pub mod mesh_gpu_pool;
+mod mesh_vertex_pack;
 mod mesh_shader_instance;
 pub mod postfx;
 pub mod render_graph;
@@ -37,7 +39,7 @@ pub use font::{
     build_font_atlas, push_char, push_text, push_text_centered_shadow, push_text_shadow,
     text_width_f32, ATLAS_H, ATLAS_W, GLYPH_H, GLYPH_W,
 };
-pub use gpu::{FrameError, Renderer, ShaderSources};
+pub use gpu::{FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources};
 pub use material_allocator::{MaterialAllocator, MaterialGpuEntry, MATERIAL_WHITE_ID};
 pub use mesh_alloc_debug::{BufferView, MeshAllocReport, SideView};
 pub use mesh_allocator::{

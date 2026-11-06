@@ -3,6 +3,7 @@
 pub mod loaders;
 pub mod loader;
 pub mod mesh;
+pub mod mesh_compact;
 pub mod mesh_allocator;
 pub mod mesh_content;
 pub mod mesh_handle;
@@ -362,6 +363,57 @@ impl ResourceManager {
             inner: rec.state.clone(),
             _phantom: std::marker::PhantomData,
         })
+    }
+
+    /// Insert an already-built asset (virtual / host-published). Dedupes by `uri` key.
+    pub fn register_loaded<T: Clone + Send + 'static>(
+        &self,
+        uri: &str,
+        value: T,
+        type_name: &str,
+    ) -> ResourceHandle<T> {
+        let key = uri.to_string();
+        if let Some(existing) = self.lookup_cached::<T>(&key, &LoadOpts::default()) {
+            return existing;
+        }
+        let mut inner = self.inner.borrow_mut();
+        let id = AssetId(inner.next_id);
+        inner.next_id += 1;
+        let state = Arc::new(Mutex::new(ResourceState::Loaded(Box::new(value))));
+        inner.keys.insert(key.clone(), id);
+        inner.assets.insert(
+            id,
+            AssetRecord {
+                id,
+                uri: key,
+                aliases: Vec::new(),
+                type_name: type_name.to_string(),
+                size: 0,
+                state: state.clone(),
+            },
+        );
+        ResourceHandle {
+            id,
+            inner: state,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub fn uri_for(&self, id: AssetId) -> Option<String> {
+        self.inner
+            .borrow()
+            .assets
+            .get(&id)
+            .map(|r| r.uri.clone())
+    }
+
+    pub fn is_loaded(&self, id: AssetId) -> bool {
+        let inner = self.inner.borrow();
+        let Some(rec) = inner.assets.get(&id) else {
+            return false;
+        };
+        let state = rec.state.lock().unwrap();
+        matches!(*state, ResourceState::Loaded(_))
     }
 
     pub fn list_assets(&self) -> Vec<AssetInfo> {

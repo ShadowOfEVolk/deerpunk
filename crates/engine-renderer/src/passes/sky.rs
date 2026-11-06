@@ -1,5 +1,6 @@
 //! Sky + volumetric cloud fullscreen passes (HDR target).
 
+
 use bytemuck;
 
 use super::super::{CloudUniform, Renderer, SkyUniform, SKY_UNIFORM_RING};
@@ -62,8 +63,7 @@ impl Renderer {
         }
         let sky_slot = (self.sky_uniform_ring as usize + 1) % SKY_UNIFORM_RING;
         self.sky_uniform_ring = sky_slot as u8;
-        self.queue.write_buffer(
-            &self.sky_globals_bufs[sky_slot],
+        self.queue.write_buffer(&self.sky_globals_bufs[sky_slot],
             0,
             bytemuck::bytes_of(&uniform),
         );
@@ -126,8 +126,7 @@ impl Renderer {
                 self.scene_ambient[3],
             ],
         };
-        self.queue.write_buffer(
-            &self.cloud_uniform_buf,
+        self.queue.write_buffer(&self.cloud_uniform_buf,
             0,
             bytemuck::bytes_of(&cloud_uniform),
         );

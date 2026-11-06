@@ -219,7 +219,6 @@ pub fn engine_default_component_role(name: &str) -> ComponentRole {
         | "NetworkEntity"
         | "Mesh3D"
         | "DrawMaterial"
-        | "Material"
         | "Worldspawn"
         | "MapKv"
         | "StudioModel"

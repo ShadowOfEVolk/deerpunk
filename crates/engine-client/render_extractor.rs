@@ -389,7 +389,7 @@ impl RenderExtractor {
                         if ptr.is_null() {
                             0
                         } else {
-                            unsafe { (*(ptr as *const MeshDrawAux)).crack_stage }
+                            unsafe { (*(ptr as *const MeshDrawAux)).material_data_y() }
                         }
                     } else {
                         0

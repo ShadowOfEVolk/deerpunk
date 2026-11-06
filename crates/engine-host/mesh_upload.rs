@@ -20,6 +20,10 @@ pub struct MeshCreateDesc {
     pub lightmap_styles: *const f32,
     /// Per-vertex atlas rects (`vertex_count * 4` floats), optional.
     pub atlas_rects: *const f32,
+    /// Compact / prepacked interleaved vertices (`vertex_byte_len` bytes), optional.
+    pub packed_stride: u32,
+    pub vertex_bytes: *const u8,
+    pub vertex_byte_len: u32,
     /// Which registered mesh allocator should own this mesh's GPU region.
     /// `0` = the engine's built-in slab allocator (default).
     pub allocator_id: u32,
@@ -88,6 +92,21 @@ pub fn mesh_from_desc(desc: &MeshCreateDesc) -> Option<Mesh> {
         for i in 0..vc {
             mesh.atlas_rects.push([ar[i * 4], ar[i * 4 + 1], ar[i * 4 + 2], ar[i * 4 + 3]]);
         }
+    }
+    if desc.packed_stride > 0 {
+        if desc.vertex_bytes.is_null() || desc.vertex_byte_len == 0 {
+            panic!("mesh create: packed_stride set but vertex_bytes missing");
+        }
+        let expected = vc * desc.packed_stride as usize;
+        if desc.vertex_byte_len as usize != expected {
+            panic!(
+                "mesh create: vertex_byte_len {} != vertex_count * packed_stride ({expected})",
+                desc.vertex_byte_len
+            );
+        }
+        mesh.packed_stride = desc.packed_stride;
+        mesh.vertex_bytes =
+            unsafe { std::slice::from_raw_parts(desc.vertex_bytes, expected).to_vec() };
     }
     mesh.allocator_id = desc.allocator_id;
     mesh.ensure_content_id();

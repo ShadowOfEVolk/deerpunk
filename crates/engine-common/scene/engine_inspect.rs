@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::component_inspect::NativeInspectDumpFn;
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, Material, Mesh3D, NetworkEntity, PointLight, SkinnedMesh3D,
+    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PointLight, SkinnedMesh3D,
     SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent,
 };
 use crate::material::DrawMaterial;
@@ -159,22 +159,6 @@ fn dump_skinned_mesh3d(world: &World, entity: EntityId, comp: ComponentId) -> Re
     }))
 }
 
-fn dump_material(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
-    let ptr = world.get_raw(entity, comp);
-    if ptr.is_null() {
-        return Err("Material missing".into());
-    }
-    let m = unsafe { &*(ptr as *const Material) };
-    Ok(json!({
-        "color": m.color,
-        "metallic": m.metallic,
-        "roughness": m.roughness,
-        "emission": m.emission,
-        "sun_dir": m.sun_dir,
-        "ambient": m.ambient,
-    }))
-}
-
 fn dump_draw_material(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
     let dm = world
         .get::<DrawMaterial>(entity, comp)
@@ -273,22 +257,6 @@ pub fn register_engine_component_inspect(world: &World) {
 
     let id = world.component_init::<MapKv>();
     reg(world, "MapKv", id, json!({ "type": "object" }), dump_map_kv);
-
-    let id = world.component_init::<Material>();
-    reg(
-        world,
-        "Material",
-        id,
-        json!({
-            "type": "object",
-            "properties": {
-                "color": { "type": "array" },
-                "metallic": { "type": "number" },
-                "roughness": { "type": "number" },
-            }
-        }),
-        dump_material,
-    );
 
     let id = world.component_init::<Mesh3D>();
     reg(

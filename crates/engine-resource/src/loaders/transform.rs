@@ -158,11 +158,16 @@ mod tests {
             lightmap_uvs: Vec::new(),
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
+            atlas_tile: Vec::new(),
+            vertex_bytes: Vec::new(),
+            packed_stride: 0,
             indices: vec![0],
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
             content_id: 0,
             allocator_id: 0,
+            bounds_min: [0.0; 3],
+            bounds_max: [0.0; 3],
         };
         apply_mesh_transform(&mut m, &MeshTransform {
             scale: 2.0,
@@ -182,11 +187,16 @@ mod tests {
             lightmap_uvs: Vec::new(),
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
+            atlas_tile: Vec::new(),
+            vertex_bytes: Vec::new(),
+            packed_stride: 0,
             indices: vec![0],
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
             content_id: 0,
             allocator_id: 0,
+            bounds_min: [0.0; 3],
+            bounds_max: [0.0; 3],
         };
         apply_mesh_transform(&mut m, &MeshTransform {
             scale: 1.0,

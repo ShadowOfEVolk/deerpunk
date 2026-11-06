@@ -246,8 +246,7 @@ impl PostFx {
             view_formats: &[],
         });
         let rgba = generate_noise_rgba(NOISE_SIZE);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
+        queue.write_texture(wgpu::TexelCopyTextureInfo {
                 texture: &noise,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,

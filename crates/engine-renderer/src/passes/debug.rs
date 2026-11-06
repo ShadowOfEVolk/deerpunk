@@ -25,8 +25,7 @@ impl Renderer {
             ],
             params: [[0.0; 4]; 8],
         };
-        self.queue.write_buffer(
-            &self.debug_globals_buf,
+        self.queue.write_buffer(&self.debug_globals_buf,
             0,
             bytemuck::bytes_of(&debug_view),
         );
@@ -35,8 +34,7 @@ impl Renderer {
         if !verts.is_empty() {
             self.ensure_debug_pipelines(ctx.hdr_format);
 
-            self.queue
-                .write_buffer(&self.debug_vertex_buf, 0, bytemuck::cast_slice(&verts));
+            self.queue.write_buffer(&self.debug_vertex_buf, 0, bytemuck::cast_slice(&verts));
             let vcount = verts.len() as u32;
             let depth_view = self.ensure_depth(
                 ctx.snapshot.depth.target,

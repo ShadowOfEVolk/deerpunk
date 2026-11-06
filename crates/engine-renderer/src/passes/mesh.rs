@@ -1,5 +1,6 @@
 //! Mesh + skinned + indirect draw pass.
 
+
 use std::collections::HashMap;
 use std::cmp::Ordering;
 
@@ -253,8 +254,7 @@ impl Renderer {
         if wrote_uniform {
             let start_byte = (min_uniform_slot * mesh_uniform_size) as usize;
             let end_byte = ((max_uniform_slot + 1) * mesh_uniform_size) as usize;
-            self.queue.write_buffer(
-                &self.mesh_globals_buf,
+            self.queue.write_buffer(&self.mesh_globals_buf,
                 min_uniform_slot * mesh_uniform_size,
                 &self.mesh_uniform_scratch[start_byte..end_byte],
             );
@@ -290,8 +290,7 @@ impl Renderer {
                     intensity: pl.intensity,
                 };
             }
-            self.queue
-                .write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
+            self.queue.write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
         }
 
         let depth_view = self.ensure_depth(
@@ -339,7 +338,12 @@ impl Renderer {
             {
                 continue;
             }
-            self.mesh_static_handle_at(i, &md.mesh);
+            let vtx = ctx
+                .shaders
+                .get(md.shader_id)
+                .expect("mesh batch shader")
+                .mesh_vertex_layout();
+            self.mesh_static_handle_at(i, &md.mesh, vtx);
             let lm_surface = ctx.shaders
                 .get(md.shader_id)
                 .map(|d| d.group1_uses_lightmap_array())
@@ -384,13 +388,18 @@ impl Renderer {
                 if !shader_ok {
                     continue;
                 }
+                let vtx = ctx
+                    .shaders
+                    .get(key.shader_id)
+                    .expect("mesh batch shader")
+                    .mesh_vertex_layout();
                 let mut by_buffer: HashMap<u32, Vec<usize>> = HashMap::new();
                 for &gi in group {
                     if !static_vis(gi) {
                         continue;
                     }
                     let md = &meshes.get(gi);
-                    let handle = self.mesh_static_handle_at(gi, &md.mesh);
+                    let handle = self.mesh_static_handle_at(gi, &md.mesh, vtx);
                     by_buffer.entry(handle.buffer_id).or_default().push(gi);
                 }
                 for (buffer_id, indices) in by_buffer {
@@ -401,7 +410,7 @@ impl Renderer {
                     let mut seg_indices = 0u32;
                     for &gi in &indices {
                         let md = &meshes.get(gi);
-                        let handle = self.mesh_static_handle_at(gi, &md.mesh);
+                        let handle = self.mesh_static_handle_at(gi, &md.mesh, vtx);
                         seg_indices = seg_indices.saturating_add(push_mesh_indirect_cmd(
                             &mut self.mesh_indirect_cmd_scratch,
                             gi,
@@ -423,8 +432,7 @@ impl Renderer {
             }
             if !self.mesh_indirect_cmd_scratch.is_empty() {
                 self.ensure_mesh_indirect_capacity(self.mesh_indirect_cmd_scratch.len());
-                self.queue.write_buffer(
-                    &self.mesh_indirect_buf,
+                self.queue.write_buffer(&self.mesh_indirect_buf,
                     0,
                     bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
                 );
@@ -572,8 +580,13 @@ impl Renderer {
                             continue;
                         }
                         let group_md = &meshes.get(group_index);
+                        let vtx = ctx
+                            .shaders
+                            .get(group_md.shader_id)
+                            .expect("mesh batch group shader")
+                            .mesh_vertex_layout();
                         let handle =
-                            self.mesh_static_handle_at(group_index, &group_md.mesh);
+                            self.mesh_static_handle_at(group_index, &group_md.mesh, vtx);
                         let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
                         let ib = self.mesh_pool.index_buffer(handle.buffer_id);
                         pass.set_vertex_buffer(
@@ -650,7 +663,12 @@ impl Renderer {
                 "mesh draw {i}: shader_id=0 (material_id={})",
                 md.material_id
             );
-            let handle = self.mesh_static_handle_at(i, &md.mesh);
+            let vtx = ctx
+                .shaders
+                .get(md.shader_id)
+                .expect("mesh draw shader")
+                .mesh_vertex_layout();
+            let handle = self.mesh_static_handle_at(i, &md.mesh, vtx);
             let material_id = resolved_static[i];
             pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
 
@@ -742,7 +760,12 @@ impl Renderer {
                 pass.set_pipeline(&pipeline);
                 last_skinned_shader = Some(sd.shader_id);
             }
-            let handle = self.mesh_skinned_handle_at(j, &sd.mesh);
+            let vtx = ctx
+                .shaders
+                .get(sd.shader_id)
+                .expect("skinned mesh shader")
+                .mesh_vertex_layout();
+            let handle = self.mesh_skinned_handle_at(j, &sd.mesh, vtx);
             let material_id = resolved_skinned[j];
             let i = static_count + j;
             let offset = (i as u64 * mesh_uniform_size) as u32;

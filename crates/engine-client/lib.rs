@@ -41,6 +41,7 @@ pub mod bone_buffer_pool;
 pub mod mesh_lifecycle;
 pub mod render_extract_cache;
 pub mod render_extractor;
+pub mod render_thread;
 pub mod scene;
 pub mod ui_controller;
 mod ui_rml_input;

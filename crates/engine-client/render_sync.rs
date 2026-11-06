@@ -53,6 +53,7 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
     r.set_sky_debug_log(cvar.get_f32_or("r_sky_debug", 0.0) >= 0.5);
     r.set_occlusion_cull(cvar.get_bool_or("r_occlusion_cull", false));
     r.set_mesh_draw_batching(cvar.get_bool_or("r_mesh_batch", true));
+    deerpunk_engine_renderer::upload_log::set_enabled(cvar.get_usize_or("r_log_uploads", 0) != 0);
     r.set_mesh_batch_mdi(cvar.get_bool_or("r_mesh_batch_mdi", true));
 }
 

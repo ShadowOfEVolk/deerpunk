@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use deerpunk_engine_common::components::{CameraComponent, SoundEmitter, TransformComponent};
 use deerpunk_engine_common::material::DrawMaterial;
-use deerpunk_engine_common::goldsrc_lightstyle::{LightstyleTable, MAX_LIGHTSTYLES};
 use deerpunk_engine_common::network::ClientSessionPhase;
 use deerpunk_engine_common::input::Input;
 use deerpunk_engine_common::material::{screen_dither_preprocessor_defines, ShaderPreprocessor};
@@ -45,6 +44,7 @@ use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
 use crate::bone_buffer_pool::{BoneBufferHandle, BoneBufferPool};
 use crate::mesh_lifecycle::MeshGpuLifecycle;
 use crate::render_extractor::RenderExtractor;
+use crate::render_thread::PipelinedSubmit;
 use crate::ui_controller::UiController;
 
 /// Client-owned camera stamp (reapplied after world replicate).
@@ -110,8 +110,6 @@ pub struct ClientEngine {
     /// Until `SVC::InitDone` (listen channel or UDP).
     pub join_phase: ClientSessionPhase,
     pub lan_browser: LanBrowser,
-    pub lightstyles: LightstyleTable,
-    pub last_ls_patterns: Vec<String>,
     pub demo_writer: Option<demo::DemoWriter>,
     pub demo_player: Option<demo::DemoPlayer>,
     /// Last albedo atlas slot from gamelib `flush_pending_albedos` FFI.
@@ -132,6 +130,9 @@ pub struct ClientEngine {
     camera_compose_scratch: Vec<RenderSnapshot>,
     /// Gamelib overlays merged into frame debug draw (block outline, etc.).
     game_debug: DebugDraw,
+    pipelined_submit: Option<PipelinedSubmit>,
+    /// [`cl_render_thread`]: 0 = sync submit/present, 1 = async submit on `deerpunk-submit`.
+    render_pipeline_mode: usize,
 }
 
 #[inline]
@@ -190,8 +191,6 @@ impl ClientEngine {
             rep: ClientPrefabReplication::new(),
             join_phase: ClientSessionPhase::Idle,
             lan_browser: LanBrowser::default(),
-            lightstyles: LightstyleTable::hl_defaults(),
-            last_ls_patterns: vec![String::new(); MAX_LIGHTSTYLES],
             demo_writer: None,
             demo_player: None,
             last_atlas_slot: 0,
@@ -206,6 +205,70 @@ impl ClientEngine {
             camera_build_scratch: Vec::new(),
             camera_compose_scratch: Vec::new(),
             game_debug: DebugDraw::new(),
+            pipelined_submit: None,
+            render_pipeline_mode: 0,
+        }
+    }
+
+    pub fn imgui_context_ptr(&self) -> *mut std::ffi::c_void {
+        self.renderer.imgui_context_ptr()
+    }
+
+    /// Gamelib Dear ImGui widgets (host GPU). Skipped for legacy client DLLs that rasterize in-process.
+    pub fn gamelib_ui_build_frame(&self, _delta_time: f32) {
+        let Some(ref dll) = self.dll else {
+            return;
+        };
+        let Some((w, h, format)) = self.renderer.swapchain_layout() else {
+            return;
+        };
+        let args = deerpunk_engine_ffi::GamelibUiBuildArgs {
+            version: deerpunk_engine_ffi::GAMELIB_UI_API_VERSION,
+            device: (&self.renderer.device as *const _ as *mut std::ffi::c_void),
+            queue: (&self.renderer.queue as *const _ as *mut std::ffi::c_void),
+            surface_format: crate::gamelib_ui::gamelib_ui_format_token(format),
+            width: w as f32,
+            height: h as f32,
+        };
+        unsafe {
+            let _ = dll.gamelib_ui_build(&args);
+        }
+    }
+
+    fn render_surface_frame(
+        &mut self,
+        cameras: &[RenderSnapshot],
+        post: &RenderSnapshot,
+        geometry: Option<&deerpunk_engine_renderer::snapshot::SceneGeometry>,
+        game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
+        game_frame_ctx: *mut std::ffi::c_void,
+        delta_time: f32,
+    ) {
+        self.gamelib_ui_build_frame(delta_time);
+        let gamelib_ui_render = self
+            .dll
+            .as_ref()
+            .and_then(|d| d.gamelib_ui_render_fn());
+
+        if game_frame_fn.is_some() {
+            if let Err(e) = self.renderer.render_to_surface_compose_with_game_frame(
+                cameras,
+                post,
+                geometry,
+                game_frame_fn,
+                game_frame_ctx,
+                gamelib_ui_render,
+                &self.shader_registry,
+            ) {
+                self.handle_surface_frame_error(e);
+            }
+        } else if let Err(e) = self.renderer.render_to_surface_compose(
+            cameras,
+            post,
+            geometry,
+            &self.shader_registry,
+        ) {
+            self.handle_surface_frame_error(e);
         }
     }
 
@@ -291,12 +354,6 @@ impl ClientEngine {
         );
     }
 
-    /// Animate HL lightstyle table and push scales to the renderer.
-    pub fn tick_lightstyles(&mut self, time_secs: f32) {
-        self.lightstyles.tick(time_secs);
-        let scales = self.lightstyles.scales_array();
-        self.renderer_mut().set_lightstyles(&scales);
-    }
     pub fn set_console_open(&mut self, open: bool) {
         self.console_open = open;
     }
@@ -392,6 +449,7 @@ impl ClientEngine {
                 self,
                 resources,
                 entity,
+                false,
             );
             self.mesh_adopt_entity(meshes, entity);
         }
@@ -990,8 +1048,9 @@ impl ClientEngine {
         scene: Option<&RenderScene>,
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
+        delta_time: f32,
     ) -> bool {
-        self.tick_inner(scene, game_frame_fn, game_frame_ctx, true)
+        self.tick_inner(scene, game_frame_fn, game_frame_ctx, delta_time, true)
     }
 
     /// Render a frame. If `poll` is false, caller must have already called [`Self::poll_events`].
@@ -1000,6 +1059,7 @@ impl ClientEngine {
         scene: Option<&RenderScene>,
         game_frame_fn: Option<extern "C" fn(*mut std::ffi::c_void)>,
         game_frame_ctx: *mut std::ffi::c_void,
+        delta_time: f32,
         poll: bool,
     ) -> bool {
         if poll && !self.app.poll_events(&mut self.input) {
@@ -1147,32 +1207,17 @@ impl ClientEngine {
                 }
             }
             let post_idx = 0usize;
-            let post = &self.camera_compose_scratch[post_idx];
-            let geometry = scene.as_ref().map(|s| &s.geometry);
-            let gamelib_ui_render = self
-                .dll
-                .as_ref()
-                .and_then(|d| d.gamelib_ui_render_fn());
-            if game_frame_fn.is_some() {
-                if let Err(e) = self.renderer.render_to_surface_compose_with_game_frame(
-                    &self.camera_compose_scratch,
-                    post,
-                    geometry,
-                    game_frame_fn,
-                    game_frame_ctx,
-                    gamelib_ui_render,
-                    &self.shader_registry,
-                ) {
-                    self.handle_surface_frame_error(e);
-                }
-            } else if let Err(e) = self.renderer.render_to_surface_compose(
-                &self.camera_compose_scratch,
-                post,
-                geometry,
-                &self.shader_registry,
-            ) {
-                self.handle_surface_frame_error(e);
-            }
+            let cameras = self.camera_compose_scratch.clone();
+            let post_snap = cameras[post_idx].clone();
+            let geometry_owned = scene.as_ref().map(|s| s.geometry.clone());
+            self.render_surface_frame(
+                &cameras,
+                &post_snap,
+                geometry_owned.as_ref(),
+                game_frame_fn,
+                game_frame_ctx,
+                delta_time,
+            );
             rendered_surface = true;
         }
         self.renderer
@@ -1190,28 +1235,68 @@ impl ClientEngine {
         }
         if !rendered_surface {
             let snapshot = RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear);
-            let gamelib_ui_render = self
-                .dll
-                .as_ref()
-                .and_then(|d| d.gamelib_ui_render_fn());
-            if game_frame_fn.is_some() {
-                if let Err(e) = self.renderer.render_to_surface_with_game_frame(
-                    &snapshot,
-                    game_frame_fn,
-                    game_frame_ctx,
-                    gamelib_ui_render,
-                    &self.shader_registry,
-                ) {
-                    self.handle_surface_frame_error(e);
-                }
-            } else if let Err(e) = self
-                .renderer
-                .render_to_surface(&snapshot, &self.shader_registry)
-            {
-                self.handle_surface_frame_error(e);
-            }
+            self.render_surface_frame(
+                std::slice::from_ref(&snapshot),
+                &snapshot,
+                None,
+                game_frame_fn,
+                game_frame_ctx,
+                delta_time,
+            );
+        }
+        if self.render_pipeline_mode >= 1 {
+            self.pipelined_submit_kick();
         }
         true
+    }
+
+    pub fn set_render_pipeline(&mut self, mode: usize) {
+        let mode = mode.min(1);
+        self.render_pipeline_mode = mode;
+        self.renderer.set_defer_surface_submit(mode >= 1);
+        if mode >= 1 {
+            if self.pipelined_submit.is_none() {
+                let queue = self.renderer.queue.clone();
+                self.pipelined_submit = Some(PipelinedSubmit::new(queue));
+            }
+        } else {
+            self.shutdown_pipelined_submit();
+        }
+    }
+
+    pub fn set_pipelined_submit(&mut self, enabled: bool) {
+        self.set_render_pipeline(if enabled { 1 } else { 0 });
+    }
+
+    pub fn pipelined_submit_wait(&mut self) {
+        let Some(ps) = self.pipelined_submit.as_mut() else {
+            return;
+        };
+        ps.wait_and_complete(&mut self.renderer);
+    }
+
+    pub fn pipelined_submit_kick(&mut self) {
+        if !self.renderer.defer_surface_submit() {
+            return;
+        }
+        let queue = self.renderer.queue.clone();
+        let ps = self
+            .pipelined_submit
+            .get_or_insert_with(|| PipelinedSubmit::new(queue));
+        ps.kick(&mut self.renderer);
+    }
+
+    pub fn shutdown_pipelined_submit(&mut self) {
+        self.pipelined_submit_wait();
+        if let Some(ps) = self.pipelined_submit.take() {
+            ps.shutdown();
+        }
+        self.renderer.set_defer_surface_submit(false);
+    }
+
+    pub fn shutdown_render_pipeline(&mut self) {
+        self.shutdown_pipelined_submit();
+        self.render_pipeline_mode = 0;
     }
 
     pub fn window_size(&self) -> (u32, u32) {
@@ -1241,14 +1326,17 @@ impl ClientEngine {
         source: &str,
         resources: &ResourceManager,
     ) -> Result<deerpunk_engine_common::material::MaterialHandle, String> {
-        let renderer = &mut self.renderer;
-        let material_store = &mut self.material_store;
         let shader_registry = &mut self.shader_registry;
-        let mut resolver =
-            deerpunk_engine_renderer::material_store::GpuTextureResolver::new(resources, renderer);
-        let handle = material_store.load(path, source, shader_registry, &mut resolver)?;
+        let handle = self.material_store.load_with_gpu(
+            path,
+            source,
+            resources,
+            &mut self.renderer,
+            shader_registry,
+        )?;
         if let Ok(asset) = deerpunk_engine_common::material::MaterialAsset::from_json(source) {
-            material_store.attach_lightmaps_from_asset(handle, &asset, resources, renderer);
+            self.material_store
+                .attach_lightmaps_from_asset(handle, &asset, resources, &mut self.renderer);
         }
         Ok(handle)
     }
@@ -1260,14 +1348,16 @@ impl ClientEngine {
         asset: &deerpunk_engine_common::material::MaterialAsset,
         resources: &ResourceManager,
     ) -> Result<deerpunk_engine_common::material::MaterialHandle, String> {
-        let renderer = &mut self.renderer;
-        let material_store = &mut self.material_store;
         let shader_registry = &mut self.shader_registry;
-        let mut resolver =
-            deerpunk_engine_renderer::material_store::GpuTextureResolver::new(resources, renderer);
-        let handle =
-            material_store.create_from_asset(path, asset, shader_registry, &mut resolver)?;
-        material_store.attach_lightmaps_from_asset(handle, asset, resources, renderer);
+        let handle = self.material_store.create_from_asset_with_gpu(
+            path,
+            asset,
+            resources,
+            &mut self.renderer,
+            shader_registry,
+        )?;
+        self.material_store
+            .attach_lightmaps_from_asset(handle, asset, resources, &mut self.renderer);
         Ok(handle)
     }
 

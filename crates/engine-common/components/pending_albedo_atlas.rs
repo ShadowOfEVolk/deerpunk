@@ -1,6 +1,6 @@
 use crate::wad::RgbaImage;
 
-/// Albedo atlas awaiting GPU upload → [`super::material::Material::albedo`].
+/// Albedo atlas awaiting GPU upload → material `_BaseMap` via [`DrawMaterial`] resolve.
 #[derive(Clone, Default)]
 pub struct PendingAlbedoAtlas {
     pub image: Option<RgbaImage>,

@@ -29,6 +29,9 @@ type MeshCreateFn = extern "C" fn(
     *const f32,
     *const f32,
     *const f32,
+    u32,
+    *mut u8,
+    u32,
 ) -> usize;
 
 /// `v1:mesh:create_with` — like `create` plus a trailing `allocator_id: u32`
@@ -46,6 +49,9 @@ type MeshCreateWithFn = extern "C" fn(
     *const f32,
     *const f32,
     *const f32,
+    u32,
+    *mut u8,
+    u32,
     u32,
 ) -> usize;
 
@@ -80,6 +86,18 @@ impl MeshApi {
         }
     }
 
+    fn mesh_packed_ffi(mesh: &Mesh) -> (u32, *mut u8, u32) {
+        if mesh.packed_stride == 0 {
+            return (0, std::ptr::null_mut(), 0);
+        }
+        debug_assert!(mesh.uses_prepacked_vertices());
+        (
+            mesh.packed_stride,
+            mesh.vertex_bytes.as_ptr() as *mut u8,
+            mesh.vertex_bytes.len() as u32,
+        )
+    }
+
     pub fn create(
         &self,
         positions: &[f32],
@@ -92,6 +110,9 @@ impl MeshApi {
         lightmap_uvs: &[f32],
         lightmap_styles: &[f32],
         atlas_rects: &[f32],
+        packed_stride: u32,
+        vertex_bytes: *mut u8,
+        vertex_byte_len: u32,
     ) -> MeshHandle {
         let Some(f) = self.create_fn else {
             return MeshHandle::INVALID;
@@ -141,11 +162,17 @@ impl MeshApi {
             } else {
                 atlas_rects.as_ptr()
             },
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
         ))
     }
 
     pub fn create_from_mesh(&self, mesh: &Mesh) -> MeshHandle {
         if mesh.positions.is_empty() {
+            return MeshHandle::INVALID;
+        }
+        if mesh.packed_stride > 0 && !mesh.uses_prepacked_vertices() {
             return MeshHandle::INVALID;
         }
         let vc = mesh.positions.len() as u32;
@@ -197,6 +224,7 @@ impl MeshApi {
         } else {
             Vec::new()
         };
+        let (packed_stride, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
         self.create(
             &positions,
             vc,
@@ -208,6 +236,9 @@ impl MeshApi {
             &lightmap_uvs,
             &lightmap_styles,
             &atlas_rects,
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
         )
     }
 
@@ -259,6 +290,9 @@ impl MeshApi {
         if mesh.positions.is_empty() {
             return MeshHandle::INVALID;
         }
+        if mesh.packed_stride > 0 && !mesh.uses_prepacked_vertices() {
+            return MeshHandle::INVALID;
+        }
         let Some(f) = self.create_with_fn else {
             return MeshHandle::INVALID;
         };
@@ -297,6 +331,7 @@ impl MeshApi {
         } else {
             Vec::new()
         };
+        let (packed_stride, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
         MeshHandle(f(
             self.ctx,
             positions.as_ptr(),
@@ -342,6 +377,9 @@ impl MeshApi {
             } else {
                 atlas_rects.as_ptr()
             },
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
             allocator_id,
         ))
     }

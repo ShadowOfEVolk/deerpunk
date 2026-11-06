@@ -37,6 +37,8 @@ pub struct ResourceLoaderDesc {
 pub struct ResourcesApi {
     ctx: *mut u8,
     register_fn: extern "C" fn(*mut u8, *const ResourceLoaderDesc) -> i32,
+    load_material_fn: extern "C" fn(*mut u8, *const u8, usize) -> u64,
+    is_loaded_fn: extern "C" fn(*mut u8, u64) -> i32,
 }
 
 unsafe impl Send for ResourcesApi {}
@@ -48,6 +50,12 @@ impl ResourcesApi {
             ctx,
             register_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:resources:register"))
+            },
+            load_material_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:resources:load_material"))
+            },
+            is_loaded_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:resources:is_loaded"))
             },
         }
     }
@@ -84,5 +92,16 @@ impl ResourcesApi {
             drop_fn,
         };
         self.register(&desc)
+    }
+
+    /// Load a material JSON asset → [`crate::materials::MaterialAssetId`].
+    pub fn load_material(&self, path: &str) -> crate::materials::MaterialAssetId {
+        let bytes = path.as_bytes();
+        (self.load_material_fn)(self.ctx, bytes.as_ptr(), bytes.len())
+    }
+
+    /// Returns true when the asset id is in Loaded state.
+    pub fn is_loaded(&self, asset_id: crate::materials::MaterialAssetId) -> bool {
+        (self.is_loaded_fn)(self.ctx, asset_id) != 0
     }
 }

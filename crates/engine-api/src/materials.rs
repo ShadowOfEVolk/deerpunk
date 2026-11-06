@@ -13,10 +13,15 @@ fn resolve(r: Resolver, name: &str) -> *const () {
     ptr
 }
 
+/// Stable id for a logical material asset in [`ResourceManager`] (same as host `AssetId.0`).
+pub type MaterialAssetId = u64;
+
 pub struct MaterialsApi {
     ctx: *mut u8,
-    /// Load .mat asset by path → MaterialHandle (u32). 0 = failed.
-    load_fn: extern "C" fn(*mut u8, *const u8, usize) -> u32,
+    /// Load `.mat` by path → [`MaterialAssetId`]. 0 = failed. GPU: [`Self::resolve`].
+    load_fn: extern "C" fn(*mut u8, *const u8, usize) -> u64,
+    load_with_defines_fn: extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> u64,
+    resolve_fn: extern "C" fn(*mut u8, u64) -> u32,
     /// Create material at runtime: shader_path + defines + props_json → MaterialHandle.
     create_fn: extern "C" fn(*mut u8, *const u8, usize, *const u8, usize, *const u8, usize) -> u32,
     /// Hot-reload material file → 0 on success, -1 on error.
@@ -33,6 +38,10 @@ impl MaterialsApi {
         Self {
             ctx,
             load_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:load")) },
+            load_with_defines_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:materials:load_with_defines"))
+            },
+            resolve_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:resolve")) },
             create_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:create")) },
             reload_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:reload")) },
             set_texture_fn: unsafe {
@@ -41,10 +50,28 @@ impl MaterialsApi {
         }
     }
 
-    /// Load a `.mat` asset by path. Returns MaterialHandle (0 = failed).
-    pub fn load(&self, path: &str) -> u32 {
+    /// Register material asset in [`ResourceManager`]. Does not upload GPU state.
+    pub fn load(&self, path: &str) -> MaterialAssetId {
         let bytes = path.as_bytes();
         (self.load_fn)(self.ctx, bytes.as_ptr(), bytes.len())
+    }
+
+    pub fn load_with_defines(&self, path: &str, defines: &str) -> MaterialAssetId {
+        let pb = path.as_bytes();
+        let db = defines.as_bytes();
+        (self.load_with_defines_fn)(
+            self.ctx,
+            pb.as_ptr(),
+            pb.len(),
+            db.as_ptr(),
+            db.len(),
+        )
+    }
+
+    /// Host / renderer prepare: upload RM material → GPU store. Gamelib must not call.
+    #[doc(hidden)]
+    pub fn resolve(&self, asset_id: MaterialAssetId) -> u32 {
+        (self.resolve_fn)(self.ctx, asset_id)
     }
 
     /// Create a material at runtime.
@@ -75,7 +102,7 @@ impl MaterialsApi {
 
     /// Update a texture property on an existing material.
     ///
-    /// `handle` — MaterialHandle from `load`/`create`.
+    /// `handle` — MaterialHandle from `resolve`/`create`.
     /// `prop_name` — `"_BaseMap"`, `"_NormalMap"`, or `"_ORMMap"`.
     /// `slot` — texture slot from `renderer.upload_texture_raw` or
     /// `host.flush_pending_albedos`. Invalidates the GPU cache so the next

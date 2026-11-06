@@ -33,6 +33,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "cl_render_thread",
+    "0",
+    "Async render pipeline: 0=sync submit/present on main, 1=encode on main + async submit/present (`deerpunk-submit`). Values >1 treated as 1.",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "s_volume",
     "1",
     "Master audio volume (FMOD bus:/ volume, 0..1).",

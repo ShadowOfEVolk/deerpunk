@@ -43,8 +43,6 @@ type UmHookFn = extern "C" fn(
 ) -> i32;
 type PlayerNetIdFn = extern "C" fn(*mut u8, u32) -> u32;
 type ClientSetViewNetIdFn = extern "C" fn(*mut u8, u16) -> i32;
-type ClientSetLightstyleFn =
-    extern "C" fn(*mut u8, u8, *const u8, usize) -> i32;
 type UsercmdAckFn = extern "C" fn(*mut u8) -> u32;
 type UsercmdOutgoingFn = extern "C" fn(*mut u8) -> u32;
 type UsercmdLookupFn = extern "C" fn(*mut u8, u32, *mut u8, usize) -> i32;
@@ -73,7 +71,6 @@ pub struct NetApi {
     um_hook_fn: UmHookFn,
     player_net_id_fn: PlayerNetIdFn,
     client_set_view_net_id_fn: ClientSetViewNetIdFn,
-    client_set_lightstyle_fn: ClientSetLightstyleFn,
     usercmd_ack_fn: UsercmdAckFn,
     usercmd_outgoing_fn: UsercmdOutgoingFn,
     usercmd_lookup_fn: UsercmdLookupFn,
@@ -123,9 +120,6 @@ impl NetApi {
             },
             client_set_view_net_id_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client:set_view_net_id"))
-            },
-            client_set_lightstyle_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client:set_lightstyle"))
             },
             usercmd_ack_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:players:usercmd_ack"))
@@ -390,21 +384,4 @@ impl NetApi {
             Err("client.set_view_net_id failed".into())
         }
     }
-
-    /// Client: lightstyle pattern (for renderer).
-    pub fn client_set_lightstyle(&self, style: u8, pattern: &str) -> Result<(), String> {
-        let bytes = pattern.as_bytes();
-        let rc = (self.client_set_lightstyle_fn)(
-            self.ctx,
-            style,
-            bytes.as_ptr(),
-            bytes.len(),
-        );
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err("client.set_lightstyle failed".into())
-        }
-    }
-
 }

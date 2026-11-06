@@ -88,12 +88,14 @@ impl MeshRegistry {
         if !handle.is_valid() {
             return;
         }
-        debug_assert!(
-            self.get(handle).is_some(),
-            "attach unknown or stale MeshHandle idx={} gen={}",
-            handle.idx(),
-            handle.gen()
-        );
+        if self.get(handle).is_none() {
+            log::error!(
+                "MeshRegistry::attach unknown or stale MeshHandle idx={} gen={}",
+                handle.idx(),
+                handle.gen()
+            );
+            return;
+        }
         *self.handle_refs.entry(handle.0).or_insert(0) += 1;
     }
 

@@ -56,7 +56,6 @@ use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
 use deerpunk_engine_common::network::{UserCmd, UserCmdAckRpc};
-use deerpunk_engine_common::{LightstyleTable, MAX_LIGHTSTYLES};
 pub use engine_api::ui::*;
 
 mod net_packet_log;
@@ -759,6 +758,13 @@ impl Host {
     fn flush_client_scene(&mut self) {
         if let Some(client) = self.client_engine.as_mut() {
             client.flush_client_scene(&mut self.mesh_registry);
+            deerpunk_engine_client::draw_material_resolve::invalidate_all_draw_material_handles(
+                client,
+            );
+            deerpunk_engine_client::draw_material_resolve::resolve_all_draw_materials(
+                client,
+                &self.resources,
+            );
             if let Some(ref dll) = client.dll {
                 unsafe {
                     dll.scene_flushed();
@@ -853,17 +859,9 @@ impl Host {
                 self.flush_client_scene();
             }
             if on {
-                if let Some(client) = self.client_engine.as_mut() {
-                    client.last_ls_patterns = vec![String::new(); MAX_LIGHTSTYLES];
-                    client.lightstyles = LightstyleTable::hl_defaults();
-                }
             } else {
                 if self.client_net_active() {
                     self.disconnect_all_net();
-                }
-                if let Some(client) = self.client_engine.as_mut() {
-                    client.last_ls_patterns = vec![String::new(); MAX_LIGHTSTYLES];
-                    client.lightstyles = LightstyleTable::hl_defaults();
                 }
             }
             if let Some(st) = &self.server_thread {
@@ -1168,20 +1166,9 @@ impl Host {
             }
         }
 
-        // After SVC/demo apply so LightStyle UM hits GPU same frame.
-        #[cfg(any(feature = "client", feature = "full"))]
-        if self.client_in_play()
-            || self.client_engine.as_mut().unwrap().demo_player.is_some()
-            || (self.client_net_active()
-                && self.client_engine.as_mut().unwrap().join_phase != ClientSessionPhase::Idle)
-        {
-            let _g = system_profiler::scope("host.lightstyles");
-            self.tick_lightstyles();
-        }
-        // Inspector WS is polled on the server simulation thread (`poll_server_inspector`).
     }
 
-    /// ImGui overlays — call only between renderer `imgui_begin_frame` / end.
+    /// ImGui overlays — call from renderer during `imgui_begin_frame` … `imgui_end_frame`.
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn frame_ui(&mut self) {
         let show_fps = self.cvar.get_usize_or("cl_showfps", 0) != 0
@@ -1226,23 +1213,6 @@ impl Host {
         if r_showalloc > 0 {
             deerpunk_engine_client::mesh_alloc_debug::tick(r_showalloc, client.renderer());
         }
-
-        // Gamelib Dear ImGui pass (separate context + wgpu renderer in the client DLL).
-        if let Some(ref dll) = client.dll {
-            if let Some((w, h, format)) = client.renderer().swapchain_layout() {
-                let args = deerpunk_engine_ffi::GamelibUiBuildArgs {
-                    version: deerpunk_engine_ffi::GAMELIB_UI_API_VERSION,
-                    device: (&client.renderer().device as *const _ as *mut std::ffi::c_void),
-                    queue: (&client.renderer().queue as *const _ as *mut std::ffi::c_void),
-                    surface_format: deerpunk_engine_client::gamelib_ui::gamelib_ui_format_token(format),
-                    width: w as f32,
-                    height: h as f32,
-                };
-                unsafe {
-                    let _ = dll.gamelib_ui_build(&args);
-                }
-            }
-        }
     }
 
     /// Mirrored client-world entity for the local player (if any).
@@ -1276,15 +1246,6 @@ impl Host {
             .unwrap()
             .rep
             .set_view_net_id(net_id);
-    }
-
-    #[cfg(any(feature = "client", feature = "full"))]
-    pub fn client_set_lightstyle(&mut self, style: u8, pattern: &str) {
-        self.client_engine
-            .as_mut()
-            .unwrap()
-            .lightstyles
-            .set_pattern(style as usize, pattern);
     }
 
     /// Send a registered UserMessage (`slot = None` → broadcast remotes).
@@ -2006,17 +1967,6 @@ impl Host {
     #[cfg(any(feature = "client", feature = "full"))]
     /// Apply client view stamp to the local mirrored pawn (angles + eye + fov).
     #[cfg(any(feature = "client", feature = "full"))]
-    /// Evaluate client lightstyle table → GPU scales (patterns via gamelib UM hooks).
-    #[cfg(any(feature = "client", feature = "full"))]
-    fn tick_lightstyles(&mut self) {
-        if let Some(client) = self.client_engine.as_mut() {
-            client.tick_lightstyles(self.time_secs);
-        }
-    }
-
-    #[cfg(not(any(feature = "client", feature = "full")))]
-    fn tick_lightstyles(&mut self) {}
-
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn run(&mut self) {
         if self.client_engine.is_none() {
@@ -2073,6 +2023,22 @@ impl Host {
             }
 
             self.frame(dt);
+
+            let render_pipeline = self.cvar.get_usize_or("cl_render_thread", 0);
+            if let Some(client) = self.client_engine.as_mut() {
+                client.set_render_pipeline(render_pipeline);
+            }
+            if render_pipeline >= 1 {
+                let _g = system_profiler::scope("frame.render_wait");
+                if let Some(client) = self.client_engine.as_mut() {
+                    client.pipelined_submit_wait();
+                    let profile = client.renderer().frame_profile();
+                    deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
+                    system_profiler::ingest_render_profile(profile);
+                }
+            } else if let Some(client) = self.client_engine.as_mut() {
+                client.set_render_pipeline(0);
+            }
 
             {
                 let _g = system_profiler::scope("frame.render_setup");
@@ -2147,13 +2113,16 @@ impl Host {
                     Some(&scene),
                     Some(host_frame_ui_trampoline),
                     host_ptr,
+                    dt,
                     false,
                 )
             };
-            if let Some(client) = self.client_engine.as_ref() {
-                let profile = client.renderer().frame_profile();
-                deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
-                system_profiler::ingest_render_profile(profile);
+            if render_pipeline == 0 {
+                if let Some(client) = self.client_engine.as_ref() {
+                    let profile = client.renderer().frame_profile();
+                    deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
+                    system_profiler::ingest_render_profile(profile);
+                }
             }
             system_profiler::end_frame();
 
@@ -2191,6 +2160,7 @@ impl Host {
             self.client_engine.as_mut().unwrap().dll = None;
             // Documents → context → Rml::Shutdown before window/renderer die.
             if let Some(client) = self.client_engine.as_mut() {
+                client.shutdown_render_pipeline();
                 client.shutdown_ui();
             }
         }

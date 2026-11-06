@@ -2,7 +2,6 @@
 
 use std::sync::Mutex;
 
-use deerpunk_engine_common::LightstyleTable;
 
 use crate::cmd::CommandRegistration;
 use crate::demo;
@@ -100,7 +99,6 @@ impl Host {
                     self.disconnect_all_net();
                 }
                 self.flush_client_scene();
-                self.client_engine.as_mut().unwrap().lightstyles = LightstyleTable::hl_defaults();
                 let n = player.records.len();
                 println!("[demo] playing {} ({} records)", path.display(), n);
                 self.client_engine.as_mut().unwrap().demo_player = Some(player);

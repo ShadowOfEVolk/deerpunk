@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use crate::components::{Material, Mesh3D, NetworkEntity, StudioModel, TransformComponent, Worldspawn};
+use crate::components::{Mesh3D, NetworkEntity, StudioModel, TransformComponent, Worldspawn};
 use crate::material::DrawMaterial;
 use crate::network::field_apply::read_field;
 use crate::network::field_path::{FieldValue, PropertyId};
@@ -140,32 +140,11 @@ fn merge_whole_component_from_ecs(
         return;
     };
     match component.as_str() {
-        "Material" => export_material(world, entity, out),
         "Mesh3D" => export_mesh3d(world, entity, out),
         "DrawMaterial" => export_draw_material(world, entity, out),
         "Worldspawn" => export_worldspawn(world, entity, out),
         _ => {}
     }
-}
-
-fn export_material(world: &World, entity: EntityId, out: &mut HashMap<String, Value>) {
-    let id = world.component_init::<Material>();
-    if !world.has(entity, id) {
-        return;
-    }
-    let ptr = world.get_raw(entity, id);
-    if ptr.is_null() {
-        return;
-    }
-    let m = unsafe { &*(ptr as *const Material) };
-    patch_component(
-        out,
-        "Material",
-        json!({
-            "color": m.color,
-            "emission": m.emission,
-        }),
-    );
 }
 
 fn export_mesh3d(world: &World, entity: EntityId, out: &mut HashMap<String, Value>) {

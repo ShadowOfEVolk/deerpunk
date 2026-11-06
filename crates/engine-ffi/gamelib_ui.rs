@@ -11,11 +11,9 @@ pub const GAMELIB_SURFACE_RGBA8: u32 = 4;
 #[repr(C)]
 pub struct GamelibUiBuildArgs {
     pub version: u32,
-    /// Host wgpu Device pointer (same process, same wgpu version as the executable).
+    /// Legacy: host `Device` (gamelib must not create a second wgpu stack in the DLL).
     pub device: *mut std::ffi::c_void,
-    /// Host wgpu Queue pointer.
     pub queue: *mut std::ffi::c_void,
-    /// Surface format discriminant (wgpu TextureFormat as u32).
     pub surface_format: u32,
     pub width: f32,
     pub height: f32,
@@ -25,7 +23,6 @@ pub struct GamelibUiBuildArgs {
 pub struct GamelibUiRenderArgs {
     pub version: u32,
     pub encoder: *mut std::ffi::c_void,
-    /// Swapchain (or final composite) color target view.
     pub color_view: *mut std::ffi::c_void,
     pub width: f32,
     pub height: f32,
@@ -38,6 +35,10 @@ impl GamelibUiBuildArgs {
             && !self.queue.is_null()
             && self.width > 0.0
             && self.height > 0.0
+    }
+
+    pub fn valid(&self) -> bool {
+        self.valid_gpu()
     }
 }
 

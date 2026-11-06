@@ -185,7 +185,6 @@ User messages are the usual way to send game-specific payloads (inventory, chunk
 | Method | Purpose |
 |--------|---------|
 | `set_view_net_id` | Which entity drives the main camera |
-| `set_lightstyle` | Animated light style index |
 | `scene_time` | Renderer scene time (seconds) |
 | `view_ray` | Eye position + forward for traces / audio |
 | `debug_aabb` | Debug draw AABB |

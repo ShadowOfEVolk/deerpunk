@@ -16,7 +16,10 @@ pub const DRAW_MATERIAL_URI_MAX: usize = 256;
 pub struct DrawMaterial {
     pub uri: [u8; DRAW_MATERIAL_URI_MAX],
     pub uri_len: u16,
-    pub _pad: [u8; 6],
+    pub _pad: u16,
+    /// Logical material asset ([`deerpunk_engine_resource::AssetId`]). Client-only; 0 = use [`Self::uri`].
+    pub asset_id: u64,
+    /// GPU row in client `MaterialStore` (resolved from `asset_id` / `uri`).
     pub handle: MaterialHandle,
 }
 
@@ -25,7 +28,8 @@ impl Default for DrawMaterial {
         Self {
             uri: [0; DRAW_MATERIAL_URI_MAX],
             uri_len: 0,
-            _pad: [0; 6],
+            _pad: 0,
+            asset_id: 0,
             handle: MaterialHandle::NONE,
         }
     }
@@ -42,7 +46,8 @@ impl DrawMaterial {
         Self {
             uri: [0; DRAW_MATERIAL_URI_MAX],
             uri_len: 0,
-            _pad: [0; 6],
+            _pad: 0,
+            asset_id: 0,
             handle,
         }
     }
@@ -63,6 +68,14 @@ impl DrawMaterial {
             self.uri[n..].fill(0);
         }
         self.uri_len = n as u16;
+    }
+
+    pub fn set_asset_id(&mut self, id: u64) {
+        self.asset_id = id;
+    }
+
+    pub fn asset_id(&self) -> u64 {
+        self.asset_id
     }
 
     pub fn uri_str(&self) -> &str {

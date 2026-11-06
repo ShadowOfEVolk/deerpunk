@@ -76,6 +76,8 @@ Prepare time is split in the profile: `prep_ui_ms`, `prep_snapshot_ms`, `prep_cu
 
 ### 3. Encode / frame graph (GPU)
 
+**Pipelined present (`cl_render_thread 1`):** full GPU encode on **main**; `queue.submit` + swapchain **present** on **`deerpunk-submit`**. At frame start, **`pipelined_submit_wait`** drains the previous job before the next acquire. **`0`** = sync submit/present on main after encode.
+
 **Where:** `Renderer::encode_frame` → `frame/executor::run_frame_graph`.
 
 One command encoder runs nodes **in registration order** (forward graph, not a full DAG scheduler):

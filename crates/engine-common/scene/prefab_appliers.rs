@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, Material, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
+    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
     PointLight, SimpleEntity, SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent,
     Worldspawn,
 };
@@ -176,44 +176,7 @@ fn apply_lua_script(
     Ok(())
 }
 
-fn apply_material(
-    world: &World,
-    _meshes: &mut MeshRegistry,
-    _gamedir: &Path,
-    _resources: &ResourceManager,
-    entity: EntityId,
-    comp: ComponentId,
-    value: &Value,
-) -> Result<(), String> {
-    let mut mat = Material::default();
-    mat.roughness = 0.9;
-    mat.ambient = [0.0, 0.0, 0.0, 0.0];
-    mat.sun_dir = [0.0, 0.0, 1.0, 0.0];
-    if let Some(c) = value.get("color").and_then(|v| v.as_array()) {
-        if c.len() >= 3 {
-            mat.color = [
-                c[0].as_f64().unwrap_or(1.0) as f32,
-                c[1].as_f64().unwrap_or(1.0) as f32,
-                c[2].as_f64().unwrap_or(1.0) as f32,
-                c.get(3).and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
-            ];
-        }
-    }
-    if let Some(e) = value.get("emission").and_then(|v| v.as_array()) {
-        if e.len() >= 3 {
-            mat.emission = [
-                e[0].as_f64().unwrap_or(0.0) as f32,
-                e[1].as_f64().unwrap_or(0.0) as f32,
-                e[2].as_f64().unwrap_or(0.0) as f32,
-                e.get(3).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
-            ];
-        }
-    }
-    world.set(entity, comp, mat);
-    Ok(())
-}
-
-pub(crate) fn apply_mesh3d(
+fn apply_mesh3d(
     world: &World,
     meshes: &mut MeshRegistry,
     gamedir: &Path,
@@ -437,7 +400,6 @@ pub fn register_engine_prefab_appliers(world: &World) {
     attach::<CharacterController>(world, "CharacterController", apply_character_controller);
     attach::<SoundEmitter>(world, "SoundEmitter", apply_sound_emitter);
     attach::<LuaScript>(world, "lua", apply_lua_script);
-    attach::<Material>(world, "Material", apply_material);
     attach::<Mesh3D>(world, "Mesh3D", apply_mesh3d);
     attach::<PointLight>(world, "PointLight", apply_point_light);
     attach::<NetworkEntity>(world, "NetworkEntity", apply_network_entity);

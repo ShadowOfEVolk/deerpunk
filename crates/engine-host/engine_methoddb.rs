@@ -412,12 +412,6 @@ impl crate::Host {
         0
     }
 
-    #[methoddb::bind(name = "set_lightstyle")]
-    pub fn api_client_set_lightstyle(&mut self, style: u8, pattern: &str) -> i32 {
-        self.client_set_lightstyle(style, pattern);
-        0
-    }
-
     /// `out[0..3]` eye, `out[3..6]` normalized look (Z-up).
     #[methoddb::bind(name = "scene_time")]
     pub fn api_client_scene_time(&self) -> f32 {
@@ -493,11 +487,6 @@ impl crate::Host {
 impl crate::Host {
     #[methoddb::bind(name = "set_view_net_id")]
     pub fn api_client_set_view_net_id(&mut self, _net_id: u16) -> i32 {
-        -1
-    }
-
-    #[methoddb::bind(name = "set_lightstyle")]
-    pub fn api_client_set_lightstyle(&mut self, _style: u8, _pattern: &str) -> i32 {
         -1
     }
 
@@ -857,6 +846,18 @@ impl crate::Host {
     #[methoddb::bind(name = "register")]
     pub fn api_resources_register(&mut self, desc: &ResourceLoaderDesc) -> i32 {
         crate::engine_api::resources::register_loader_desc(self, desc)
+    }
+
+    /// Load `gamedir/materials/*.mat.json` (or URI) → [`AssetId`]. Sync; GPU via `v1:materials:resolve`.
+    #[methoddb::bind(name = "load_material")]
+    pub fn api_resources_load_material(&mut self, path: &str) -> u64 {
+        crate::engine_api::resources_load::resources_load_material(self, path)
+    }
+
+    /// 1 if asset is in Loaded state, else 0.
+    #[methoddb::bind(name = "is_loaded")]
+    pub fn api_resources_is_loaded(&self, asset_id: u64) -> i32 {
+        crate::engine_api::resources_load::resources_is_loaded(self, asset_id)
     }
 }
 
@@ -1526,6 +1527,14 @@ impl crate::Host {
             return;
         }
         ce.world.set_raw(entity, comp, data, size);
+        if size == std::mem::size_of::<deerpunk_engine_common::material::DrawMaterial>() {
+            let _ = deerpunk_engine_client::draw_material_resolve::resolve_draw_material_uri(
+                ce,
+                &self.resources,
+                entity,
+                false,
+            );
+        }
     }
 
     #[methoddb::bind(name = "has")]
@@ -1700,6 +1709,9 @@ impl crate::Host {
         lightmap_uvs: *const f32,
         lightmap_styles: *const f32,
         atlas_rects: *const f32,
+        packed_stride: u32,
+        vertex_bytes: *mut u8,
+        vertex_byte_len: u32,
     ) -> usize {
         let desc = crate::mesh_upload::MeshCreateDesc {
             positions,
@@ -1713,6 +1725,9 @@ impl crate::Host {
             lightmap_uvs,
             lightmap_styles,
             atlas_rects,
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
             allocator_id: 0,
         };
         match crate::mesh_upload::mesh_from_desc(&desc) {
@@ -1739,6 +1754,9 @@ impl crate::Host {
         lightmap_uvs: *const f32,
         lightmap_styles: *const f32,
         atlas_rects: *const f32,
+        packed_stride: u32,
+        vertex_bytes: *mut u8,
+        vertex_byte_len: u32,
         allocator_id: u32,
     ) -> usize {
         let desc = crate::mesh_upload::MeshCreateDesc {
@@ -1753,6 +1771,9 @@ impl crate::Host {
             lightmap_uvs,
             lightmap_styles,
             atlas_rects,
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
             allocator_id,
         };
         match crate::mesh_upload::mesh_from_desc(&desc) {

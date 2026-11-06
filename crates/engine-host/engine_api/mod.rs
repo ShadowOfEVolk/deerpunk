@@ -12,6 +12,7 @@ pub mod host_access;
 mod callback_loader;
 pub mod components;
 pub mod resources;
+pub mod resources_load;
 pub mod materials;
 #[cfg(any(feature = "client", feature = "full"))]
 pub mod ui;

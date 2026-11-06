@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use deerpunk_engine_common::material::{
-    MaterialHandle, PropertyKind, RenderPass, ShaderMeta, ShaderPreprocessor,
+    MaterialHandle, PropertyKind, RenderPass, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
 };
 use deerpunk_engine_common::MeshTexture;
 
@@ -30,6 +30,8 @@ pub struct ShaderDef {
     pub bindings: Vec<BindingEntry>,
     /// Set when the requested WGSL failed and [`ERROR_MESH_WGSL`] was substituted.
     pub compile_error: Option<String>,
+    /// Resolved mesh vertex packing (`#@vertex` or legacy heuristic).
+    pub vertex_layout: VertexLayoutSpec,
 }
 
 /// A reflected binding entry from naga.
@@ -96,15 +98,16 @@ impl ShaderRegistry {
         match compile_shader_source(path, defines, source, content_root) {
             Ok((meta, wgsl, bindings)) => {
                 let id = self.defs.len() as ShaderId + 1;
-                self.defs.push(Arc::new(ShaderDef {
+                self.defs.push(Arc::new(make_shader_def(
                     id,
-                    path: path.to_string(),
+                    path,
                     meta,
                     wgsl,
                     bindings,
-                    compile_error: None,
-                }));
+                    None,
+                )));
                 self.cache.insert(cache_key, id);
+                crate::upload_log::shader(path, &defines_key);
                 Ok(id)
             }
             Err(e) => {
@@ -119,14 +122,14 @@ impl ShaderRegistry {
                 )
                 .map_err(|e2| format!("engine error shader failed: {e2}"))?;
                 let id = self.defs.len() as ShaderId + 1;
-                self.defs.push(Arc::new(ShaderDef {
+                self.defs.push(Arc::new(make_shader_def(
                     id,
-                    path: path.to_string(),
+                    path,
                     meta,
                     wgsl,
                     bindings,
-                    compile_error: Some(e),
-                }));
+                    Some(e),
+                )));
                 self.cache.insert(cache_key, id);
                 Ok(id)
             }
@@ -182,14 +185,14 @@ impl ShaderRegistry {
 
         match compile_shader_source(path, defines, source, content_root) {
             Ok((meta, wgsl, bindings)) => {
-                self.defs[id as usize - 1] = Arc::new(ShaderDef {
+                self.defs[id as usize - 1] = Arc::new(make_shader_def(
                     id,
-                    path: path.to_string(),
+                    path,
                     meta,
                     wgsl,
                     bindings,
-                    compile_error: None,
-                });
+                    None,
+                ));
             }
             Err(e) => {
                 log::error!(
@@ -202,14 +205,14 @@ impl ShaderRegistry {
                     content_root,
                 )
                 .map_err(|e2| format!("engine error shader failed: {e2}"))?;
-                self.defs[id as usize - 1] = Arc::new(ShaderDef {
+                self.defs[id as usize - 1] = Arc::new(make_shader_def(
                     id,
-                    path: path.to_string(),
+                    path,
                     meta,
                     wgsl,
                     bindings,
-                    compile_error: Some(e),
-                });
+                    Some(e),
+                ));
             }
         }
         Ok(id)
@@ -226,9 +229,11 @@ impl ShaderDef {
 
     /// BSP / brush shaders use extended vertex inputs (`atlas_rect`, `lm_uv`, …).
     pub fn uses_extended_mesh_vertex(&self) -> bool {
-        self.group1_uses_lightmap_array()
-            || self.wgsl.contains("atlas_rect")
-            || self.wgsl.contains("lm_uv")
+        self.vertex_layout.stride > VertexLayoutSpec::legacy_basic().stride
+    }
+
+    pub fn mesh_vertex_layout(&self) -> &VertexLayoutSpec {
+        &self.vertex_layout
     }
 
     /// Skinned opaque mesh: bone palette in group 0 binding 1 (`mesh_skinned` layout).
@@ -274,6 +279,31 @@ fn compile_shader_source(
     let bindings = reflect_bindings(&preprocessed.wgsl)
         .map_err(|e| format!("shader reflect '{path}': {e}"))?;
     Ok((preprocessed.meta, preprocessed.wgsl, bindings))
+}
+
+fn make_shader_def(
+    id: ShaderId,
+    path: &str,
+    meta: ShaderMeta,
+    wgsl: String,
+    bindings: Vec<BindingEntry>,
+    compile_error: Option<String>,
+) -> ShaderDef {
+    let lm_surface = bindings
+        .iter()
+        .any(|b| b.group == 1 && b.kind == BindingKind::Texture2dArray);
+    let vertex_layout = meta.vertex_layout.clone().unwrap_or_else(|| {
+        VertexLayoutSpec::legacy_from_shader_source(meta.skinned, &wgsl, lm_surface)
+    });
+    ShaderDef {
+        id,
+        path: path.to_string(),
+        meta,
+        wgsl,
+        bindings,
+        compile_error,
+        vertex_layout,
+    }
 }
 
 /// Reflect bind group entries from WGSL source using naga.

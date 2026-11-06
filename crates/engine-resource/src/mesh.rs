@@ -9,10 +9,16 @@ pub struct Mesh {
     pub uvs: Vec<[f32; 2]>,
     /// Per-vertex lightmap UVs (empty → [0,0], sample white LM).
     pub lightmap_uvs: Vec<[f32; 2]>,
-    /// Per-vertex lightstyle indices (f32, 255 = unused). Empty → all unused.
+    /// Per-vertex user data (`Mesh::lightmap_styles` when present; game-defined).
     pub lightmap_styles: Vec<[f32; 4]>,
     /// Per-vertex albedo atlas rect `[min_u, min_v, size_u, size_v]` (empty → full [0,0,1,1]).
     pub atlas_rects: Vec<[f32; 4]>,
+    /// Atlas tile index for compact `light_tile` packing (parallel to [`positions`]; empty → 0).
+    pub atlas_tile: Vec<u16>,
+    /// Pre-packed interleaved vertices (`packed_stride` bytes per vert). Upload skips SoA packer.
+    pub vertex_bytes: Vec<u8>,
+    /// Non-zero → [`vertex_bytes`] is authoritative for GPU upload (must match material `#@vertex` stride).
+    pub packed_stride: u32,
     pub indices: Vec<u32>,
     /// Skinning joint indices (4 per vertex). Empty → static mesh.
     pub joint_indices: Vec<[u8; 4]>,
@@ -39,6 +45,9 @@ impl Mesh {
             lightmap_uvs: Vec::new(),
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
+            atlas_tile: Vec::new(),
+            vertex_bytes: Vec::new(),
+            packed_stride: 0,
             indices: Vec::new(),
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
@@ -90,7 +99,19 @@ impl Mesh {
     }
 
     pub fn vertex_count(&self) -> usize {
+        if self.packed_stride > 0 {
+            debug_assert_eq!(
+                self.vertex_bytes.len(),
+                self.positions.len() * self.packed_stride as usize
+            );
+            return self.positions.len();
+        }
         self.positions.len()
+    }
+
+    pub fn uses_prepacked_vertices(&self) -> bool {
+        self.packed_stride > 0
+            && self.vertex_bytes.len() == self.positions.len() * self.packed_stride as usize
     }
 
     pub fn index_count(&self) -> usize {
@@ -133,6 +154,9 @@ impl Mesh {
             lightmap_uvs: Vec::new(),
             lightmap_styles: Vec::new(),
             atlas_rects: Vec::new(),
+            atlas_tile: Vec::new(),
+            vertex_bytes: Vec::new(),
+            packed_stride: 0,
             indices: i,
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),

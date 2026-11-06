@@ -113,6 +113,15 @@ impl MeshGpuLifecycle {
             }
         }
         if new_handle.is_valid() {
+            if meshes.get(new_handle).is_none() {
+                log::warn!(
+                    "MeshGpuLifecycle: stale MeshHandle idx={} gen={} on entity {entity:#x} — skip attach (resolve uri or wait for spawn)",
+                    new_handle.idx(),
+                    new_handle.gen()
+                );
+                self.entity_mesh_handle.remove(&entity);
+                return;
+            }
             meshes.attach(new_handle);
             self.entity_mesh_handle.insert(entity, new_handle);
         } else {

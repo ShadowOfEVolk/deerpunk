@@ -45,6 +45,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_log_uploads",
+    "0",
+    "Log GPU resource uploads: mesh, material SSBO, shader compile, textures (0=off, 1=on).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_phys_debug",
     "0",
     "Wireframe world collider part under crosshair (0=off, 1=on).",

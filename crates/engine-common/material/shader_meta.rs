@@ -4,6 +4,8 @@
 //! ```wgsl
 //! #@shader pass=mesh_opaque queue=1000
 //!
+//! #@vertex position float3, normal float3, uv float2, atlas_rect float4, ext_float2_0 float2, ext_float4_0 float4
+//!
 //! #@prop _BaseColor color [1,1,1,1]
 //! @group(0) @binding(0) var<uniform> u_material: MaterialUniform;
 //!
@@ -114,6 +116,8 @@ pub struct ShaderMeta {
     pub queue: u32,
     /// Skinned mesh opaque: group 0 includes a bone palette (`mesh_skinned` layout).
     pub skinned: bool,
+    /// Optional `#@vertex` mesh channel list (see [`super::vertex_layout`]).
+    pub vertex_layout: Option<super::vertex_layout::VertexLayoutSpec>,
     /// Property declarations, in source order.
     pub properties: Vec<ShaderPropertyMeta>,
 }

@@ -12,7 +12,6 @@ pub mod mesh_renderer;
 pub mod mesh3d;
 pub mod bone_buffer;
 pub mod skinned_mesh3d;
-pub mod material;
 pub mod cam_pass;
 pub mod camera;
 pub mod parent;
@@ -49,7 +48,6 @@ pub use mesh_renderer::{MeshRenderer, MeshTexture};
 pub use mesh3d::Mesh3D;
 pub use bone_buffer::BoneBufferComponent;
 pub use skinned_mesh3d::SkinnedMesh3D;
-pub use material::Material;
 pub use camera::{
     CameraComponent, ColorLoad, DepthAttachment, DepthLoad, DepthTargetId,
 };

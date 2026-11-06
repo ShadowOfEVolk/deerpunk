@@ -3,7 +3,7 @@ use std::path::Path;
 use std::collections::HashMap;
 
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, Material, NetworkEntity, PointLight, SoundEmitter,
+    CameraComponent, LuaScript, MapKv, NetworkEntity, PointLight, SoundEmitter,
     TransformComponent, UiDocumentComponent, Worldspawn,
 };
 use crate::network::field_path::NetFieldId;
@@ -124,35 +124,6 @@ pub fn apply_component(
                 .ok_or_else(|| "lua.module missing".to_string())?;
             let id = world.component_init::<LuaScript>();
             world.set(entity, id, LuaScript::new(module));
-            Ok(())
-        }
-        "Material" => {
-            let mut mat = Material::default();
-            mat.roughness = 0.9;
-            mat.ambient = [0.0, 0.0, 0.0, 0.0];
-            mat.sun_dir = [0.0, 0.0, 1.0, 0.0];
-            if let Some(c) = value.get("color").and_then(|v| v.as_array()) {
-                if c.len() >= 3 {
-                    mat.color = [
-                        c[0].as_f64().unwrap_or(1.0) as f32,
-                        c[1].as_f64().unwrap_or(1.0) as f32,
-                        c[2].as_f64().unwrap_or(1.0) as f32,
-                        c.get(3).and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
-                    ];
-                }
-            }
-            if let Some(e) = value.get("emission").and_then(|v| v.as_array()) {
-                if e.len() >= 3 {
-                    mat.emission = [
-                        e[0].as_f64().unwrap_or(0.0) as f32,
-                        e[1].as_f64().unwrap_or(0.0) as f32,
-                        e[2].as_f64().unwrap_or(0.0) as f32,
-                        e.get(3).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
-                    ];
-                }
-            }
-            let id = world.component_init::<Material>();
-            world.set(entity, id, mat);
             Ok(())
         }
         "Mesh3D" => {

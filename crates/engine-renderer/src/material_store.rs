@@ -82,6 +82,8 @@ pub struct MaterialStore {
     by_path: HashMap<String, MaterialHandle>,
     /// content hash → MaterialHandle (dedup by content).
     by_hash: HashMap<u64, MaterialHandle>,
+    /// GPU texture slots by resource URI (shared across material resolves).
+    texture_by_uri: HashMap<String, MeshTexture>,
 }
 
 impl MaterialStore {
@@ -90,6 +92,7 @@ impl MaterialStore {
             entries: Vec::new(),
             by_path: HashMap::new(),
             by_hash: HashMap::new(),
+            texture_by_uri: HashMap::new(),
         }
     }
 
@@ -98,6 +101,7 @@ impl MaterialStore {
         self.entries.clear();
         self.by_path.clear();
         self.by_hash.clear();
+        self.texture_by_uri.clear();
     }
 
     /// After shader hot-reload: force GPU material rows to be re-uploaded.
@@ -138,7 +142,7 @@ impl MaterialStore {
         self.create_from_asset(path, &asset, shaders, tex_resolver)
     }
 
-    /// Create a material from an asset (no file). Dedup by content hash.
+    /// Create a material from an asset (no file). Dedup by path and content hash.
     pub fn create_from_asset(
         &mut self,
         debug_path: &str,
@@ -146,8 +150,16 @@ impl MaterialStore {
         shaders: &mut ShaderRegistry,
         tex_resolver: &mut dyn TextureResolver,
     ) -> Result<MaterialHandle, String> {
+        if let Some(&h) = self.by_path.get(debug_path) {
+            return Ok(h);
+        }
         let mut asset = asset.clone();
         asset.normalize_lightmap_texture_props();
+        let hash = material_asset_hash(&asset);
+        if let Some(&h) = self.by_hash.get(&hash) {
+            self.by_path.insert(debug_path.to_string(), h);
+            return Ok(h);
+        }
         let shader_id =
             resolve_shader_id(shaders, tex_resolver, &asset.shader, &asset.shader_defines)?;
         let shader_def = shaders
@@ -157,13 +169,6 @@ impl MaterialStore {
 
         // Resolve properties against shader schema.
         let props = resolve_properties(&asset, &shader_meta, tex_resolver)?;
-
-        let hash = material_content_hash(&asset, &props);
-        if let Some(&h) = self.by_hash.get(&hash) {
-            // Same content, different path → alias.
-            self.by_path.insert(debug_path.to_string(), h);
-            return Ok(h);
-        }
 
         let handle = MaterialHandle(self.entries.len() as u32 + 1);
         let mut entry = MaterialEntry::white();
@@ -176,7 +181,46 @@ impl MaterialStore {
         self.by_path.insert(debug_path.to_string(), handle);
         self.by_hash.insert(hash, handle);
 
+        crate::upload_log::material_created(debug_path, handle.0);
+
         Ok(handle)
+    }
+
+    /// Same as [`Self::create_from_asset`] but owns the GPU texture URI cache on this store.
+    pub fn create_from_asset_with_gpu(
+        &mut self,
+        debug_path: &str,
+        asset: &MaterialAsset,
+        resources: &deerpunk_engine_common::resource::ResourceManager,
+        renderer: &mut crate::gpu::Renderer,
+        shaders: &mut ShaderRegistry,
+    ) -> Result<MaterialHandle, String> {
+        let mut texture_cache = std::mem::take(&mut self.texture_by_uri);
+        let mut resolver = GpuTextureResolver {
+            resources,
+            renderer,
+            uploaded: &mut texture_cache,
+        };
+        let result = self.create_from_asset(debug_path, asset, shaders, &mut resolver);
+        self.texture_by_uri = texture_cache;
+        result
+    }
+
+    /// Load `.mat` JSON with persistent GPU texture dedup on this store.
+    pub fn load_with_gpu(
+        &mut self,
+        path: &str,
+        source: &str,
+        resources: &deerpunk_engine_common::resource::ResourceManager,
+        renderer: &mut crate::gpu::Renderer,
+        shaders: &mut ShaderRegistry,
+    ) -> Result<MaterialHandle, String> {
+        if let Some(&h) = self.by_path.get(path) {
+            return Ok(h);
+        }
+        let asset = MaterialAsset::from_json(source)
+            .map_err(|e| format!("material parse '{path}': {e}"))?;
+        self.create_from_asset_with_gpu(path, &asset, resources, renderer, shaders)
     }
 
     /// Get a material entry by handle.
@@ -245,6 +289,7 @@ impl MaterialStore {
         if let Some(s) = stats {
             s.material_uploads += 1;
         }
+        crate::upload_log::material(&format!("handle:{}", handle.0), id);
         id
     }
 
@@ -459,7 +504,40 @@ fn default_value(
     }
 }
 
-/// Hash resolved properties + BSP lightmap URIs (not stored in [`PropertyValue`]).
+/// Hash material JSON content (URIs + scalars), before GPU texture slot assignment.
+fn material_asset_hash(asset: &MaterialAsset) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    asset.shader.hash(&mut hasher);
+    for def in &asset.shader_defines {
+        def.hash(&mut hasher);
+    }
+    for (name, value) in &asset.properties {
+        name.hash(&mut hasher);
+        match value {
+            PropertyValueSer::Float(v) => v.to_bits().hash(&mut hasher),
+            PropertyValueSer::Color(v) => {
+                for f in v {
+                    f.to_bits().hash(&mut hasher);
+                }
+            }
+            PropertyValueSer::Vec3(v) => {
+                for f in v {
+                    f.to_bits().hash(&mut hasher);
+                }
+            }
+            PropertyValueSer::Vec4(v) => {
+                for f in v {
+                    f.to_bits().hash(&mut hasher);
+                }
+            }
+            PropertyValueSer::Texture(uri) => uri.hash(&mut hasher),
+        }
+    }
+    hasher.finish()
+}
+
+/// Hash resolved properties + BSP lightmap URIs (legacy; prefer [`material_asset_hash`]).
 fn material_content_hash(asset: &MaterialAsset, props: &[PropertyValue]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -514,19 +592,20 @@ pub trait TextureResolver {
 pub struct GpuTextureResolver<'a> {
     pub resources: &'a deerpunk_engine_common::resource::ResourceManager,
     pub renderer: &'a mut crate::gpu::Renderer,
-    /// Dedup GPU uploads by resource URI.
-    uploaded: HashMap<String, MeshTexture>,
+    /// Dedup GPU uploads by resource URI (usually [`MaterialStore::texture_by_uri`]).
+    pub uploaded: &'a mut HashMap<String, MeshTexture>,
 }
 
 impl<'a> GpuTextureResolver<'a> {
     pub fn new(
         resources: &'a deerpunk_engine_common::resource::ResourceManager,
         renderer: &'a mut crate::gpu::Renderer,
+        uploaded: &'a mut HashMap<String, MeshTexture>,
     ) -> Self {
         Self {
             resources,
             renderer,
-            uploaded: HashMap::new(),
+            uploaded,
         }
     }
 }
@@ -554,6 +633,7 @@ impl<'a> TextureResolver for GpuTextureResolver<'a> {
         let slot = self
             .renderer
             .upload_texture(&img.pixels, img.width, img.height);
+        crate::upload_log::texture(&format!("`{uri}`"), img.width, img.height, img.pixels.len());
         self.uploaded.insert(uri.to_string(), slot);
         Ok(slot)
     }
