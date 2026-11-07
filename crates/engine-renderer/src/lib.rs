@@ -39,7 +39,7 @@ pub use font::{
     build_font_atlas, push_char, push_text, push_text_centered_shadow, push_text_shadow,
     text_width_f32, ATLAS_H, ATLAS_W, GLYPH_H, GLYPH_W,
 };
-pub use gpu::{FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources};
+pub use gpu::{FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, HOST_IMGUI_ENABLED};
 pub use material_allocator::{MaterialAllocator, MaterialGpuEntry, MATERIAL_WHITE_ID};
 pub use mesh_alloc_debug::{BufferView, MeshAllocReport, SideView};
 pub use mesh_allocator::{

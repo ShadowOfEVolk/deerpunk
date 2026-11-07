@@ -1,4 +1,6 @@
 /target
+crash_world_dump.txt
+/deerpunk
 .semantic-code/index/code_chunks.lance/
 .cortexkit/
 .cargo/

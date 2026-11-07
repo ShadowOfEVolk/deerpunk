@@ -329,22 +329,20 @@ impl World {
         }
         if !desc.inspect_schema_cbor.is_empty()
             || desc.inspect_dump_native.is_some()
-            || desc.inspect_dump_ffi.is_some_and(|f| f as usize != 0)
+            || desc.inspect_dump_ffi.is_some()
         {
             if let Some(dump) = desc.inspect_dump_native {
                 let _ =
                     self.inspect
                         .register_native(&desc.name, id, &desc.inspect_schema_cbor, dump);
             } else if let Some(dump) = desc.inspect_dump_ffi {
-                if dump as usize != 0 {
-                    let _ = self.inspect.register_ffi(
-                        &desc.name,
-                        id,
-                        &desc.inspect_schema_cbor,
-                        desc.inspect_dump_user,
-                        dump,
-                    );
-                }
+                let _ = self.inspect.register_ffi(
+                    &desc.name,
+                    id,
+                    &desc.inspect_schema_cbor,
+                    desc.inspect_dump_user,
+                    dump,
+                );
             }
         }
         if !desc.layout_meta.is_empty() {

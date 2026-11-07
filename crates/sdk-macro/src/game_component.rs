@@ -326,13 +326,13 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     };
 
     let apply_fn_ptr = if prefab {
-        quote! { Self::#apply_fn }
+        quote! { Some(Self::#apply_fn) }
     } else {
         quote! { deerpunk_engine_sdk::no_prefab_apply() }
     };
 
     let dump_fn_ptr = if inspect {
-        quote! { Self::#dump_fn }
+        quote! { Some(Self::#dump_fn) }
     } else {
         quote! { deerpunk_engine_sdk::no_inspect_dump() }
     };

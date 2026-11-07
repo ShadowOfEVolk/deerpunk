@@ -43,7 +43,9 @@ fn main() {
         },
     );
     cmake.define("DEERPUNK_3RDPARTY", deps.to_str().unwrap());
-    cmake.cxxflag("/EHsc");
+    if cfg!(all(windows, target_env = "msvc")) {
+        cmake.cxxflag("/EHsc");
+    }
 
     let dst = cmake.build();
     let build_dir = dst.join("build");
@@ -61,8 +63,10 @@ fn main() {
         build_dir.join("RmlUi").join("Source").join("Lua").join("Release"),
         build_dir.join("_deps").join("freetype-build").join("Debug"),
         build_dir.join("_deps").join("freetype-build").join("Release"),
+        build_dir.join("freetype"),
         build_dir.join("freetype").join("Debug"),
         build_dir.join("freetype").join("Release"),
+        build_dir.join("lua"),
         build_dir.join("lua").join("Debug"),
         build_dir.join("lua").join("Release"),
     ];
@@ -77,18 +81,32 @@ fn main() {
     println!("cargo:rustc-link-lib=static=rmlui");
     println!("cargo:rustc-link-lib=static=rmlui_lua");
     println!("cargo:rustc-link-lib=static=lua");
-    if cfg!(debug_assertions) {
-        println!("cargo:rustc-link-lib=static=freetyped");
+    if cfg!(target_os = "windows") {
+        if cfg!(debug_assertions) {
+            println!("cargo:rustc-link-lib=static=freetyped");
+        } else {
+            println!("cargo:rustc-link-lib=static=freetype");
+        }
+        println!("cargo:rustc-link-lib=opengl32");
+        println!("cargo:rustc-link-lib=user32");
+        println!("cargo:rustc-link-lib=shell32");
+        println!("cargo:rustc-link-lib=gdi32");
+        println!("cargo:rustc-link-lib=dylib=msvcrt");
+    } else if cfg!(target_os = "macos") {
+        if cfg!(debug_assertions) {
+            println!("cargo:rustc-link-lib=static=freetyped");
+        } else {
+            println!("cargo:rustc-link-lib=static=freetype");
+        }
+        println!("cargo:rustc-link-lib=framework=OpenGL");
     } else {
-        println!("cargo:rustc-link-lib=static=freetype");
+        if cfg!(debug_assertions) {
+            println!("cargo:rustc-link-lib=static=freetyped");
+        } else {
+            println!("cargo:rustc-link-lib=static=freetype");
+        }
+        println!("cargo:rustc-link-lib=dylib=GL");
     }
-    println!("cargo:rustc-link-lib=opengl32");
-    println!("cargo:rustc-link-lib=user32");
-    println!("cargo:rustc-link-lib=shell32");
-    println!("cargo:rustc-link-lib=gdi32");
-
-    // MSVC C++ runtime
-    println!("cargo:rustc-link-lib=dylib=msvcrt");
 
     let bindings = bindgen::Builder::default()
         .header(rmlui_sys_dir.join("api.h").to_str().unwrap())

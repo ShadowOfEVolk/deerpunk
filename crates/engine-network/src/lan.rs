@@ -110,7 +110,9 @@ pub fn bind_reuse_broadcast(port: u16) -> Result<UdpSocket, String> {
     socket
         .set_reuse_address(true)
         .map_err(|e| format!("lan reuseaddr: {e}"))?;
-    #[cfg(unix)]
+    // SO_REUSEPORT (socket2::set_reuse_port) is Linux-only in our socket2 version;
+    // macOS/others compile without it — broadcast + reuseaddr is enough for LAN discovery.
+    #[cfg(target_os = "linux")]
     {
         let _ = socket.set_reuse_port(true);
     }

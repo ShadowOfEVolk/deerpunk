@@ -14,7 +14,9 @@ deerpunk-engine-renderer = { path = "../engine-renderer" }
 deerpunk-ui = { path = "../engine-ui" }
 rand = "0.8"
 glam = "0.33"
-sdl2 = { version = "0.37", features = ["raw-window-handle"] }
+# `bundled` builds real SDL2 — required on macOS if system lib is `sdl2-compat` (SDL3 shim):
+# it emits event types (e.g. 0x207) that rust-sdl2/SDL2 bindings don't know → panic in event.rs.
+sdl2 = { version = "0.37", features = ["bundled", "raw-window-handle"] }
 raw-window-handle.workspace = true
 wgpu.workspace = true
 log.workspace = true

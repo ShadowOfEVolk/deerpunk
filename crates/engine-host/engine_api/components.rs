@@ -18,12 +18,7 @@ pub(crate) fn register_component_desc(host: &mut crate::Host, desc: &ComponentRe
         );
         return 0;
     }
-    let apply = desc.apply_fn;
-    let prefab_apply = if apply as usize == 0 {
-        None
-    } else {
-        Some(apply)
-    };
+    let prefab_apply = desc.apply_fn;
     let inspect_schema = if desc.inspect_schema_ptr.is_null() || desc.inspect_schema_len == 0 {
         Vec::new()
     } else {
@@ -48,11 +43,7 @@ pub(crate) fn register_component_desc(host: &mut crate::Host, desc: &ComponentRe
         inspect_schema_cbor: inspect_schema,
         inspect_dump_user: desc.inspect_dump_user,
         inspect_dump_native: None,
-        inspect_dump_ffi: if inspect_dump as usize == 0 {
-            None
-        } else {
-            Some(inspect_dump)
-        },
+        inspect_dump_ffi: inspect_dump,
         layout_meta,
     };
     if host.server_engine.is_some() {
@@ -89,12 +80,7 @@ pub(crate) fn register_client_component_desc(
         );
         return 0;
     };
-    let apply = desc.apply_fn;
-    let prefab_apply = if apply as usize == 0 {
-        None
-    } else {
-        Some(apply)
-    };
+    let prefab_apply = desc.apply_fn;
     let inspect_schema = if desc.inspect_schema_ptr.is_null() || desc.inspect_schema_len == 0 {
         Vec::new()
     } else {
@@ -119,11 +105,7 @@ pub(crate) fn register_client_component_desc(
         inspect_schema_cbor: inspect_schema,
         inspect_dump_user: desc.inspect_dump_user,
         inspect_dump_native: None,
-        inspect_dump_ffi: if inspect_dump as usize == 0 {
-            None
-        } else {
-            Some(inspect_dump)
-        },
+        inspect_dump_ffi: inspect_dump,
         layout_meta,
     };
     world.component_init_raw(&reg)

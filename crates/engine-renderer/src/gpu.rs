@@ -32,6 +32,10 @@ use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
 #[path = "passes/mod.rs"]
 mod passes;
 
+/// Host Dear ImGui (console, infobox, debug HUD). When `false`, no `NewFrame` / ImGui render pass
+/// on the swapchain — gamelib may still use its own `imgui::Context` via `client_gamelib_ui_*`.
+pub const HOST_IMGUI_ENABLED: bool = true;
+
 /// `vsync=true` → FIFO (ждёт vblank). `false` → без ожидания vblank, если драйвер умеет.
 fn pick_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
     const ORDER: [wgpu::TextureFormat; 4] = [
@@ -1925,10 +1929,12 @@ impl Renderer {
 
             shaders,
 
-            imgui_ctx: {
+            imgui_ctx: if HOST_IMGUI_ENABLED {
                 let mut ctx = imgui::Context::create();
                 ctx.set_ini_filename(None);
                 Some(ctx)
+            } else {
+                None
             },
             imgui_wgpu: None,
             imgui_mouse_pos: [-1.0e6, -1.0e6],
@@ -2269,19 +2275,21 @@ impl Renderer {
         self.ensure_hdr_texture(width, height);
         self.ensure_tonemap_pipeline(format);
 
-        if let Some(ctx) = &mut self.imgui_ctx {
-            let config = imgui_wgpu::RendererConfig {
-                texture_format: format,
-                depth_format: None,
-                sample_count: 1,
-                ..Default::default()
-            };
-            self.imgui_wgpu = Some(imgui_wgpu::Renderer::new(
-                ctx,
-                &self.device,
-                &self.queue,
-                config,
-            ));
+        if HOST_IMGUI_ENABLED {
+            if let Some(ctx) = &mut self.imgui_ctx {
+                let config = imgui_wgpu::RendererConfig {
+                    texture_format: format,
+                    depth_format: None,
+                    sample_count: 1,
+                    ..Default::default()
+                };
+                self.imgui_wgpu = Some(imgui_wgpu::Renderer::new(
+                    ctx,
+                    &self.device,
+                    &self.queue,
+                    config,
+                ));
+            }
         }
     }
 
@@ -2879,6 +2887,16 @@ impl Renderer {
             .unwrap_or(TEX_FORMAT);
 
         let hdr_view = self.hdr_view.clone().expect("HDR texture not initialized");
+
+        let (sw, sh) = self
+            .surface_config
+            .as_ref()
+            .map(|c| (c.width as f32, c.height as f32))
+            .unwrap_or((800.0, 600.0));
+        // Match `render_to_surface_compose_with_game_frame` / `render_to_surface_with_hdr`:
+        // `finish_surface_encoder` ends the host ImGui frame (`render()`), so we must
+        // call `new_frame()` here or ImGui aborts on the next frame.
+        self.imgui_begin_frame(sw, sh);
 
         let encoder = self.encode_compose(
             cameras,
@@ -3549,7 +3567,15 @@ impl Renderer {
         }
     }
 
+    /// D3D12 HANDLE export — not available on macOS/Linux (Metal/Vulkan).
+    #[cfg(not(target_os = "windows"))]
+    #[allow(dead_code)]
+    pub fn create_shared_texture(&mut self, _w: u32, _h: u32) -> Option<SharedTexture> {
+        None
+    }
+
     /// Create a double-buffered pair of shared GPU textures for zero-copy viewport.
+    #[cfg(target_os = "windows")]
     pub fn create_shared_texture_pair(&mut self, w: u32, h: u32) -> Option<SharedTexturePair> {
         let a = self.create_shared_texture(w, h)?;
         let b = self.create_shared_texture(w, h)?;
@@ -3559,8 +3585,15 @@ impl Renderer {
         })
     }
 
+    #[cfg(not(target_os = "windows"))]
+    #[allow(dead_code)]
+    pub fn create_shared_texture_pair(&mut self, _w: u32, _h: u32) -> Option<SharedTexturePair> {
+        None
+    }
+
     /// Render the scene directly into a shared GPU texture (zero-copy viewport).
     /// The texture was created with D3D12_SHARED so the editor can import it without CPU readback.
+    #[cfg(target_os = "windows")]
     pub fn render_into_shared(
         &mut self,
         snapshot: &RenderSnapshot,
@@ -3571,6 +3604,16 @@ impl Renderer {
         let mut encoder = self.encode_frame(snapshot, &shared.view, TEX_FORMAT, None, shaders);
         self.queue.submit([encoder.finish()]);
         self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[allow(dead_code)]
+    pub fn render_into_shared(
+        &mut self,
+        _snapshot: &RenderSnapshot,
+        _shared: &SharedTexture,
+        _shaders: &ShaderRegistry,
+    ) {
     }
 
     fn ensure_debug_pipelines(&mut self, format: wgpu::TextureFormat) {

@@ -52,11 +52,17 @@ impl App {
         let _mouse = sdl.mouse();
         // mouse.enable_relative_mouse_mode(true);
 
-        let window = video
-            .window(title, width, height)
-            .resizable()
-            .build()
-            .expect("Failed to create SDL2 window");
+        // macOS + wgpu/Metal: need SDL_WINDOW_METAL + SDL_Metal_CreateView (see WindowBuilder::metal_view).
+        // If `SDL_Metal_CreateView` returns NULL (e.g. Homebrew `sdl2-compat` shim), raw_window_handle panics.
+        let mut wb = video.window(title, width, height);
+        wb.resizable();
+        #[cfg(target_os = "macos")]
+        {
+            use sdl2::sys::SDL_WindowFlags;
+            wb.set_window_flags(wb.window_flags() | SDL_WindowFlags::SDL_WINDOW_METAL as u32);
+            wb.metal_view();
+        }
+        let window = wb.build().expect("Failed to create SDL2 window");
 
         // let _ = window.set_mouse_grab(true);
 

@@ -1171,6 +1171,9 @@ impl Host {
     /// ImGui overlays — call from renderer during `imgui_begin_frame` … `imgui_end_frame`.
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn frame_ui(&mut self) {
+        if !deerpunk_engine_renderer::HOST_IMGUI_ENABLED {
+            return;
+        }
         let show_fps = self.cvar.get_usize_or("cl_showfps", 0) != 0
             || self.cvar.get_usize_or("r_showfps", 0) != 0;
         let show_pos = self.cvar.get_usize_or("cl_showpos", 0) as i32;

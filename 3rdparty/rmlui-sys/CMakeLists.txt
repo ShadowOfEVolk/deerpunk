@@ -20,6 +20,9 @@ set(FT_DISABLE_BZIP2 TRUE CACHE BOOL "" FORCE)
 set(FT_DISABLE_PNG TRUE CACHE BOOL "" FORCE)
 set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
 set(FT_DISABLE_BROTLI TRUE CACHE BOOL "" FORCE)
+# Apple clang ships HVF headers; without linking Apple's HVF runtime the static freetype
+# library leaves undefined HVF_* symbols at final link.
+set(FT_DISABLE_HVF TRUE CACHE BOOL "" FORCE)
 add_subdirectory("${FREETYPE_DIR}" "${CMAKE_BINARY_DIR}/freetype" EXCLUDE_FROM_ALL)
 add_library(Freetype::Freetype ALIAS freetype)
 

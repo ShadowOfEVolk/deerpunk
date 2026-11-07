@@ -30,7 +30,7 @@ pollster = "0.4"
 bytemuck = "1"
 raw-window-handle = "0.6"
 imgui = "0.12"
-imgui-wgpu = { path = "C:/Users/elekt/dev/imgui-wgpu-rs" }
+imgui-wgpu = { path = "../imgui-wgpu-rs" }
 
 [package]
 name = "deerpunk"
@@ -60,3 +60,7 @@ glam = "0.33"
 inventory = "0.3"
 libloading = "0.8"
 image = "0.25"
+
+# Vendored sdl2-sys: adds CMAKE_POLICY_VERSION_MINIMUM for bundled SDL2 + CMake 4.x (see third_party README).
+[patch.crates-io]
+sdl2-sys = { path = "third_party/sdl2-sys-0.37.0-patched" }
