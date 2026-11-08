@@ -5,14 +5,10 @@ use deerpunk_engine_common::physics::CHAR_EYE_HEIGHT;
 use deerpunk_engine_common::world::World;
 use glam::{Quat, Vec3};
 
-use crate::client_engine::LocalViewStamp;
 use crate::camera_util::ensure_child_world_camera;
+use crate::client_engine::LocalViewStamp;
 
-pub fn stamp_view_on_entity(
-    client_world: &World,
-    pawn: u64,
-    stamp: LocalViewStamp,
-) {
+pub fn stamp_view_on_entity(client_world: &World, pawn: u64, stamp: LocalViewStamp) {
     let eye = if stamp.eye_height > 0.0 {
         stamp.eye_height
     } else {

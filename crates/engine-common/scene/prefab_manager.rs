@@ -107,7 +107,8 @@ impl PrefabManager {
         if !path.is_file() {
             return Err(PrefabResolveError::NotFound(path));
         }
-        let file = File::open(&path).map_err(|e| PrefabResolveError::Io(format!("{}: {e}", path.display())))?;
+        let file = File::open(&path)
+            .map_err(|e| PrefabResolveError::Io(format!("{}: {e}", path.display())))?;
         let reader = StripComments::new(BufReader::new(file));
         let mut def: EntityDef = serde_json::from_reader(reader)
             .map_err(|e| PrefabResolveError::Parse(format!("{}: {e}", path.display())))?;

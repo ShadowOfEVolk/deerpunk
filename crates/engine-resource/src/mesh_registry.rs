@@ -145,6 +145,9 @@ struct Slot {
 
 pub struct MeshRegistry {
     slots: Vec<Slot>,
+    /// `Mesh::gpu_revision` by slot index. Hot upload check reads this, not the `Mesh`.
+    /// `0` means the slot is empty.
+    mesh_revisions: Vec<u64>,
     free: Vec<usize>,
     next: usize,
     /// Packed [`MeshHandle`] → entity reference count.
@@ -161,6 +164,7 @@ impl MeshRegistry {
                 gen: 0,
                 mesh: None,
             }],
+            mesh_revisions: vec![0],
             free: Vec::new(),
             next: 1,
             handle_refs: HashMap::new(),
@@ -197,7 +201,9 @@ impl MeshRegistry {
             self.recycle_arc(prev);
         }
         self.cpu_arena.adopt(&mut mesh);
+        let revision = mesh.gpu_revision;
         self.slots[idx].mesh = Some(Arc::new(mesh));
+        self.set_mesh_revision(idx, revision);
         true
     }
 
@@ -227,11 +233,41 @@ impl MeshRegistry {
 
     /// Bump [`Mesh::gpu_revision`] so the renderer re-uploads. No GPU calls.
     pub fn mark_dirty(&mut self, handle: MeshHandle) -> bool {
-        let Some(mesh) = self.mesh_mut(handle) else {
-            return false;
+        let revision = {
+            let Some(mesh) = self.mesh_mut(handle) else {
+                return false;
+            };
+            mesh.gpu_revision = mesh.gpu_revision.wrapping_add(1).max(1);
+            mesh.gpu_revision
         };
-        mesh.gpu_revision = mesh.gpu_revision.wrapping_add(1).max(1);
+        self.set_mesh_revision(handle.idx() as usize, revision);
         true
+    }
+
+    /// Hot-path identity of the CPU mesh: generation in the high 32 bits,
+    /// [`Mesh::gpu_revision`] in the low 32. `0` when the handle is stale or empty.
+    /// Does not touch the mesh allocation. A recycled slot gets a new generation,
+    /// so a leftover GPU record cannot match.
+    pub fn mesh_revision(&self, handle: MeshHandle) -> u64 {
+        if !handle.is_valid() {
+            return 0;
+        }
+        let idx = handle.idx() as usize;
+        let Some(slot) = self.slots.get(idx) else {
+            return 0;
+        };
+        if slot.gen != handle.gen() || slot.mesh.is_none() {
+            return 0;
+        }
+        self.mesh_revisions.get(idx).copied().unwrap_or(0)
+    }
+
+    fn set_mesh_revision(&mut self, idx: usize, revision: u64) {
+        if self.mesh_revisions.len() <= idx {
+            self.mesh_revisions.resize(idx + 1, 0);
+        }
+        let gen = self.slots.get(idx).map(|slot| slot.gen).unwrap_or(0);
+        self.mesh_revisions[idx] = ((gen as u64) << 32) | (revision & 0xFFFF_FFFF);
     }
 
     fn mesh_mut(&mut self, handle: MeshHandle) -> Option<&mut Mesh> {
@@ -273,6 +309,7 @@ impl MeshRegistry {
             "mesh insert: local AABB is required (set at upload)"
         );
         self.cpu_arena.adopt(&mut mesh);
+        let revision = mesh.gpu_revision;
         let arc = Arc::new(mesh);
         let idx = if let Some(i) = self.free.pop() {
             self.slots[i].mesh = Some(arc);
@@ -293,6 +330,7 @@ impl MeshRegistry {
             }
             i
         };
+        self.set_mesh_revision(idx, revision);
         MeshHandle::from_parts(idx as u32, self.slots[idx].gen)
     }
 
@@ -360,6 +398,7 @@ impl MeshRegistry {
             slot.mesh.take()
         };
         self.free.push(idx);
+        self.set_mesh_revision(idx, 0);
         if let Some(prev) = prev {
             self.recycle_arc(prev);
         }
@@ -386,6 +425,7 @@ impl MeshRegistry {
             slot.gen = slot.gen.wrapping_add(1);
             drop(slot);
             self.free.push(idx);
+            self.set_mesh_revision(idx, 0);
             self.handle_refs.remove(&packed);
             if let Some(prev) = prev {
                 self.recycle_arc(prev);
@@ -405,6 +445,8 @@ impl MeshRegistry {
             gen: 0,
             mesh: None,
         });
+        self.mesh_revisions.clear();
+        self.mesh_revisions.push(0);
         self.free.clear();
         self.next = 1;
         self.handle_refs.clear();

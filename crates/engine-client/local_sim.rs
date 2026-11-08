@@ -88,7 +88,8 @@ impl ClientEngine {
         authoritative: Vec3,
         smooth_time: f32,
     ) {
-        self.local_sim.push_correction(predicted, authoritative, smooth_time);
+        self.local_sim
+            .push_correction(predicted, authoritative, smooth_time);
     }
 
     pub fn stamp_simorg_on_entity(&mut self, entity: u64) {

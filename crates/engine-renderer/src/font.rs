@@ -1,6 +1,5 @@
 /// Битмап-шрифт 6×8, ASCII 32..=126. Каждый символ — байт на строку, левый бит = MSB.
 /// Глифы рисуются на GPU как квады из font-atlas (белые, tint-ятся цветом текста).
-
 use crate::snapshot::{Instance, RenderSnapshot, TexSel};
 
 pub const GLYPH_W: f32 = 8.0;
@@ -31,11 +30,7 @@ pub fn glyph_uv(byte: u8) -> Option<[f32; 4]> {
 
 /// Ширина текста в пикселях при заданном масштабе.
 pub fn text_width_f32(text: &str, scale: f32) -> f32 {
-    text.bytes()
-        .filter_map(glyph_index)
-        .count() as f32
-        * GLYPH_W
-        * scale
+    text.bytes().filter_map(glyph_index).count() as f32 * GLYPH_W * scale
 }
 
 /// Квад одного глифа в снапшот.

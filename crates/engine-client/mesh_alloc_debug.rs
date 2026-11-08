@@ -16,8 +16,11 @@ pub fn tick(mode: i32, renderer: &Renderer) {
     } else {
         None
     };
-    let report = build_report(renderer.mesh_buffer_pool(), renderer.mesh_gpu_pool(), filter);
-
+    let report = build_report(
+        renderer.mesh_buffer_pool(),
+        renderer.mesh_gpu_pool(),
+        filter,
+    );
 
     let rows = 2 + report.buffers.len() * 4;
     let h = 40.0 + rows as f32 * 20.0;
@@ -55,23 +58,34 @@ pub fn tick(mode: i32, renderer: &Renderer) {
 
 fn draw_side_row(label: &str, side: &SideView, unit_bytes: u32) {
     let used = side.used_units();
-    let pct = if side.cap > 0 { used as f32 / side.cap as f32 * 100.0 } else { 0.0 };
+    let pct = if side.cap > 0 {
+        used as f32 / side.cap as f32 * 100.0
+    } else {
+        0.0
+    };
     deerpunk_engine_renderer::host_ui::label(&format!(
         "{label}: {}/{} ({:.1}%)  segs={}  ~{:.1} KiB / {:.1} KiB",
-        used, side.cap, pct, side.used.len(),
+        used,
+        side.cap,
+        pct,
+        side.used.len(),
         used as f32 * unit_bytes as f32 / 1024.0,
         side.cap as f32 * unit_bytes as f32 / 1024.0,
     ));
     let mut spans = Vec::new();
     spans.push((0.0, 1.0, [28, 28, 32, 255]));
     for &(off, len) in &free_intervals(side) {
-        if side.cap == 0 || len == 0 { continue; }
+        if side.cap == 0 || len == 0 {
+            continue;
+        }
         let a = off as f32 / side.cap as f32;
         let b = (off + len) as f32 / side.cap as f32;
         spans.push((a, b, [55, 130, 75, 255]));
     }
     for &(off, len) in &side.used {
-        if side.cap == 0 || len == 0 { continue; }
+        if side.cap == 0 || len == 0 {
+            continue;
+        }
         let a = off as f32 / side.cap as f32;
         let b = (off + len) as f32 / side.cap as f32;
         spans.push((a, b, [210, 120, 45, 255]));

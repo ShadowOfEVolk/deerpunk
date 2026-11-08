@@ -1,4 +1,4 @@
-//! Sky [`RenderScene`] assembly (gamelib → `SkyDraw`). GPU pass: [`crate::gpu::passes::sky`].
+//! Sky [`RenderScene`] assembly (gamelib → `SkyDraw`). GPU pass lives in the renderer sky feature.
 
 use deerpunk_engine_renderer::snapshot::{RenderScene, SkyDraw};
 

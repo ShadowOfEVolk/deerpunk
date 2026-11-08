@@ -3,8 +3,8 @@ use std::path::Path;
 use std::collections::HashMap;
 
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, NetworkEntity, PointLight, SoundEmitter,
-    TransformComponent, UiDocumentComponent, Worldspawn,
+    CameraComponent, LuaScript, MapKv, NetworkEntity, PointLight, SoundEmitter, TransformComponent,
+    UiDocumentComponent, Worldspawn,
 };
 use crate::network::field_path::NetFieldId;
 use crate::physics::CharacterController;

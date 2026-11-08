@@ -305,9 +305,8 @@ fn expand_includes_inner(
                 if state.once.contains(&canonical) {
                     continue;
                 }
-                let text = crate::resource::internal_asset(&key).ok_or_else(|| {
-                    ShaderError::IncludeNotFound(format!("internal://{key}"))
-                })?;
+                let text = crate::resource::internal_asset(&key)
+                    .ok_or_else(|| ShaderError::IncludeNotFound(format!("internal://{key}")))?;
                 state.stack.push(canonical.clone());
                 state.once.insert(canonical);
                 let chunk = expand_includes_inner(text, define_set, base, state, false)?;
@@ -337,20 +336,15 @@ fn expand_includes_inner(
                 continue;
             }
 
-            let text = std::fs::read_to_string(&resolved)
-                .map_err(|e| ShaderError::IncludeNotFound(format!("{}: {e}", resolved.display())))?;
+            let text = std::fs::read_to_string(&resolved).map_err(|e| {
+                ShaderError::IncludeNotFound(format!("{}: {e}", resolved.display()))
+            })?;
 
             state.stack.push(canonical.clone());
             state.once.insert(canonical);
 
             let child_base = resolved.parent();
-            let chunk = expand_includes_inner(
-                &text,
-                define_set,
-                child_base,
-                state,
-                false,
-            )?;
+            let chunk = expand_includes_inner(&text, define_set, child_base, state, false)?;
             state.stack.pop();
 
             if !chunk.is_empty() {
@@ -443,9 +437,10 @@ fn parse_shader_line(rest: &str, meta: &mut ShaderMeta) -> Result<(), ShaderErro
         if let Some((key, val)) = token.split_once('=') {
             match key.trim() {
                 "pass" => {
-                    meta.pass = Some(RenderPass::parse(val).ok_or_else(|| {
-                        ShaderError::UnknownShaderKey(format!("pass={val}"))
-                    })?);
+                    meta.pass = Some(
+                        RenderPass::parse(val)
+                            .ok_or_else(|| ShaderError::UnknownShaderKey(format!("pass={val}")))?,
+                    );
                 }
                 "queue" => {
                     meta.queue = val.trim().parse().unwrap_or(0);
@@ -461,17 +456,19 @@ fn parse_shader_line(rest: &str, meta: &mut ShaderMeta) -> Result<(), ShaderErro
 }
 
 /// Parse `#@prop _BaseColor color [1,1,1,1]` → (name, kind, default).
-fn parse_prop_line(
-    rest: &str,
-) -> Result<Option<(String, PropertyKind, PropDefault)>, ShaderError> {
+fn parse_prop_line(rest: &str) -> Result<Option<(String, PropertyKind, PropDefault)>, ShaderError> {
     let rest = rest.trim();
     if rest.is_empty() {
         return Ok(None);
     }
 
     let mut parts = rest.splitn(3, char::is_whitespace);
-    let name = parts.next().ok_or_else(|| ShaderError::PropParse(rest.into()))?;
-    let kind_str = parts.next().ok_or_else(|| ShaderError::PropParse(rest.into()))?;
+    let name = parts
+        .next()
+        .ok_or_else(|| ShaderError::PropParse(rest.into()))?;
+    let kind_str = parts
+        .next()
+        .ok_or_else(|| ShaderError::PropParse(rest.into()))?;
     let default_str = parts.next().unwrap_or("").trim();
 
     let kind = PropertyKind::parse(kind_str)

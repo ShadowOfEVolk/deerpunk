@@ -183,9 +183,11 @@ impl MeshOcclusion {
         }
         let gpu = self.gpu.as_ref().expect("occlusion gpu");
         let (tx, rx) = std::sync::mpsc::channel();
-        gpu.readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
+        gpu.readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
         self.readback_rx = Some(rx);
         self.readback_pending = true;
     }
@@ -241,7 +243,13 @@ impl MeshOcclusion {
         let view_proj = snapshot.view_proj;
         for qi in 0..static_n {
             let md = meshes.get(qi);
-            write_uniform(&mut gpu.uniform_scratch, qi, stride, view_proj, &md.world_bounds);
+            write_uniform(
+                &mut gpu.uniform_scratch,
+                qi,
+                stride,
+                view_proj,
+                &md.world_bounds,
+            );
         }
         for j in 0..(query_count - static_n) {
             let sd = skinned.get(j);
@@ -424,8 +432,8 @@ impl MeshOcclusion {
             [-0.5, 0.5, 0.5],
         ];
         const INDICES: [u16; 36] = [
-            0, 1, 2, 0, 2, 3, 1, 5, 6, 1, 6, 2, 5, 4, 7, 5, 7, 6, 4, 0, 3, 4, 3, 7, 3, 2, 6, 3,
-            6, 7, 4, 5, 1, 4, 1, 0,
+            0, 1, 2, 0, 2, 3, 1, 5, 6, 1, 6, 2, 5, 4, 7, 5, 7, 6, 4, 0, 3, 4, 3, 7, 3, 2, 6, 3, 6,
+            7, 4, 5, 1, 4, 1, 0,
         ];
         let bbox_vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("occlusion bbox vb"),

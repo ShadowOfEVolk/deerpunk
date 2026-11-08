@@ -70,7 +70,11 @@ pub fn tick(
         }
     }
 
-    if fps_lines.is_empty() && pos_lines.is_empty() && net_lines.is_empty() && render_lines.is_empty() {
+    if fps_lines.is_empty()
+        && pos_lines.is_empty()
+        && net_lines.is_empty()
+        && render_lines.is_empty()
+    {
         return;
     }
 

@@ -104,24 +104,14 @@ deerpunk_engine_common::cvar_def!(
     "Tonemap mode: -1=passthrough (GoldSrc-style raw), 0=ACES, 1=Reinhard, 2=Hable.",
     RENDERINFO
 );
-deerpunk_engine_common::cvar_def!(
-    "r_bloom",
-    "1",
-    "Enable HDR bloom postfx (0/1).",
-    RENDERINFO
-);
+deerpunk_engine_common::cvar_def!("r_bloom", "1", "Enable HDR bloom postfx (0/1).", RENDERINFO);
 deerpunk_engine_common::cvar_def!(
     "r_bloom_threshold",
     "0.7",
     "Bloom luminance threshold.",
     RENDERINFO
 );
-deerpunk_engine_common::cvar_def!(
-    "r_bloom_intensity",
-    "1",
-    "Bloom add intensity.",
-    RENDERINFO
-);
+deerpunk_engine_common::cvar_def!("r_bloom_intensity", "1", "Bloom add intensity.", RENDERINFO);
 deerpunk_engine_common::cvar_def!(
     "r_bloom_downscale",
     "2",

@@ -17,7 +17,9 @@ pub enum PropertyStorage {
         offset: u32,
         wire: WireKind,
     },
-    WholeComponent { component: String },
+    WholeComponent {
+        component: String,
+    },
     WorldspawnMap,
     Mesh3dUri,
     DrawMaterialUri,
@@ -75,7 +77,9 @@ impl PropertyRegistry {
             next_id: 32,
         };
         r.register_well_known();
-        use crate::layout_meta::{studio_model_layout, transform_component_layout, worldspawn_layout};
+        use crate::layout_meta::{
+            studio_model_layout, transform_component_layout, worldspawn_layout,
+        };
         let placeholder: ComponentId = 0;
         for layout in [
             transform_component_layout(),

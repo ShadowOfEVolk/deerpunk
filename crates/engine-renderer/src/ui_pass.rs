@@ -180,7 +180,11 @@ impl UiPass {
         }
     }
 
-    fn make_pipeline(&self, device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    fn make_pipeline(
+        &self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::RenderPipeline {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ui shader"),
             source: wgpu::ShaderSource::Wgsl(self.shader.clone().into()),
@@ -288,7 +292,8 @@ impl UiPass {
     ) {
         let w = upload.width.max(1);
         let h = upload.height.max(1);
-        queue.write_texture(wgpu::TexelCopyTextureInfo {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,

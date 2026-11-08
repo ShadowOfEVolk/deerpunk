@@ -23,6 +23,10 @@ tracy-client = { version = "0.19", optional = true, default-features = false, fe
 puffin = { version = "0.20", optional = true }
 puffin_http = { version = "0.17", optional = true }
 
+[[bench]]
+name = "mesh_batch"
+harness = false
+
 [features]
 tracy = ["dep:tracy-client"]
 puffin = ["dep:puffin", "dep:puffin_http"]

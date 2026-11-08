@@ -43,13 +43,13 @@ impl FieldValue {
 
     pub fn decode(field: PropertyId, data: &mut Cursor<'_>) -> Option<Self> {
         use crate::property::{PropertyRegistry, PropertyStorage};
-        let reg = PropertyRegistry::global()
-            .lock()
-            .ok()?;
+        let reg = PropertyRegistry::global().lock().ok()?;
         let desc = reg.get(field)?;
         match &desc.storage {
             PropertyStorage::WholeComponent { .. } => Some(Self::PrefabDefault),
-            PropertyStorage::Mesh3dUri | PropertyStorage::DrawMaterialUri | PropertyStorage::MapKvStudioModel => {
+            PropertyStorage::Mesh3dUri
+            | PropertyStorage::DrawMaterialUri
+            | PropertyStorage::MapKvStudioModel => {
                 let tag = data.u8()?;
                 if tag == 0 {
                     Some(Self::PrefabDefault)
@@ -68,12 +68,17 @@ fn decode_wire(wire: crate::layout_meta::WireKind, data: &mut Cursor<'_>) -> Opt
     use crate::layout_meta::WireKind;
     match wire {
         WireKind::Vec3 => Some(FieldValue::Vec3([data.f32()?, data.f32()?, data.f32()?])),
-        WireKind::Quat => {
-            Some(FieldValue::Quat([data.f32()?, data.f32()?, data.f32()?, data.f32()?]))
-        }
+        WireKind::Quat => Some(FieldValue::Quat([
+            data.f32()?,
+            data.f32()?,
+            data.f32()?,
+            data.f32()?,
+        ])),
         WireKind::U32 | WireKind::U16 | WireKind::U8 => {
             let s = data.take(4)?;
-            Some(FieldValue::U32(u32::from_le_bytes([s[0], s[1], s[2], s[3]])))
+            Some(FieldValue::U32(u32::from_le_bytes([
+                s[0], s[1], s[2], s[3],
+            ])))
         }
         WireKind::Indirect => Some(FieldValue::Str(data.string()?)),
         WireKind::Void => Some(FieldValue::PrefabDefault),

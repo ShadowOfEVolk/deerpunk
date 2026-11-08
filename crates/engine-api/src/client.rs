@@ -20,12 +20,27 @@ type DebugAabbFn = extern "C" fn(
     f32,
     f32,
 ) -> i32;
+type SubmitMeshFn = extern "C" fn(
+    *mut u8,
+    u64,
+    u64,
+    u32,
+    u32,
+    u32,
+    *const f32,
+    *const f32,
+    *const f32,
+    u32,
+    u32,
+    u8,
+) -> i32;
 
 pub struct ClientApi {
     ctx: *mut u8,
     view_ray_fn: ViewRayFn,
     scene_time_fn: SceneTimeFn,
     debug_aabb_fn: DebugAabbFn,
+    submit_mesh_fn: SubmitMeshFn,
 }
 
 unsafe impl Send for ClientApi {}
@@ -38,7 +53,40 @@ impl ClientApi {
             view_ray_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:view_ray")) },
             scene_time_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:scene_time")) },
             debug_aabb_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:debug_aabb")) },
+            submit_mesh_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:submit_mesh")) },
         }
+    }
+
+    /// Append a static mesh to the current `renderer.prepare` draw list.
+    /// `rotation` is xyzw. Returns false when prepare is not active or the mesh/material is missing.
+    pub fn submit_mesh(
+        &self,
+        entity: u64,
+        mesh: u64,
+        material: u32,
+        uniform_aux: u32,
+        layer_mask: u32,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+        first_index: u32,
+        index_count: u32,
+        face: u8,
+    ) -> bool {
+        (self.submit_mesh_fn)(
+            self.ctx,
+            entity,
+            mesh,
+            material,
+            uniform_aux,
+            layer_mask,
+            position.as_ptr(),
+            rotation.as_ptr(),
+            scale.as_ptr(),
+            first_index,
+            index_count,
+            face,
+        ) == 0
     }
 
     /// Seconds since client start (`advance_time`); matches `lights_u.scene_time_bits` in mesh shaders.

@@ -26,8 +26,11 @@ pub struct Mesh {
     pub joint_weights: Vec<[f32; 4]>,
     /// Unique content id for GPU cache + refcount (`0` = invalid until assigned).
     pub content_id: u64,
-    /// Bumped by [`MeshRegistry::replace`](super::mesh_registry::MeshRegistry::replace).
-    /// The renderer re-uploads when this differs from the last GPU upload. Games do not touch GPU.
+    /// Bumped by [`MeshRegistry::replace`](super::mesh_registry::MeshRegistry::replace)
+    /// and [`MeshRegistry::mark_dirty`](super::mesh_registry::MeshRegistry::mark_dirty).
+    /// The renderer mirrors this into [`MeshRegistry::mesh_revisions`] and re-uploads
+    /// when that entry differs from the revision it last sent to the GPU.
+    /// Games do not touch GPU.
     pub gpu_revision: u64,
     /// Which registered [`MeshAllocator`](deerpunk_engine_resource::mesh_allocator::MeshAllocator)
     /// owns this mesh's GPU region. `0` = default built-in slab allocator.

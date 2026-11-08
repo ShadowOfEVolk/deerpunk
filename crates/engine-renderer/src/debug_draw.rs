@@ -9,16 +9,45 @@ pub struct DebugColor {
 }
 
 impl DebugColor {
-    pub const RED: Self = Self { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
-    pub const GREEN: Self = Self { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
-    pub const BLUE: Self = Self { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
-    pub const YELLOW: Self = Self { r: 1.0, g: 1.0, b: 0.0, a: 1.0 };
-    pub const CYAN: Self = Self { r: 0.0, g: 1.0, b: 1.0, a: 1.0 };
+    pub const RED: Self = Self {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    pub const GREEN: Self = Self {
+        r: 0.0,
+        g: 1.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    pub const BLUE: Self = Self {
+        r: 0.0,
+        g: 0.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    pub const YELLOW: Self = Self {
+        r: 1.0,
+        g: 1.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    pub const CYAN: Self = Self {
+        r: 0.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
 }
 
 #[derive(Clone, Debug)]
 pub enum DebugPrimitive {
-    Line { start: [f32; 3], end: [f32; 3], color: DebugColor },
+    Line {
+        start: [f32; 3],
+        end: [f32; 3],
+        color: DebugColor,
+    },
 }
 
 #[derive(Clone, Default)]
@@ -27,10 +56,17 @@ pub struct DebugDraw {
 }
 
 impl DebugDraw {
-    pub fn new() -> Self { Self { primitives: Vec::with_capacity(256) } }
-    pub fn clear(&mut self) { self.primitives.clear(); }
+    pub fn new() -> Self {
+        Self {
+            primitives: Vec::with_capacity(256),
+        }
+    }
+    pub fn clear(&mut self) {
+        self.primitives.clear();
+    }
     pub fn line(&mut self, start: [f32; 3], end: [f32; 3], color: DebugColor) {
-        self.primitives.push(DebugPrimitive::Line { start, end, color });
+        self.primitives
+            .push(DebugPrimitive::Line { start, end, color });
     }
 
     /// Axis-aligned box from min/max corners.
@@ -46,9 +82,18 @@ impl DebugDraw {
             [min[0], max[1], max[2]],
         ];
         const EDGES: [[usize; 2]; 12] = [
-            [0, 1], [1, 2], [2, 3], [3, 0],
-            [4, 5], [5, 6], [6, 7], [7, 4],
-            [0, 4], [1, 5], [2, 6], [3, 7],
+            [0, 1],
+            [1, 2],
+            [2, 3],
+            [3, 0],
+            [4, 5],
+            [5, 6],
+            [6, 7],
+            [7, 4],
+            [0, 4],
+            [1, 5],
+            [2, 6],
+            [3, 7],
         ];
         for [a, b] in EDGES {
             self.line(c[a], c[b], color);
@@ -91,9 +136,18 @@ impl DebugDraw {
             }
         }
         const EDGES: [[usize; 2]; 12] = [
-            [0, 1], [1, 3], [3, 2], [2, 0],
-            [4, 5], [5, 7], [7, 6], [6, 4],
-            [0, 4], [1, 5], [2, 6], [3, 7],
+            [0, 1],
+            [1, 3],
+            [3, 2],
+            [2, 0],
+            [4, 5],
+            [5, 7],
+            [7, 6],
+            [6, 4],
+            [0, 4],
+            [1, 5],
+            [2, 6],
+            [3, 7],
         ];
         for [a, b] in EDGES {
             self.line(corners[a], corners[b], color);
@@ -129,7 +183,14 @@ impl DebugDraw {
         self.circle(center, radius, [0.0, 0.0, 1.0], 24, color);
     }
     pub fn label(&mut self, _pos: [f32; 3], _text: &str, _color: DebugColor) {}
-    pub fn circle(&mut self, center: [f32; 3], radius: f32, normal: [f32; 3], segments: u32, color: DebugColor) {
+    pub fn circle(
+        &mut self,
+        center: [f32; 3],
+        radius: f32,
+        normal: [f32; 3],
+        segments: u32,
+        color: DebugColor,
+    ) {
         let (nx, ny, nz) = (normal[0], normal[1], normal[2]);
         // Pick an arbitrary tangent not parallel to normal
         let (ux, uy, uz) = if nx.abs() < 0.9 {
@@ -170,19 +231,27 @@ pub struct DebugVertex {
 
 /// Конвертирует линии в квады (2 треугольника каждая).
 /// Каждая линия → 6 вершин (4 угла квада, 2 треугольника).
-pub fn collect_vertices(snap: &RenderSnapshot, line_width: f32, max_verts: usize) -> Vec<DebugVertex> {
+pub fn collect_vertices(
+    snap: &RenderSnapshot,
+    line_width: f32,
+    max_verts: usize,
+) -> Vec<DebugVertex> {
     let mut verts = Vec::with_capacity(max_verts.min(65536));
     let up = [0.0f32, 0.0, 1.0]; // Z-up
 
     for prim in &snap.debug_draw {
-        if verts.len() + 6 > max_verts { break; }
+        if verts.len() + 6 > max_verts {
+            break;
+        }
         match prim {
             DebugPrimitive::Line { start, end, color } => {
                 let dx = end[0] - start[0];
                 let dy = end[1] - start[1];
                 let dz = end[2] - start[2];
                 let len = (dx * dx + dy * dy + dz * dz).sqrt();
-                if len < 0.001 { continue; }
+                if len < 0.001 {
+                    continue;
+                }
 
                 // Направление и нормаль (cross с up)
                 let dir = [dx / len, dy / len, dz / len];
@@ -206,12 +275,30 @@ pub fn collect_vertices(snap: &RenderSnapshot, line_width: f32, max_verts: usize
                 let v3 = [end[0] + nx * hw, end[1] + ny * hw, end[2] + nz * hw];
 
                 // 2 треугольника: (v0, v1, v2) и (v1, v3, v2)
-                verts.push(DebugVertex { position: v0, color: c });
-                verts.push(DebugVertex { position: v1, color: c });
-                verts.push(DebugVertex { position: v2, color: c });
-                verts.push(DebugVertex { position: v1, color: c });
-                verts.push(DebugVertex { position: v3, color: c });
-                verts.push(DebugVertex { position: v2, color: c });
+                verts.push(DebugVertex {
+                    position: v0,
+                    color: c,
+                });
+                verts.push(DebugVertex {
+                    position: v1,
+                    color: c,
+                });
+                verts.push(DebugVertex {
+                    position: v2,
+                    color: c,
+                });
+                verts.push(DebugVertex {
+                    position: v1,
+                    color: c,
+                });
+                verts.push(DebugVertex {
+                    position: v3,
+                    color: c,
+                });
+                verts.push(DebugVertex {
+                    position: v2,
+                    color: c,
+                });
             }
         }
     }

@@ -36,12 +36,12 @@ pub fn pack_surface_camera(
     out.skinned_geometry_indices.clear();
     if cam.frustum_culled {
         out.mesh_geometry_indices.clone_from(&cam.visible_mesh);
-        out.skinned_geometry_indices.clone_from(&cam.visible_skinned);
+        out.skinned_geometry_indices
+            .clone_from(&cam.visible_skinned);
     } else {
         scene.gather_visible_draws(cam, &mut out.mesh_draws, &mut out.skinned_mesh_draws);
     }
     out.terrain_splat_draws.clear();
-    out.storm = None;
     if cam.pass_mask & cam_features::TERRAIN != 0 {
         out.terrain_splat_draws
             .clone_from(&scene.geometry.terrain_splat_draws);
@@ -66,8 +66,8 @@ mod tests {
     fn scene_with_two_layered_draws() -> RenderScene {
         use deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD;
         use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
-        use deerpunk_engine_renderer::snapshot::SkyDraw;
         use deerpunk_engine_renderer::snapshot::MeshDraw;
+        use deerpunk_engine_renderer::snapshot::SkyDraw;
 
         let chunk = Aabb::from_min_max(Vec3::ZERO, Vec3::splat(16.0));
         let hand = Aabb::from_min_max(Vec3::new(-0.2, -0.2, -0.2), Vec3::splat(0.2));

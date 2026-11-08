@@ -14,7 +14,7 @@ use crate::components::{
 use crate::layout_meta::WireKind;
 use crate::material::DrawMaterial;
 use crate::network::field_path::{FieldValue, PropertyId};
-use crate::property::{PropertyStorage, PropertyRegistry};
+use crate::property::{PropertyRegistry, PropertyStorage};
 use crate::resource::{MeshRegistry, ResourceManager};
 use crate::world::{EntityId, World};
 
@@ -184,9 +184,7 @@ pub fn apply_field_ex(
             value,
         ) => {
             let Some(cid) = world.component_lookup(component) else {
-                log::warn!(
-                    "[net] apply_field: unknown component \"{component}\" on this world"
-                );
+                log::warn!("[net] apply_field: unknown component \"{component}\" on this world");
                 return false;
             };
             apply_memory_field(world, entity, cid, *offset, *wire, value)

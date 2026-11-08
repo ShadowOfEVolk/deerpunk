@@ -54,6 +54,7 @@ pub struct WorldApiResolved {
         f32,
     ) -> u64,
     system_set_interval_fn: extern "C" fn(*mut u8, u64, f32) -> i32,
+    system_set_stage_fn: extern "C" fn(*mut u8, u64, *const u8, usize) -> i32,
 }
 
 unsafe impl Send for WorldApiResolved {}
@@ -88,6 +89,9 @@ impl WorldApiResolved {
             },
             system_set_interval_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:world:system_set_interval"))
+            },
+            system_set_stage_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:world:system_set_stage"))
             },
         }
     }
@@ -272,6 +276,12 @@ impl WorldApiResolved {
 
     pub fn system_set_interval(&self, system_id: u64, interval_secs: f32) {
         let _ = (self.system_set_interval_fn)(self.ctx, system_id, interval_secs);
+    }
+
+    /// Move a system registered with [`Self::system_register`] onto a named phase.
+    /// `renderer.prepare` runs after scene extract, not inside `ecs_progress`.
+    pub fn system_set_stage(&self, system_id: u64, stage: &str) -> i32 {
+        (self.system_set_stage_fn)(self.ctx, system_id, stage.as_ptr(), stage.len())
     }
 
     /// Trace a line against the server BSP world mesh.

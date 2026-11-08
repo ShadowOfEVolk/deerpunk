@@ -1,7 +1,9 @@
 //! Client entity wireframe (`r_drawentities`) — HL-style debug overlays.
 
 use crate::client_engine::{DebugColor, DebugDrawBuf};
-use deerpunk_engine_common::components::{CameraComponent, Mesh3D, NetworkEntity, TransformComponent};
+use deerpunk_engine_common::components::{
+    CameraComponent, Mesh3D, NetworkEntity, TransformComponent,
+};
 use deerpunk_engine_common::resource::mesh_registry::MeshRegistry;
 use deerpunk_engine_common::world::World;
 use glam::{Quat, Vec3};

@@ -43,7 +43,15 @@ unsafe extern "C" {
     fn host_ui_input_end(ui: *mut HostUiOpaque);
     fn host_ui_key_down(ui: *mut HostUiOpaque, key: i32) -> i32;
     fn host_ui_key_pressed(ui: *mut HostUiOpaque, key: i32) -> i32;
-    fn host_ui_begin(ui: *mut HostUiOpaque, title: *const i8, x: f32, y: f32, w: f32, h: f32, flags: i32) -> i32;
+    fn host_ui_begin(
+        ui: *mut HostUiOpaque,
+        title: *const i8,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        flags: i32,
+    ) -> i32;
     fn host_ui_end(ui: *mut HostUiOpaque);
     fn host_ui_flags_overlay() -> i32;
     fn host_ui_flags_panel() -> i32;
@@ -58,7 +66,12 @@ unsafe extern "C" {
     fn host_ui_edit(ui: *mut HostUiOpaque, buf: *mut i8, cap: i32) -> i32;
     fn host_ui_edit_committed() -> i32;
     fn host_ui_bar(ui: *mut HostUiOpaque, n: i32, x0: *const f32, x1: *const f32, rgba: *const u8);
-    fn host_ui_convert(ui: *mut HostUiOpaque, cmds: *mut HostUiCmd, max_cmds: i32, out: *mut HostUiDraw) -> i32;
+    fn host_ui_convert(
+        ui: *mut HostUiOpaque,
+        cmds: *mut HostUiCmd,
+        max_cmds: i32,
+        out: *mut HostUiDraw,
+    ) -> i32;
     fn host_ui_finish(ui: *mut HostUiOpaque);
     fn host_ui_index_size() -> i32;
     fn host_ui_key_shift() -> i32;
@@ -85,16 +98,36 @@ fn current() -> *mut HostUiOpaque {
 pub struct UiKey;
 
 impl UiKey {
-    pub fn shift() -> i32 { unsafe { host_ui_key_shift() } }
-    pub fn ctrl() -> i32 { unsafe { host_ui_key_ctrl() } }
-    pub fn enter() -> i32 { unsafe { host_ui_key_enter() } }
-    pub fn tab() -> i32 { unsafe { host_ui_key_tab() } }
-    pub fn backspace() -> i32 { unsafe { host_ui_key_backspace() } }
-    pub fn up() -> i32 { unsafe { host_ui_key_up() } }
-    pub fn down() -> i32 { unsafe { host_ui_key_down_key() } }
-    pub fn left() -> i32 { unsafe { host_ui_key_left() } }
-    pub fn right() -> i32 { unsafe { host_ui_key_right() } }
-    pub fn del() -> i32 { unsafe { host_ui_key_del() } }
+    pub fn shift() -> i32 {
+        unsafe { host_ui_key_shift() }
+    }
+    pub fn ctrl() -> i32 {
+        unsafe { host_ui_key_ctrl() }
+    }
+    pub fn enter() -> i32 {
+        unsafe { host_ui_key_enter() }
+    }
+    pub fn tab() -> i32 {
+        unsafe { host_ui_key_tab() }
+    }
+    pub fn backspace() -> i32 {
+        unsafe { host_ui_key_backspace() }
+    }
+    pub fn up() -> i32 {
+        unsafe { host_ui_key_up() }
+    }
+    pub fn down() -> i32 {
+        unsafe { host_ui_key_down_key() }
+    }
+    pub fn left() -> i32 {
+        unsafe { host_ui_key_left() }
+    }
+    pub fn right() -> i32 {
+        unsafe { host_ui_key_right() }
+    }
+    pub fn del() -> i32 {
+        unsafe { host_ui_key_del() }
+    }
 }
 
 #[derive(Clone)]
@@ -156,7 +189,11 @@ impl HostUi {
 
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("host-ui-font"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -177,7 +214,11 @@ impl HostUi {
                 bytes_per_row: Some(w * 4),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         let font_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -227,9 +268,18 @@ impl HostUi {
             label: Some("host-ui-bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&font_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: screen_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&font_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: screen_buf.as_entire_binding(),
+                },
             ],
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -251,9 +301,21 @@ impl HostUi {
                     array_stride: 20,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 16, shader_location: 2 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Unorm8x4,
+                            offset: 16,
+                            shader_location: 2,
+                        },
                     ],
                 })],
                 compilation_options: Default::default(),
@@ -320,7 +382,13 @@ impl HostUi {
             host_ui_input_begin(ui);
             host_ui_motion(ui, input.mouse[0], input.mouse[1]);
             for (i, down) in input.buttons.iter().enumerate() {
-                host_ui_button(ui, i as i32, input.mouse[0], input.mouse[1], if *down { 1 } else { 0 });
+                host_ui_button(
+                    ui,
+                    i as i32,
+                    input.mouse[0],
+                    input.mouse[1],
+                    if *down { 1 } else { 0 },
+                );
             }
             if input.wheel != 0.0 {
                 host_ui_scroll(ui, input.wheel);
@@ -360,9 +428,25 @@ impl HostUi {
         }
     }
 
-    pub fn end_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    pub fn end_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+    ) {
         CURRENT.with(|c| c.set(std::ptr::null_mut()));
-        let mut cmds = vec![HostUiCmd { x: 0.0, y: 0.0, w: 0.0, h: 0.0, elem_count: 0, index_offset: 0 }; 8192];
+        let mut cmds = vec![
+            HostUiCmd {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+                elem_count: 0,
+                index_offset: 0
+            };
+            8192
+        ];
         let mut draw = HostUiDraw {
             verts: std::ptr::null(),
             vert_stride: 20,
@@ -370,10 +454,23 @@ impl HostUi {
             indices: std::ptr::null(),
             index_count: 0,
         };
-        let mut n = unsafe { host_ui_convert(self.ui, cmds.as_mut_ptr(), cmds.len() as i32, &mut draw) };
+        let mut n =
+            unsafe { host_ui_convert(self.ui, cmds.as_mut_ptr(), cmds.len() as i32, &mut draw) };
         if n == cmds.len() as i32 {
-            cmds.resize(cmds.len() * 2, HostUiCmd { x: 0.0, y: 0.0, w: 0.0, h: 0.0, elem_count: 0, index_offset: 0 });
-            n = unsafe { host_ui_convert(self.ui, cmds.as_mut_ptr(), cmds.len() as i32, &mut draw) };
+            cmds.resize(
+                cmds.len() * 2,
+                HostUiCmd {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                    elem_count: 0,
+                    index_offset: 0,
+                },
+            );
+            n = unsafe {
+                host_ui_convert(self.ui, cmds.as_mut_ptr(), cmds.len() as i32, &mut draw)
+            };
         }
         if n > 0 && !draw.verts.is_null() && draw.vert_count > 0 && draw.index_count > 0 {
             let vbytes = (draw.vert_count as usize) * (draw.vert_stride as usize);
@@ -402,7 +499,7 @@ impl HostUi {
                 });
                 let _ = device;
                 pass.set_pipeline(&self.pipeline);
-                                pass.set_bind_group(0, &self.font_bg, &[]);
+                pass.set_bind_group(0, &self.font_bg, &[]);
                 pass.set_vertex_buffer(0, self.vb.slice(..));
                 let index_fmt = if unsafe { host_ui_index_size() } == 4 {
                     wgpu::IndexFormat::Uint32
@@ -448,21 +545,27 @@ fn cstr(s: &str) -> CString {
 
 pub fn begin_overlay(title: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
     let ui = current();
-    if ui.is_null() { return false; }
+    if ui.is_null() {
+        return false;
+    }
     let t = cstr(title);
     unsafe { host_ui_begin(ui, t.as_ptr(), x, y, w, h, host_ui_flags_overlay()) != 0 }
 }
 
 pub fn begin_panel(title: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
     let ui = current();
-    if ui.is_null() { return false; }
+    if ui.is_null() {
+        return false;
+    }
     let t = cstr(title);
     unsafe { host_ui_begin(ui, t.as_ptr(), x, y, w, h, host_ui_flags_panel()) != 0 }
 }
 
 pub fn begin_console(w: f32, h: f32) -> bool {
     let ui = current();
-    if ui.is_null() { return false; }
+    if ui.is_null() {
+        return false;
+    }
     let t = cstr("##console");
     unsafe { host_ui_begin(ui, t.as_ptr(), 0.0, 0.0, w, h, host_ui_flags_console()) != 0 }
 }
@@ -480,7 +583,9 @@ pub fn label(text: &str) {
 
 pub fn label_colored(text: &str, rgba: [f32; 4]) {
     let ui = current();
-    if ui.is_null() { return; }
+    if ui.is_null() {
+        return;
+    }
     let t = cstr(text);
     unsafe {
         host_ui_layout_dynamic(ui, 14.0, 1);
@@ -497,21 +602,27 @@ pub fn separator() {
 
 pub fn group_begin(id: &str, h: f32) -> bool {
     let ui = current();
-    if ui.is_null() { return false; }
+    if ui.is_null() {
+        return false;
+    }
     let t = cstr(id);
     unsafe { host_ui_group_begin(ui, t.as_ptr(), h) != 0 }
 }
 
 pub fn group_end(id: &str, follow_tail: bool) {
     let ui = current();
-    if ui.is_null() { return; }
+    if ui.is_null() {
+        return;
+    }
     let t = cstr(id);
     unsafe { host_ui_group_end(ui, t.as_ptr(), if follow_tail { 1 } else { 0 }) };
 }
 
 pub fn selectable(label_text: &str, selected: bool) -> bool {
     let ui = current();
-    if ui.is_null() { return false; }
+    if ui.is_null() {
+        return false;
+    }
     let t = cstr(label_text);
     unsafe {
         host_ui_layout_dynamic(ui, 18.0, 1);
@@ -528,7 +639,9 @@ pub fn edit_focus() {
 
 pub fn edit_line(buf: &mut [u8]) -> bool {
     let ui = current();
-    if ui.is_null() || buf.is_empty() { return false; }
+    if ui.is_null() || buf.is_empty() {
+        return false;
+    }
     unsafe {
         host_ui_layout_dynamic(ui, 24.0, 1);
         let flags = host_ui_edit(ui, buf.as_mut_ptr() as *mut i8, buf.len() as i32);
@@ -538,13 +651,17 @@ pub fn edit_line(buf: &mut [u8]) -> bool {
 
 pub fn key_pressed(key: i32) -> bool {
     let ui = current();
-    if ui.is_null() { return false; }
+    if ui.is_null() {
+        return false;
+    }
     unsafe { host_ui_key_pressed(ui, key) != 0 }
 }
 
 pub fn bar(spans: &[(f32, f32, [u8; 4])]) {
     let ui = current();
-    if ui.is_null() { return; }
+    if ui.is_null() {
+        return;
+    }
     let mut x0 = Vec::with_capacity(spans.len());
     let mut x1 = Vec::with_capacity(spans.len());
     let mut rgba = Vec::with_capacity(spans.len() * 4);
@@ -555,7 +672,13 @@ pub fn bar(spans: &[(f32, f32, [u8; 4])]) {
     }
     unsafe {
         host_ui_layout_dynamic(ui, 14.0, 1);
-        host_ui_bar(ui, spans.len() as i32, x0.as_ptr(), x1.as_ptr(), rgba.as_ptr());
+        host_ui_bar(
+            ui,
+            spans.len() as i32,
+            x0.as_ptr(),
+            x1.as_ptr(),
+            rgba.as_ptr(),
+        );
     }
 }
 
@@ -591,7 +714,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
   return vec4<f32>(in.col.rgb, in.col.a * t.a);
 }
 "#;
-
 
 pub fn screen() -> [f32; 2] {
     SCREEN.with(|s| s.get())

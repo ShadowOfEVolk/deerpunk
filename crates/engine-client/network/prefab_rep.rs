@@ -11,9 +11,9 @@ use deerpunk_engine_common::network::{
     NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, PrefabNetId, PrefabNetRegistry, SpawnPrefabRpc,
     StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc,
 };
-use deerpunk_engine_common::scene::PrefabManager;
-use deerpunk_engine_common::scene::spawn_prefab_filtered_with_component_overrides_cached;
 use deerpunk_engine_common::resource::{MeshRegistry, ResourceManager};
+use deerpunk_engine_common::scene::spawn_prefab_filtered_with_component_overrides_cached;
+use deerpunk_engine_common::scene::PrefabManager;
 use deerpunk_engine_common::world::{EntityId, World};
 
 use crate::client_engine::ClientEngine;
@@ -163,7 +163,14 @@ impl ClientPrefabReplication {
         } else if cmd == SVC::NetDelta as u8 {
             match NetDeltaRpc::decode(payload) {
                 Some(rpc) => {
-                    self.apply_entity_update(client, meshes, gamedir, resources, rpc.net_id, &rpc.fields);
+                    self.apply_entity_update(
+                        client,
+                        meshes,
+                        gamedir,
+                        resources,
+                        rpc.net_id,
+                        &rpc.fields,
+                    );
                     true
                 }
                 None => {
@@ -189,11 +196,7 @@ impl ClientPrefabReplication {
                         log::warn!("[stream] PrefabDef id: {e}");
                     }
                     self.network_prefabs.insert_cached(&rpc.name, rpc.def);
-                    log::info!(
-                        "[stream] PrefabDef id={} '{}'",
-                        rpc.prefab_id.0,
-                        rpc.name
-                    );
+                    log::info!("[stream] PrefabDef id={} '{}'", rpc.prefab_id.0, rpc.name);
                     true
                 }
                 None => {
@@ -402,7 +405,15 @@ impl ClientPrefabReplication {
                 }
                 continue;
             }
-            apply_field_ex(world, Some(meshes), Some(gamedir), Some(resources), entity, *path, value);
+            apply_field_ex(
+                world,
+                Some(meshes),
+                Some(gamedir),
+                Some(resources),
+                entity,
+                *path,
+                value,
+            );
         }
     }
 

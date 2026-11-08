@@ -1,7 +1,7 @@
 //! Generic camera helpers (no FPS-specific tags). Games pick cameras via [`CameraComponent::layer_mask`] + hierarchy.
 
-use deerpunk_engine_common::components::{CameraComponent, ParentComponent, TransformComponent};
 use deerpunk_engine_common::components::render_layer::{render_layer_visible, RENDER_LAYER_WORLD};
+use deerpunk_engine_common::components::{CameraComponent, ParentComponent, TransformComponent};
 use deerpunk_engine_common::physics::CHAR_EYE_HEIGHT;
 use deerpunk_engine_common::transform_hierarchy::{camera_world_pose, entity_in_subtree};
 use deerpunk_engine_common::world::World;
@@ -9,11 +9,7 @@ use glam::{EulerRot, Quat, Vec3};
 
 use crate::client_engine::LocalViewStamp;
 
-pub fn camera_entity_in_view(
-    world: &World,
-    view_root: Option<u64>,
-    cam_entity: u64,
-) -> bool {
+pub fn camera_entity_in_view(world: &World, view_root: Option<u64>, cam_entity: u64) -> bool {
     let Some(root) = view_root else {
         return true;
     };

@@ -1,12 +1,13 @@
 //! Client gamelib DLL (`client_init` / `client_frame` / …).
 
-pub use deerpunk_engine_ffi::{ClientInitData, GAMELIB_API_VERSION, ResolverFn};
+pub use deerpunk_engine_ffi::{ClientInitData, ResolverFn, GAMELIB_API_VERSION};
 
 type ClientInitFn = unsafe extern "C" fn(ClientInitData);
 type ClientFrameFn = unsafe extern "C" fn(f32);
 type ClientPostFrameFn = unsafe extern "C" fn(f32);
 type ClientPreRenderFn = unsafe extern "C" fn(f32);
-type ClientGamelibUiBuildFn = unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiBuildArgs) -> i32;
+type ClientGamelibUiBuildFn =
+    unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiBuildArgs) -> i32;
 type ClientGamelibUiRenderFn =
     unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiRenderArgs) -> i32;
 type ClientGamelibUiDrawDataFn = unsafe extern "C" fn() -> *const std::ffi::c_void;

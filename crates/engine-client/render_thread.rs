@@ -3,7 +3,7 @@
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use deerpunk_engine_renderer::gpu::PendingSurfaceTail;
+use deerpunk_engine_renderer::renderer::PendingSurfaceTail;
 use wgpu::{CommandBuffer, Queue, SurfaceTexture};
 
 pub struct SubmitThread {
@@ -95,7 +95,10 @@ impl PipelinedSubmit {
         }
     }
 
-    pub fn wait_and_complete(&mut self, renderer: &mut deerpunk_engine_renderer::gpu::Renderer) {
+    pub fn wait_and_complete(
+        &mut self,
+        renderer: &mut deerpunk_engine_renderer::renderer::Renderer,
+    ) {
         if !self.in_flight {
             return;
         }
@@ -112,7 +115,7 @@ impl PipelinedSubmit {
         self.in_flight = false;
     }
 
-    pub fn kick(&mut self, renderer: &mut deerpunk_engine_renderer::gpu::Renderer) {
+    pub fn kick(&mut self, renderer: &mut deerpunk_engine_renderer::renderer::Renderer) {
         let Some(pending) = renderer.take_pending_surface_present() else {
             return;
         };

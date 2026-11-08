@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use deerpunk_engine_common::MeshTexture;
+use std::collections::HashMap;
 
 /// Material GPU data array — SSBO backing storage.
 const INITIAL_CAP: usize = 64;
@@ -86,7 +86,6 @@ impl MaterialAllocator {
         id: u32,
         entry: MaterialGpuEntry,
     ) -> u32 {
-
         // Grow buffer if needed.
         let needed = self.entries.len() + 1;
         let cap = self.gpu_buf.size() as usize / std::mem::size_of::<MaterialGpuEntry>();
@@ -101,10 +100,7 @@ impl MaterialAllocator {
             });
             // Copy old data.
             let old_size = self.entries.len() * std::mem::size_of::<MaterialGpuEntry>();
-            queue.write_buffer(&new_buf,
-                0,
-                bytemuck::cast_slice(&self.entries),
-            );
+            queue.write_buffer(&new_buf, 0, bytemuck::cast_slice(&self.entries));
             self.gpu_buf = new_buf;
             self.generation += 1;
         }
@@ -114,20 +110,14 @@ impl MaterialAllocator {
 
         // Write just the new entry.
         let offset = (id as usize * std::mem::size_of::<MaterialGpuEntry>()) as u64;
-        queue.write_buffer(&self.gpu_buf,
-            offset,
-            bytemuck::cast_slice(&[entry]),
-        );
+        queue.write_buffer(&self.gpu_buf, offset, bytemuck::cast_slice(&[entry]));
 
         id
     }
 
     pub fn flush(&mut self, queue: &wgpu::Queue) {
         if self.dirty {
-            queue.write_buffer(&self.gpu_buf,
-                0,
-                bytemuck::cast_slice(&self.entries),
-            );
+            queue.write_buffer(&self.gpu_buf, 0, bytemuck::cast_slice(&self.entries));
             self.dirty = false;
         }
     }

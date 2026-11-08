@@ -1,11 +1,11 @@
 //! Rapier implementation of [`super::backend::PhysicsBackend`].
 
-use std::collections::HashMap;
-use std::ffi::c_void;
 use glam::Quat;
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::parry::query::{ShapeCastOptions, ShapeCastStatus};
 use rapier3d::prelude::*;
+use std::collections::HashMap;
+use std::ffi::c_void;
 
 use super::abi::{
     decode_shape, Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle, BODY_TYPE_DYNAMIC,
@@ -552,7 +552,12 @@ impl RapierPhysicsBackend {
         }
     }
 
-    pub(crate) fn set_sync_system_ids(&mut self, sync_in: u64, writeback_characters: u64, writeback_dynamics: u64) {
+    pub(crate) fn set_sync_system_ids(
+        &mut self,
+        sync_in: u64,
+        writeback_characters: u64,
+        writeback_dynamics: u64,
+    ) {
         self.sys_sync_in = sync_in;
         self.sys_writeback_characters = writeback_characters;
         self.sys_writeback_dynamics = writeback_dynamics;
@@ -941,7 +946,12 @@ impl PhysicsBackend for RapierPhysicsBackend {
         let on_char_set = observer_character_set as crate::world::EcsCallback;
         let on_char_rm = observer_character_remove as crate::world::EcsCallback;
         if world
-            .register_observer("Collider", &[crate::world::WatchEvent::OnSet], self_ptr, on_collider_set)
+            .register_observer(
+                "Collider",
+                &[crate::world::WatchEvent::OnSet],
+                self_ptr,
+                on_collider_set,
+            )
             .is_err()
         {
             log::error!("[physics] OnSet Collider observer failed");

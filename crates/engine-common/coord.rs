@@ -11,13 +11,7 @@ pub const UP: [f32; 3] = [0.0, 0.0, 1.0];
 ///
 /// Камера位于 `(pos_x, pos_y, pos_z)`,Yawaround Z, pitch around X.
 /// pitch=0 → смотрит вперёд (+Y), pitch<0 → вниз, pitch>0 → вверх.
-pub fn build_view_proj(
-    pos_x: f32,
-    pos_y: f32,
-    pos_z: f32,
-    yaw: f32,
-    pitch: f32,
-) -> [[f32; 4]; 4] {
+pub fn build_view_proj(pos_x: f32, pos_y: f32, pos_z: f32, yaw: f32, pitch: f32) -> [[f32; 4]; 4] {
     let aspect = crate::frame::frame_width() as f32 / crate::frame::frame_height() as f32;
 
     // pitch=0 → forward (+Y). Rx(π/2) поворачивает из -Z в +Y.
@@ -37,18 +31,18 @@ pub fn build_view_proj(
 
     // Ry(yaw) rotation around Z axis (column-major, Z-up)
     let ry: [[f32; 4]; 4] = [
-        [ cy, -sy, 0.0, 0.0],
-        [ sy,  cy, 0.0, 0.0],
+        [cy, -sy, 0.0, 0.0],
+        [sy, cy, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ];
 
     // Rx(-ep) rotation around X axis (column-major)
     let rx: [[f32; 4]; 4] = [
-        [1.0,  0.0,  0.0, 0.0],
-        [0.0,  cp,  -sp,  0.0],
-        [0.0,  sp,   cp,  0.0],
-        [0.0,  0.0,  0.0, 1.0],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, cp, -sp, 0.0],
+        [0.0, sp, cp, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
     ];
 
     let vt = mat4_mul(&rx, &mat4_mul(&ry, &t));
@@ -59,10 +53,10 @@ pub fn build_view_proj(
     let near = 0.1;
     let far = 1024.0;
     let proj: [[f32; 4]; 4] = [
-        [f / aspect, 0.0,  0.0,  0.0],
-        [0.0,        f,    0.0,  0.0],
-        [0.0,        0.0,  far / (near - far), -1.0],
-        [0.0,        0.0,  far * near / (near - far), 0.0],
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, far / (near - far), -1.0],
+        [0.0, 0.0, far * near / (near - far), 0.0],
     ];
 
     mat4_mul(&proj, &vt)
@@ -300,9 +294,7 @@ pub fn inv_view_proj_camera_relative(
 pub fn inv_view_proj_sky_at_origin(view: glam::Mat4, projection: glam::Mat4) -> [[f32; 4]; 4] {
     let mut view_at_origin = view;
     view_at_origin.w_axis = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
-    (projection * view_at_origin)
-        .inverse()
-        .to_cols_array_2d()
+    (projection * view_at_origin).inverse().to_cols_array_2d()
 }
 
 /// Right-handed perspective with wgpu/D3D/Vulkan clip Z in `[0, 1]`.

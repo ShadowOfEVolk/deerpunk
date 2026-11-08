@@ -139,8 +139,8 @@ pub fn format_clc_line(packet: &[u8]) -> String {
         Some(CLC::UserCmd) => format!("{} payload={}", clc_label(cmd), payload_len),
         Some(CLC::ClientCommand) => {
             let payload = &packet[1..];
-            let text = deerpunk_engine_network::decode_client_command_payload(payload)
-                .unwrap_or("<bad>");
+            let text =
+                deerpunk_engine_network::decode_client_command_payload(payload).unwrap_or("<bad>");
             format!("{} \"{}\"", clc_label(cmd), text)
         }
         _ => {

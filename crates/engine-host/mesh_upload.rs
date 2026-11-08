@@ -3,7 +3,6 @@
 use deerpunk_engine_common::resource::mesh::Mesh;
 
 use std::ffi::c_void;
-
 #[repr(C)]
 pub struct MeshCreateDesc {
     pub positions: *const f32,
@@ -30,6 +29,7 @@ pub struct MeshCreateDesc {
 }
 
 pub fn mesh_from_desc(desc: &MeshCreateDesc) -> Option<Mesh> {
+    panic!("mesh from desc");
     if desc.vertex_size == 0 || desc.vertex_bytes.is_null() || desc.vertex_byte_len == 0 {
         return None;
     }
@@ -39,7 +39,8 @@ pub fn mesh_from_desc(desc: &MeshCreateDesc) -> Option<Mesh> {
         let pos = unsafe { std::slice::from_raw_parts(desc.positions, vc * 3) };
         mesh.positions.reserve(vc);
         for i in 0..vc {
-            mesh.positions.push([pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]);
+            mesh.positions
+                .push([pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]]);
         }
     }
     if !desc.indices.is_null() && desc.index_count > 0 {
@@ -95,9 +96,8 @@ pub fn mesh_from_packed(desc: &MeshPackedDesc) -> Option<Mesh> {
         unsafe { std::slice::from_raw_parts(desc.vertex_bytes, desc.vertex_byte_len as usize) }
             .to_vec();
     if !desc.indices.is_null() && desc.index_count > 0 {
-        mesh.indices = unsafe {
-            std::slice::from_raw_parts(desc.indices, desc.index_count as usize).to_vec()
-        };
+        mesh.indices =
+            unsafe { std::slice::from_raw_parts(desc.indices, desc.index_count as usize).to_vec() };
     }
     mesh.bounds_min = desc.bounds_min;
     mesh.bounds_max = desc.bounds_max;

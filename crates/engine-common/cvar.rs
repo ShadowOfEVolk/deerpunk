@@ -67,11 +67,18 @@ impl CvarSystem {
     }
 
     pub fn get_string(&self, name: &str) -> Option<String> {
-        self.values.read().expect("cvars read lock").get(name).cloned()
+        self.values
+            .read()
+            .expect("cvars read lock")
+            .get(name)
+            .cloned()
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.values.read().expect("cvars read lock").contains_key(name)
+        self.values
+            .read()
+            .expect("cvars read lock")
+            .contains_key(name)
     }
 
     fn static_def(name: &str) -> Option<&'static CvarDef> {
@@ -87,12 +94,7 @@ impl CvarSystem {
             if def.default.is_empty() {
                 println!("\"{}\" is \"{}\"", name, value);
             } else {
-                println!(
-                    "\"{}\" is \"{}\" ( \"{}\" )",
-                    name,
-                    value,
-                    def.default
-                );
+                println!("\"{}\" is \"{}\" ( \"{}\" )", name, value, def.default);
             }
             if !def.desc.is_empty() {
                 println!("{}", def.desc);

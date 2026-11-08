@@ -4,8 +4,8 @@
 use std::ffi::CStr;
 
 use deerpunk_engine_ffi::{
-    GAMELIB_SURFACE_BGRA8, GAMELIB_SURFACE_BGRA8_SRGB, GAMELIB_SURFACE_RGBA8,
-    GAMELIB_SURFACE_RGBA8_SRGB, NuklearDrawHost,
+    NuklearDrawHost, GAMELIB_SURFACE_BGRA8, GAMELIB_SURFACE_BGRA8_SRGB, GAMELIB_SURFACE_RGBA8,
+    GAMELIB_SURFACE_RGBA8_SRGB,
 };
 use deerpunk_engine_renderer::host_ui;
 

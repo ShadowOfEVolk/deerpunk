@@ -4,9 +4,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PendingAlbedoAtlas,
-    PointLight, SimpleEntity, SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent,
-    Worldspawn,
+    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PendingAlbedoAtlas, PointLight,
+    SimpleEntity, SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent, Worldspawn,
 };
 use crate::network::field_path::NetFieldId;
 use crate::network::net_field::register_engine_layout_net_fields;

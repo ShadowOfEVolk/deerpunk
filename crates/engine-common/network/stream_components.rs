@@ -8,7 +8,7 @@ use crate::components::{Mesh3D, NetworkEntity, StudioModel, TransformComponent, 
 use crate::material::DrawMaterial;
 use crate::network::field_apply::read_field;
 use crate::network::field_path::{FieldValue, PropertyId};
-use crate::property::{PropertyStorage, PropertyRegistry};
+use crate::property::{PropertyRegistry, PropertyStorage};
 use crate::world::{EntityId, World};
 
 /// Server-side: ECS → component JSON merged into client prefab spawn.
@@ -52,11 +52,7 @@ pub fn build_stream_in_components(
 
     if world.has(entity, world.component_init::<StudioModel>()) {
         let path = PropertyId::MAPKV_STUDIO_MODEL;
-        if !hot.contains(&path.as_u32())
-            && !net
-                .cold_paths()
-                .any(|p| p.as_u32() == path.as_u32())
-        {
+        if !hot.contains(&path.as_u32()) && !net.cold_paths().any(|p| p.as_u32() == path.as_u32()) {
             if let Some(FieldValue::Str(uri)) = read_field(world, entity, path) {
                 if !uri.is_empty() {
                     merge_field_into_components(path, &FieldValue::Str(uri), &mut components);
@@ -110,12 +106,13 @@ fn merge_field_into_components(
             let Some(desc) = reg.get(path) else {
                 return;
             };
-            let PropertyStorage::Memory { component, field, .. } = &desc.storage else {
+            let PropertyStorage::Memory {
+                component, field, ..
+            } = &desc.storage
+            else {
                 return;
             };
-            let entry = out
-                .entry(component.clone())
-                .or_insert_with(|| json!({}));
+            let entry = out.entry(component.clone()).or_insert_with(|| json!({}));
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert(field.clone(), json!(*v));
             }

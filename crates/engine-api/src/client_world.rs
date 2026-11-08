@@ -25,22 +25,9 @@ pub struct ClientWorldApi {
     remove_fn: extern "C" fn(*mut u8, u64, u64),
     is_alive_fn: extern "C" fn(*mut u8, u64) -> bool,
     component_register_fn: extern "C" fn(*mut u8, *const ComponentRegisterDesc) -> u64,
-    query_fn: extern "C" fn(
-        *mut u8,
-        *const u64,
-        usize,
-        *const u64,
-        usize,
-        *mut u64,
-        usize,
-    ) -> usize,
-        register_observer_fn: extern "C" fn(
-        *mut u8,
-        *mut u8,
-        usize,
-        u32,
-        u64,
-    ) -> i32,
+    query_fn:
+        extern "C" fn(*mut u8, *const u64, usize, *const u64, usize, *mut u64, usize) -> usize,
+    register_observer_fn: extern "C" fn(*mut u8, *mut u8, usize, u32, u64) -> i32,
     system_register_fn: extern "C" fn(
         *mut u8,
         *const u8,
@@ -52,6 +39,7 @@ pub struct ClientWorldApi {
         f32,
     ) -> u64,
     system_set_interval_fn: extern "C" fn(*mut u8, u64, f32) -> i32,
+    system_set_stage_fn: extern "C" fn(*mut u8, u64, *const u8, usize) -> i32,
 }
 
 unsafe impl Send for ClientWorldApi {}
@@ -81,6 +69,9 @@ impl ClientWorldApi {
             system_set_interval_fn: unsafe {
                 std::mem::transmute(resolve(r, "v1:client_world:system_set_interval"))
             },
+            system_set_stage_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:client_world:system_set_stage"))
+            },
         }
     }
 
@@ -107,6 +98,11 @@ impl ClientWorldApi {
 
     pub fn system_set_interval(&self, system_id: u64, interval_secs: f32) {
         let _ = (self.system_set_interval_fn)(self.ctx, system_id, interval_secs);
+    }
+
+    /// Move a client system onto a named phase (`renderer.prepare` runs after extract).
+    pub fn system_set_stage(&self, system_id: u64, stage: &str) -> i32 {
+        (self.system_set_stage_fn)(self.ctx, system_id, stage.as_ptr(), stage.len())
     }
 
     /// Flecs observer on the client world. `events`: bit0 OnAdd, bit1 OnSet.
@@ -175,7 +171,13 @@ impl ClientWorldApi {
         }
     }
 
-    pub fn set_raw(&self, entity: EntityId, comp: ComponentId, ptr: *const std::ffi::c_void, size: usize) {
+    pub fn set_raw(
+        &self,
+        entity: EntityId,
+        comp: ComponentId,
+        ptr: *const std::ffi::c_void,
+        size: usize,
+    ) {
         deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::set_raw");
         deerpunk_engine_common::ecs_validate::assert_set_payload(size, "ClientWorldApi::set_raw");
         if ptr.is_null() {
@@ -215,18 +217,13 @@ impl ClientWorldApi {
                  (zero-sized types need at least one byte, e.g. `_tag: u8`)"
             ));
         }
-        let desc = ComponentRegisterDesc::new(
-            name,
-            size,
-            align,
-            std::ptr::null_mut(),
-            no_prefab_apply(),
-        );
+        let desc =
+            ComponentRegisterDesc::new(name, size, align, std::ptr::null_mut(), no_prefab_apply());
         self.component_register(&desc)
     }
 
     pub fn query(&self, require: &[ComponentId], exclude: &[ComponentId]) -> Vec<EntityId> {
-        let max = 4096;
+        let max = 16384;
         let mut buf = vec![0u64; max];
         let count = (self.query_fn)(
             self.ctx,

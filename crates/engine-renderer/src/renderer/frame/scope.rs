@@ -38,7 +38,9 @@ mod tests {
 
     #[test]
     fn camera_runs_only_masked_passes() {
-        let world = Phase::Camera { pass_mask: cam_pass::DEFAULT_WORLD };
+        let world = Phase::Camera {
+            pass_mask: cam_pass::DEFAULT_WORLD,
+        };
         assert!(node_enabled("sky", world));
         assert!(node_enabled("mesh", world));
         assert!(!node_enabled("terrain_splat", world));
@@ -49,7 +51,9 @@ mod tests {
 
     #[test]
     fn overlay_runs_mesh_only() {
-        let overlay = Phase::Camera { pass_mask: cam_pass::DEFAULT_OVERLAY };
+        let overlay = Phase::Camera {
+            pass_mask: cam_pass::DEFAULT_OVERLAY,
+        };
         assert!(node_enabled("mesh", overlay));
         assert!(!node_enabled("sky", overlay));
         assert!(!node_enabled("terrain_splat", overlay));

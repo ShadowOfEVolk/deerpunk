@@ -180,7 +180,10 @@ pub fn encode_shape_convex(vertices: &[[f32; 3]]) -> Vec<u8> {
 /// Encode a voxel volume ABI blob. `origin` is the world-space min corner of the
 /// chunk (cell (0,0,0) occupies `[origin, origin+1)`); `solid` is the bitset
 /// produced by `voxel_solid_bitset` (bit `i = x + y*S + z*S*S`).
-pub fn encode_shape_voxel_volume(origin: [i32; 3], solid: &[u8; VOXEL_VOLUME_BITSET_BYTES]) -> Vec<u8> {
+pub fn encode_shape_voxel_volume(
+    origin: [i32; 3],
+    solid: &[u8; VOXEL_VOLUME_BITSET_BYTES],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + 12 + VOXEL_VOLUME_BITSET_BYTES);
     out.extend_from_slice(&SHAPE_ABI_VERSION.to_le_bytes());
     out.extend_from_slice(&SHAPE_KIND_VOXEL_VOLUME.to_le_bytes());
@@ -194,10 +197,18 @@ pub fn encode_shape_voxel_volume(origin: [i32; 3], solid: &[u8; VOXEL_VOLUME_BIT
 /// Decoded shape geometry (host-side; not an ECS component).
 #[derive(Clone, Debug)]
 pub enum ShapeGeom {
-    Box { half_extents: [f32; 3] },
-    Ball { radius: f32 },
-    Convex { vertices: Vec<[f32; 3]> },
-    HalfSpace { outward_normal: [f32; 3] },
+    Box {
+        half_extents: [f32; 3],
+    },
+    Ball {
+        radius: f32,
+    },
+    Convex {
+        vertices: Vec<[f32; 3]>,
+    },
+    HalfSpace {
+        outward_normal: [f32; 3],
+    },
     TriMesh {
         vertices: Vec<[f32; 3]>,
         /// Triangle list (`len` is multiple of 3).

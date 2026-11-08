@@ -45,6 +45,9 @@ pub struct MeshDraw {
     /// Submesh index range. `index_count == 0` → full mesh.
     pub first_index: u32,
     pub index_count: u32,
+    /// Cardinal face of a chunk layer. `0` is always drawn.
+    /// `1=-X 2=+X 3=-Y 4=+Y 5=-Z 6=+Z`, skipped when the camera is past that side of [`Self::world_bounds`].
+    pub face: u8,
     /// World-space bounds for frustum culling (set during scene extract).
     pub world_bounds: Aabb,
     /// ECS entity id for persistent spatial cull (`0` = fallback to draw index).
@@ -239,17 +242,6 @@ pub struct SkyDraw {
     pub zenith: [f32; 3],
 }
 
-/// Данные для storm pass (чёрный туман в заражённых тайтлах).
-#[derive(Clone)]
-pub struct StormDraw {
-    /// 64×64 infected bitmap (row-major, 0 = safe, 1 = infected).
-    pub infected: Vec<u8>,
-    /// World size in meters.
-    pub map_size: f32,
-    /// Tile size in meters.
-    pub tile_meters: f32,
-}
-
 /// Полный снапшот кадра.
 #[derive(Clone)]
 pub struct RenderSnapshot {
@@ -285,8 +277,6 @@ pub struct RenderSnapshot {
     pub sky: Option<SkyDraw>,
     /// Debug-примитивы (линии, сферы, текст) — рисуются поверх 3D-сцены.
     pub debug_draw: Vec<crate::debug_draw::DebugPrimitive>,
-    /// Storm fog overlay (black fog in infected tiles).
-    pub storm: Option<StormDraw>,
     /// Game time in seconds (for animated effects like clouds).
     pub game_time: f32,
     /// Frustum cull stats for the active camera (when enabled).
@@ -318,7 +308,6 @@ impl RenderSnapshot {
             point_lights: Vec::new(),
             sky: None,
             debug_draw: Vec::new(),
-            storm: None,
             game_time: 0.0,
             view_proj: [
                 [1.0, 0.0, 0.0, 0.0],
@@ -384,6 +373,7 @@ impl RenderSnapshot {
             lightmap_gpu,
             first_index: 0,
             index_count: 0,
+            face: 0,
             world_bounds: bounds,
             entity_id: 0,
             uniform_aux: 0,
@@ -419,6 +409,7 @@ impl RenderSnapshot {
             lightmap_gpu,
             first_index: 0,
             index_count: 0,
+            face: 0,
             world_bounds: bounds,
             entity_id: 0,
             uniform_aux: 0,
@@ -464,8 +455,7 @@ pub enum RenderTarget {
 /// Which scene passes a [`CameraDefinition`] runs (see [`deerpunk_engine_common::components::cam_pass`]).
 pub mod cam_features {
     pub use deerpunk_engine_common::components::cam_pass::{
-        DEBUG, DEFAULT_OVERLAY, DEFAULT_WORLD as WORLD_DEFAULT, MESH, SKY, SPRITES_3D,
-        TERRAIN,
+        DEBUG, DEFAULT_OVERLAY, DEFAULT_WORLD as WORLD_DEFAULT, MESH, SKY, SPRITES_3D, TERRAIN,
     };
 }
 
@@ -685,119 +675,115 @@ impl RenderScene {
         out.clear();
         out.reserve(self.cameras.len());
         for (cam_idx, cam) in self.cameras.iter().enumerate() {
-                let view = cam.view_matrix();
-                let projection = cam.projection_matrix(aspect);
-                let view_proj_cull = projection * view;
-                let view_proj =
-                    deerpunk_engine_common::coord::view_proj_world_mesh_clip(projection, cam.rotation);
-                let cull_cam = CullCamera {
-                    view_proj: view_proj_cull,
-                    view,
-                    near: cam.near,
-                    far: cam.far,
-                    fov_y: cam.fov_y,
-                    aspect,
-                    layer_mask: cam.layer_mask,
+            let view = cam.view_matrix();
+            let projection = cam.projection_matrix(aspect);
+            let view_proj_cull = projection * view;
+            let view_proj =
+                deerpunk_engine_common::coord::view_proj_world_mesh_clip(projection, cam.rotation);
+            let cull_cam = CullCamera {
+                view_proj: view_proj_cull,
+                view,
+                near: cam.near,
+                far: cam.far,
+                fov_y: cam.fov_y,
+                aspect,
+                layer_mask: cam.layer_mask,
+            };
+
+            let cull_serial = self.geometry.cull_serial;
+            let frustum_start = std::time::Instant::now();
+            let skip_frustum = self.extract_early_cull && cam_idx == 0 && self.cameras.len() == 1;
+            let (frustum_culled, cull_stats, visible_mesh, visible_skinned) = if self.cull.enabled {
+                let (mt, mv, visible_mesh, st, sv, visible_skinned) = if skip_frustum {
+                    let (mt, mv) = visible_mesh_indices_pre_culled(
+                        &self.geometry.mesh_draws,
+                        &cull_cam,
+                        &mut scratch.visible_mesh,
+                    );
+                    let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
+                    let (st, sv) = visible_skinned_indices_pre_culled(
+                        &self.geometry.skinned_mesh_draws,
+                        &mut scratch.visible_skinned,
+                    );
+                    let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
+                    (mt, mv, visible_mesh, st, sv, visible_skinned)
+                } else {
+                    let (mt, mv) = cull_mesh_indices(
+                        &self.geometry.mesh_draws,
+                        &cull_cam,
+                        cull_serial,
+                        self.cull.cell_size,
+                        scratch,
+                    );
+                    let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
+                    let (st, sv) = cull_skinned_indices(
+                        &self.geometry.skinned_mesh_draws,
+                        &cull_cam,
+                        cull_serial,
+                        self.cull.cell_size,
+                        scratch,
+                    );
+                    let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
+                    (mt, mv, visible_mesh, st, sv, visible_skinned)
                 };
-
-                let cull_serial = self.geometry.cull_serial;
-                let frustum_start = std::time::Instant::now();
-                let skip_frustum =
-                    self.extract_early_cull && cam_idx == 0 && self.cameras.len() == 1;
-                let (frustum_culled, cull_stats, visible_mesh, visible_skinned) =
-                    if self.cull.enabled {
-                        let (mt, mv, visible_mesh, st, sv, visible_skinned) = if skip_frustum {
-                            let (mt, mv) = visible_mesh_indices_pre_culled(
-                                &self.geometry.mesh_draws,
-                                &cull_cam,
-                                &mut scratch.visible_mesh,
-                            );
-                            let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
-                            let (st, sv) = visible_skinned_indices_pre_culled(
-                                &self.geometry.skinned_mesh_draws,
-                                &mut scratch.visible_skinned,
-                            );
-                            let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
-                            (mt, mv, visible_mesh, st, sv, visible_skinned)
-                        } else {
-                            let (mt, mv) = cull_mesh_indices(
-                                &self.geometry.mesh_draws,
-                                &cull_cam,
-                                cull_serial,
-                                self.cull.cell_size,
-                                scratch,
-                            );
-                            let visible_mesh = std::mem::take(&mut scratch.visible_mesh);
-                            let (st, sv) = cull_skinned_indices(
-                                &self.geometry.skinned_mesh_draws,
-                                &cull_cam,
-                                cull_serial,
-                                self.cull.cell_size,
-                                scratch,
-                            );
-                            let visible_skinned = std::mem::take(&mut scratch.visible_skinned);
-                            (mt, mv, visible_mesh, st, sv, visible_skinned)
-                        };
-                        scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
-                        (
-                            true,
-                            CullStats {
-                                mesh_total: mt,
-                                mesh_visible: mv,
-                                skinned_total: st,
-                                skinned_visible: sv,
-                            },
-                            visible_mesh,
-                            visible_skinned,
-                        )
-                    } else {
-                        let n = self.geometry.mesh_draws.len() as u32;
-                        let s = self.geometry.skinned_mesh_draws.len() as u32;
-                        scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
-                        (
-                            false,
-                            CullStats {
-                                mesh_total: n,
-                                mesh_visible: n,
-                                skinned_total: s,
-                                skinned_visible: s,
-                            },
-                            Vec::new(),
-                            Vec::new(),
-                        )
-                    };
-
-                let assemble_start = std::time::Instant::now();
-                let inv_view_proj = view_proj_cull.inverse();
-                let inv_view_proj_sky = deerpunk_engine_common::coord::inv_view_proj_sky_at_origin(
-                    view,
-                    projection,
-                );
-                let snap = CameraRenderSnapshot {
-                    view,
-                    projection,
-                    view_proj,
-                    inv_view_proj,
-                    inv_view_proj_sky: glam::Mat4::from_cols_array_2d(&inv_view_proj_sky),
-                    camera_pos: cam.position,
+                scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
+                (
+                    true,
+                    CullStats {
+                        mesh_total: mt,
+                        mesh_visible: mv,
+                        skinned_total: st,
+                        skinned_visible: sv,
+                    },
                     visible_mesh,
                     visible_skinned,
-                    frustum_culled,
-                    bone_palettes: self.geometry.bone_palettes.clone(),
-                    point_lights: self.geometry.point_lights.clone(),
-                    sky: self.geometry.sky,
-                    clear: self.clear,
-                    color_load: cam.color_load,
-                    game_time: self.game_time,
-                    target: cam.target.clone(),
-                    cull_stats,
-                    layer_mask: cam.layer_mask,
-                    order: cam.order,
-                    pass_mask: cam.pass_mask,
-                    depth: cam.depth,
-                };
-                scratch.last_assemble_ms += assemble_start.elapsed().as_secs_f32() * 1000.0;
-                out.push(snap);
+                )
+            } else {
+                let n = self.geometry.mesh_draws.len() as u32;
+                let s = self.geometry.skinned_mesh_draws.len() as u32;
+                scratch.last_frustum_ms += frustum_start.elapsed().as_secs_f32() * 1000.0;
+                (
+                    false,
+                    CullStats {
+                        mesh_total: n,
+                        mesh_visible: n,
+                        skinned_total: s,
+                        skinned_visible: s,
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                )
+            };
+
+            let assemble_start = std::time::Instant::now();
+            let inv_view_proj = view_proj_cull.inverse();
+            let inv_view_proj_sky =
+                deerpunk_engine_common::coord::inv_view_proj_sky_at_origin(view, projection);
+            let snap = CameraRenderSnapshot {
+                view,
+                projection,
+                view_proj,
+                inv_view_proj,
+                inv_view_proj_sky: glam::Mat4::from_cols_array_2d(&inv_view_proj_sky),
+                camera_pos: cam.position,
+                visible_mesh,
+                visible_skinned,
+                frustum_culled,
+                bone_palettes: self.geometry.bone_palettes.clone(),
+                point_lights: self.geometry.point_lights.clone(),
+                sky: self.geometry.sky,
+                clear: self.clear,
+                color_load: cam.color_load,
+                game_time: self.game_time,
+                target: cam.target.clone(),
+                cull_stats,
+                layer_mask: cam.layer_mask,
+                order: cam.order,
+                pass_mask: cam.pass_mask,
+                depth: cam.depth,
+            };
+            scratch.last_assemble_ms += assemble_start.elapsed().as_secs_f32() * 1000.0;
+            out.push(snap);
         }
     }
 

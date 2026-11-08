@@ -4,9 +4,9 @@ use std::ffi::c_void;
 
 use crate::frame::context::FrameCtx;
 use crate::frame::scope::{self, Phase};
-use crate::gpu::Renderer;
 use crate::render_graph::NodeContext;
-use crate::render_profile::{GraphNodeTiming, lap_ms};
+use crate::render_profile::{lap_ms, GraphNodeTiming};
+use crate::renderer::Renderer;
 use crate::snapshot::cam_features;
 
 /// Per-frame payload in [`NodeContext::user_data`] (raw pointers avoid graph + pass borrow split).
@@ -18,7 +18,12 @@ pub struct GraphFrameUserData {
     pub phase: crate::frame::scope::Phase,
 }
 
-fn push_graph_timing(ctx: &mut FrameCtx<'_>, name: &str, lap_start: std::time::Instant, skipped: bool) {
+fn push_graph_timing(
+    ctx: &mut FrameCtx<'_>,
+    name: &str,
+    lap_start: std::time::Instant,
+    skipped: bool,
+) {
     let ms = lap_start.elapsed().as_secs_f32() * 1000.0;
     ctx.prof.graph_nodes.push(GraphNodeTiming {
         name: name.to_string(),
@@ -79,8 +84,8 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
             render_scope!("render/clear_hdr");
             // Clear HDR only when this camera declares a color clear AND sky did not
             // already clear (sky pass clears to the scene clear color itself).
-            let clears_color = ctx.snapshot.color_load
-                == deerpunk_engine_common::components::ColorLoad::Clear;
+            let clears_color =
+                ctx.snapshot.color_load == deerpunk_engine_common::components::ColorLoad::Clear;
             let sky_cleared = renderer.draws_sky()
                 && ctx.snapshot.pass_mask & cam_features::SKY != 0
                 && ctx.snapshot.sky.is_some();
@@ -147,8 +152,8 @@ pub fn run_frame_graph(
     };
     let user_ptr = &mut user as *mut GraphFrameUserData as *mut c_void;
 
-    let device = r.device.clone();
-    let queue = r.queue.clone();
+    let device = r.gpu.device.clone();
+    let queue = r.gpu.queue.clone();
     r.forward_graph_mut()
         .execute_registered(&device, &queue, encoder, user_ptr);
 }
@@ -179,13 +184,7 @@ pub fn format_graph_speeds_lines(
         let io = node_specs
             .iter()
             .find(|(n, _, _)| *n == node.name.as_str())
-            .map(|(_, ins, outs)| {
-                format!(
-                    "{} → {}",
-                    format_res_list(ins),
-                    format_res_list(outs)
-                )
-            })
+            .map(|(_, ins, outs)| format!("{} → {}", format_res_list(ins), format_res_list(outs)))
             .unwrap_or_else(|| "— → —".into());
         let skip = if node.skipped { " skip" } else { "" };
         lines.push(format!(

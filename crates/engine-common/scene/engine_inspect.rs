@@ -128,7 +128,11 @@ fn dump_map_kv(world: &World, entity: EntityId, comp: ComponentId) -> Result<Val
     Ok(Value::Object(obj))
 }
 
-fn dump_network_entity(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+fn dump_network_entity(
+    world: &World,
+    entity: EntityId,
+    comp: ComponentId,
+) -> Result<Value, String> {
     let n = world
         .get::<NetworkEntity>(entity, comp)
         .ok_or("NetworkEntity missing")?;
@@ -148,7 +152,11 @@ fn dump_mesh3d(world: &World, entity: EntityId, comp: ComponentId) -> Result<Val
     }))
 }
 
-fn dump_skinned_mesh3d(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+fn dump_skinned_mesh3d(
+    world: &World,
+    entity: EntityId,
+    comp: ComponentId,
+) -> Result<Value, String> {
     let m = world
         .get::<SkinnedMesh3D>(entity, comp)
         .ok_or("SkinnedMesh3D missing")?;
@@ -226,19 +234,49 @@ pub fn register_engine_component_inspect(world: &World) {
         }),
         dump_lua,
     );
-    reg(world, "LuaScript", id, json!({ "type": "object" }), dump_lua);
+    reg(
+        world,
+        "LuaScript",
+        id,
+        json!({ "type": "object" }),
+        dump_lua,
+    );
 
     let id = world.component_init::<UiDocumentComponent>();
-    reg(world, "UiDocumentComponent", id, json!({ "type": "object" }), dump_ui_document);
+    reg(
+        world,
+        "UiDocumentComponent",
+        id,
+        json!({ "type": "object" }),
+        dump_ui_document,
+    );
 
     let id = world.component_init::<PointLight>();
-    reg(world, "PointLight", id, json!({ "type": "object" }), dump_point_light);
+    reg(
+        world,
+        "PointLight",
+        id,
+        json!({ "type": "object" }),
+        dump_point_light,
+    );
 
     let id = world.component_init::<SoundEmitter>();
-    reg(world, "SoundEmitter", id, json!({ "type": "object" }), dump_sound_emitter);
+    reg(
+        world,
+        "SoundEmitter",
+        id,
+        json!({ "type": "object" }),
+        dump_sound_emitter,
+    );
 
     let id = world.component_init::<NetworkEntity>();
-    reg(world, "NetworkEntity", id, json!({ "type": "object" }), dump_network_entity);
+    reg(
+        world,
+        "NetworkEntity",
+        id,
+        json!({ "type": "object" }),
+        dump_network_entity,
+    );
 
     let id = world.component_init::<StudioModel>();
     reg(

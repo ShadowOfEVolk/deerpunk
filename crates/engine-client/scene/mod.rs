@@ -3,6 +3,5 @@
 pub mod sky_compose;
 
 pub use sky_compose::{
-    apply_compose, fill_procedural_sky_default, smoothstep_sky, ClientComposeSkyFn,
-    SkySceneCompose,
+    apply_compose, fill_procedural_sky_default, smoothstep_sky, ClientComposeSkyFn, SkySceneCompose,
 };

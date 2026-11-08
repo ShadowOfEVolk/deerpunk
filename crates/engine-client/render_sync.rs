@@ -13,7 +13,9 @@ use crate::{entity_debug, phys_debug};
 pub fn frustum_cull_options(cvar: &CvarSystem) -> CullOptions {
     CullOptions {
         enabled: cvar.get_bool_or("r_frustum_cull", true),
-        cell_size: cvar.get_f32_or("r_cull_cell_size", DEFAULT_CELL_SIZE).max(1.0),
+        cell_size: cvar
+            .get_f32_or("r_cull_cell_size", DEFAULT_CELL_SIZE)
+            .max(1.0),
     }
 }
 

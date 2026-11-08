@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use deerpunk_engine_common::network::lan::{
-    bind_reuse_broadcast, decode_info, DEFAULT_GAME_PORT, HEADER, LanServerInfo, QUERY_TAG,
+    bind_reuse_broadcast, decode_info, LanServerInfo, DEFAULT_GAME_PORT, HEADER, QUERY_TAG,
 };
 
 const SERVER_TTL: Duration = Duration::from_secs(8);

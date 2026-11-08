@@ -18,3 +18,7 @@ pub fn register_progress_system(
 pub fn set_progress_system_interval(world: &World, system_id: u64, interval_secs: f32) {
     world.set_progress_system_interval(system_id, interval_secs);
 }
+
+pub fn set_system_stage(world: &World, system_id: u64, stage: &str) -> i32 {
+    world.set_system_stage(system_id, stage)
+}

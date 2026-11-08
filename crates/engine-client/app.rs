@@ -118,7 +118,8 @@ impl App {
                 Event::Quit { .. } => return false,
                 Event::Window { win_event, .. } => match win_event {
                     sdl2::event::WindowEvent::Close => return false,
-                    sdl2::event::WindowEvent::Resized(_, _) | sdl2::event::WindowEvent::SizeChanged(_, _) => {
+                    sdl2::event::WindowEvent::Resized(_, _)
+                    | sdl2::event::WindowEvent::SizeChanged(_, _) => {
                         let (w, h) = self.window.drawable_size();
                         self.pending_resize = Some((w.max(1), h.max(1)));
                     }
@@ -143,7 +144,9 @@ impl App {
                 Event::TextInput { text, .. } => {
                     input.push_text(&text);
                 }
-                Event::MouseMotion { x, y, xrel, yrel, .. } => {
+                Event::MouseMotion {
+                    x, y, xrel, yrel, ..
+                } => {
                     input.add_mouse_delta(xrel as f32, yrel as f32);
                     let (lw, lh) = self.window.size();
                     let (dw, dh) = self.window.drawable_size();
@@ -210,10 +213,7 @@ impl App {
     pub fn content_scale(&self) -> (f32, f32) {
         let (lw, lh) = self.window.size();
         let (dw, dh) = self.window.drawable_size();
-        (
-            dw as f32 / lw.max(1) as f32,
-            dh as f32 / lh.max(1) as f32,
-        )
+        (dw as f32 / lw.max(1) as f32, dh as f32 / lh.max(1) as f32)
     }
 
     /// SDL mouse `x`/`y` (window client / points) → framebuffer pixels for UI hit-testing.
@@ -238,9 +238,7 @@ impl App {
 }
 
 fn load_icon_surface(path: &Path) -> Result<Surface<'static>, String> {
-    let rgba = image::open(path)
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
+    let rgba = image::open(path).map_err(|e| e.to_string())?.into_rgba8();
     let (w, h) = rgba.dimensions();
     let mut owned = Surface::new(w, h, PixelFormatEnum::RGBA32).map_err(|e| e.to_string())?;
     let pitch = owned.pitch() as usize;

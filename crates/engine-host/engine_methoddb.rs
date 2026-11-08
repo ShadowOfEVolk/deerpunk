@@ -480,6 +480,59 @@ impl crate::Host {
         client.game_debug_mut().aabb(mn, mx, color);
         0
     }
+
+    /// World TRS into the prepare draw list. `rotation` is xyzw. 0 = queued, -1 = rejected.
+    #[methoddb::bind(name = "submit_mesh")]
+    pub fn api_client_submit_mesh(
+        &mut self,
+        entity: u64,
+        mesh: u64,
+        material: u32,
+        uniform_aux: u32,
+        layer_mask: u32,
+        position: *const f32,
+        rotation: *const f32,
+        scale: *const f32,
+        first_index: u32,
+        index_count: u32,
+        face: u8,
+    ) -> i32 {
+        if position.is_null() || rotation.is_null() || scale.is_null() {
+            return -1;
+        }
+        let meshes = &self.mesh_registry as *const deerpunk_engine_common::resource::MeshRegistry;
+        let Some(client) = self.client_engine.as_mut() else {
+            return -1;
+        };
+        let position = unsafe { [*position, *position.add(1), *position.add(2)] };
+        let rotation = unsafe {
+            [
+                *rotation,
+                *rotation.add(1),
+                *rotation.add(2),
+                *rotation.add(3),
+            ]
+        };
+        let scale = unsafe { [*scale, *scale.add(1), *scale.add(2)] };
+        if client.submit_mesh(
+            unsafe { &*meshes },
+            entity,
+            deerpunk_engine_common::resource::mesh_handle::MeshHandle(mesh as usize),
+            deerpunk_engine_common::material::MaterialHandle(material),
+            uniform_aux,
+            layer_mask,
+            position,
+            rotation,
+            scale,
+            first_index,
+            index_count,
+            face,
+        ) {
+            0
+        } else {
+            -1
+        }
+    }
 }
 
 #[cfg(not(any(feature = "client", feature = "full")))]
@@ -509,6 +562,24 @@ impl crate::Host {
         _g: f32,
         _b: f32,
         _a: f32,
+    ) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "submit_mesh")]
+    pub fn api_client_submit_mesh(
+        &mut self,
+        _entity: u64,
+        _mesh: u64,
+        _material: u32,
+        _uniform_aux: u32,
+        _layer_mask: u32,
+        _position: *const f32,
+        _rotation: *const f32,
+        _scale: *const f32,
+        _first_index: u32,
+        _index_count: u32,
+        _face: u8,
     ) -> i32 {
         -1
     }
@@ -1451,6 +1522,11 @@ impl crate::Host {
         )
     }
 
+    #[methoddb::bind(name = "system_set_stage")]
+    pub fn api_world_system_set_stage(&mut self, system_id: u64, stage: &str) -> i32 {
+        crate::gamelib_system::set_system_stage(&self.server_mut().world, system_id, stage)
+    }
+
     #[methoddb::bind(name = "system_set_interval")]
     pub fn api_world_system_set_interval(&mut self, system_id: u64, interval_secs: f32) -> i32 {
         crate::gamelib_system::set_progress_system_interval(
@@ -1527,6 +1603,12 @@ impl crate::Host {
             return;
         }
         ce.world.set_raw(entity, comp, data, size);
+        let chunk_id = ce
+            .world
+            .component_init::<deerpunk_engine_common::components::ChunkRenderer>();
+        if comp == chunk_id {
+            ce.mesh_lifecycle_adopt_chunk(&mut self.mesh_registry, entity);
+        }
         if size == std::mem::size_of::<deerpunk_engine_common::material::DrawMaterial>() {
             let _ = deerpunk_engine_client::draw_material_resolve::resolve_draw_material_uri(
                 ce,
@@ -1645,6 +1727,14 @@ impl crate::Host {
             user_data,
             interval_secs,
         )
+    }
+
+    #[methoddb::bind(name = "system_set_stage")]
+    pub fn api_client_world_system_set_stage(&mut self, system_id: u64, stage: &str) -> i32 {
+        let Some(ce) = self.client_engine.as_mut() else {
+            return -1;
+        };
+        crate::gamelib_system::set_system_stage(&ce.world, system_id, stage)
     }
 
     #[methoddb::bind(name = "system_set_interval")]

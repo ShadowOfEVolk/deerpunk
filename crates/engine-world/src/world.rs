@@ -16,6 +16,18 @@ pub static SEPARATOR: &CStr = c".";
 pub use deerpunk_engine_ffi::{ComponentId, EntityId, PrefabComponentApplyFn};
 
 pub type SystemId = u64;
+
+#[derive(Clone, Copy)]
+struct StageSlot {
+    phase: u64,
+    /// Systems with `(DependsOn, phase)`.
+    query: *mut sys::ecs_query_t,
+}
+
+struct StageTable {
+    by_name: HashMap<String, StageSlot>,
+    system_phase: HashMap<u64, u64>,
+}
 pub type QueryId = usize;
 
 pub struct ComponentDescriptor {
@@ -62,12 +74,8 @@ struct PrefabApplier {
 }
 
 /// Callback for a system or observer. `entities` has `count` ids. `dt` is 0 for observers.
-pub type EcsCallback = extern "C-unwind" fn(
-    entities: *const EntityId,
-    count: u32,
-    dt: f32,
-    ctx: *mut c_void,
-);
+pub type EcsCallback =
+    extern "C-unwind" fn(entities: *const EntityId, count: u32, dt: f32, ctx: *mut c_void);
 
 #[derive(Clone, Copy)]
 pub enum SystemSchedule {
@@ -140,6 +148,8 @@ pub struct World {
     layout_meta: LayoutMetaRegistry,
     /// Entities to [`Self::destroy`] after each [`Self::simulate`] (safe from Flecs OnUpdate).
     deferred_destroy: Mutex<Vec<EntityId>>,
+    /// Named Flecs phases (`renderer.prepare` and others) plus the phase last assigned to a system.
+    stages: Mutex<StageTable>,
 }
 
 unsafe impl Send for World {}
@@ -156,6 +166,10 @@ impl World {
             inspect: ComponentInspectRegistry::new(),
             layout_meta: LayoutMetaRegistry::new(),
             deferred_destroy: Mutex::new(Vec::new()),
+            stages: Mutex::new(StageTable {
+                by_name: HashMap::new(),
+                system_phase: HashMap::new(),
+            }),
         }
     }
 
@@ -652,6 +666,123 @@ impl World {
         }
     }
 
+    /// Move a progress system from `OnUpdate` onto a named Flecs phase.
+    ///
+    /// `stage` is a Flecs path (`renderer.prepare`). The phase is not part of the
+    /// builtin pipeline; the host runs it with [`Self::run_stage`].
+    /// Returns `0` on success, `-1` if `system_id` or `stage` is empty.
+    pub fn set_system_stage(&self, system_id: SystemId, stage: &str) -> i32 {
+        if system_id == 0 || stage.is_empty() || stage.contains('\0') {
+            return -1;
+        }
+        let Some(phase) = self.ensure_stage(stage) else {
+            return -1;
+        };
+        unsafe {
+            let mut desc: sys::ecs_system_desc_t = std::mem::zeroed();
+            desc.entity = system_id as sys::ecs_entity_t;
+            desc.phase = phase;
+            let updated = sys::ecs_system_update(self.inner, system_id as sys::ecs_entity_t, &desc);
+            if updated == 0 {
+                return -1;
+            }
+            // `ecs_system_update` keeps interval/ctx but does not move the phase.
+            // The pipeline matches `(DependsOn, phase)`, so swap that pair directly.
+            let on_update = sys::ecs_make_pair(sys::EcsDependsOn, sys::EcsOnUpdate);
+            sys::ecs_remove_id(self.inner, system_id, on_update);
+            sys::ecs_remove_id(self.inner, system_id, sys::EcsOnUpdate);
+            if let Some(previous) = self
+                .stages
+                .lock()
+                .unwrap()
+                .system_phase
+                .insert(system_id, phase)
+            {
+                if previous != phase {
+                    sys::ecs_remove_id(
+                        self.inner,
+                        system_id,
+                        sys::ecs_make_pair(sys::EcsDependsOn, previous),
+                    );
+                    sys::ecs_remove_id(self.inner, system_id, previous);
+                }
+            }
+            sys::ecs_add_id(
+                self.inner,
+                system_id,
+                sys::ecs_make_pair(sys::EcsDependsOn, phase),
+            );
+            sys::ecs_add_id(self.inner, system_id, phase);
+            // Builtin `ecs_progress` still visits the system after the OnUpdate pair
+            // is gone. Keep it disabled until [`Self::run_stage`].
+            sys::ecs_enable(self.inner, system_id, false);
+        }
+        log::info!(target: "ecs", "system id={system_id} stage='{stage}'");
+        0
+    }
+
+    /// Run every system currently assigned to `stage`. Unknown names are a no-op.
+    pub fn run_stage(&self, stage: &str, dt: f32) {
+        if stage.is_empty() {
+            return;
+        }
+        let query = {
+            let table = self.stages.lock().unwrap();
+            table.by_name.get(stage).map(|slot| slot.query)
+        };
+        let Some(query) = query else {
+            return;
+        };
+        if query.is_null() {
+            return;
+        }
+        unsafe {
+            let mut it = sys::ecs_query_iter(self.inner, query);
+            while sys::ecs_query_next(&mut it) {
+                for i in 0..it.count {
+                    let system = *it.entities.add(i as usize);
+                    sys::ecs_enable(self.inner, system, true);
+                    sys::ecs_run(self.inner, system, dt, std::ptr::null_mut());
+                    sys::ecs_enable(self.inner, system, false);
+                }
+            }
+        }
+    }
+
+    fn ensure_stage(&self, name: &str) -> Option<u64> {
+        let mut table = self.stages.lock().unwrap();
+        if let Some(slot) = table.by_name.get(name) {
+            return Some(slot.phase);
+        }
+        let c_name = CString::new(name).ok()?;
+        unsafe {
+            let existing = sys::ecs_lookup(self.inner, c_name.as_ptr());
+            let phase = if existing != 0 {
+                existing
+            } else {
+                let mut desc: sys::ecs_entity_desc_t = std::mem::zeroed();
+                desc.name = c_name.as_ptr();
+                desc.sep = SEPARATOR.as_ptr();
+                sys::ecs_entity_init(self.inner, &desc)
+            };
+            if phase == 0 {
+                return None;
+            }
+            sys::ecs_add_id(self.inner, phase, sys::EcsPhase);
+            let mut qdesc: sys::ecs_query_desc_t = std::mem::zeroed();
+            qdesc.terms[0].id = sys::ecs_make_pair(sys::EcsDependsOn, phase);
+            qdesc.flags = sys::EcsQueryMatchDisabled;
+            let query = sys::ecs_query_init(self.inner, &qdesc);
+            if query.is_null() {
+                return None;
+            }
+            table
+                .by_name
+                .insert(name.to_string(), StageSlot { phase, query });
+            Some(phase)
+        }
+    }
+
     /// Change Flecs [`ecs_system_desc_t::interval`] for a gamelib progress system.
     pub fn set_progress_system_interval(&self, system_id: SystemId, interval_secs: f32) {
         if system_id == 0 {
@@ -1026,6 +1157,11 @@ impl Drop for World {
                     sys::ecs_query_fini(*q);
                 }
             }
+            for slot in self.stages.lock().unwrap().by_name.values() {
+                if !slot.query.is_null() {
+                    sys::ecs_query_fini(slot.query);
+                }
+            }
             sys::ecs_fini(self.inner);
         }
     }
@@ -1040,9 +1176,62 @@ fn layout_hook() -> Option<fn(ComponentId, &crate::layout_meta::LayoutMeta)> {
     *LAYOUT_HOOK.lock().unwrap()
 }
 
-static LAYOUT_HOOK: Mutex<Option<fn(ComponentId, &crate::layout_meta::LayoutMeta)>> = Mutex::new(None);
+static LAYOUT_HOOK: Mutex<Option<fn(ComponentId, &crate::layout_meta::LayoutMeta)>> =
+    Mutex::new(None);
 
 /// Engine-common property registry listens here. Not a Flecs type.
 pub fn set_layout_hook(hook: fn(ComponentId, &crate::layout_meta::LayoutMeta)) {
     *LAYOUT_HOOK.lock().unwrap() = Some(hook);
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    extern "C" fn count_runs(user: *mut c_void) {
+        unsafe { *(user as *mut u32) += 1 };
+    }
+
+    #[test]
+    fn set_system_stage_replaces_on_update() {
+        let world = World::new();
+        unsafe {
+            let mut tag: sys::ecs_entity_desc_t = std::mem::zeroed();
+            tag.name = c"StageProbe".as_ptr();
+            let tag_id = sys::ecs_entity_init(world.inner, &tag);
+            assert_ne!(tag_id, 0);
+            let entity = world.spawn();
+            sys::ecs_add_id(world.inner, entity, tag_id);
+        }
+        let mut runs = 0u32;
+        let id = world.register_progress_system(
+            "prep",
+            "StageProbe",
+            count_runs,
+            &mut runs as *mut u32 as *mut c_void,
+            0.0,
+        );
+        assert_ne!(id, 0);
+        assert_eq!(world.set_system_stage(id, "renderer.prepare"), 0);
+        unsafe {
+            let phase = sys::ecs_lookup(world.inner, c"renderer.prepare".as_ptr());
+            assert_ne!(phase, 0);
+            assert!(sys::ecs_has_id(
+                world.inner,
+                id,
+                sys::ecs_make_pair(sys::EcsDependsOn, phase),
+            ));
+            assert!(!sys::ecs_has_id(
+                world.inner,
+                id,
+                sys::ecs_make_pair(sys::EcsDependsOn, sys::EcsOnUpdate),
+            ));
+        }
+        world.simulate(0.016);
+        assert_eq!(runs, 0, "staged system must leave the OnUpdate pipeline");
+        world.run_stage("renderer.prepare", 0.016);
+        assert_eq!(runs, 1);
+        assert_eq!(world.set_system_stage(0, "renderer.prepare"), -1);
+        assert_eq!(world.set_system_stage(id, ""), -1);
+    }
 }

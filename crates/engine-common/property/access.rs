@@ -39,7 +39,11 @@ pub enum PropertyError {
     WriteFailed,
 }
 
-pub fn read_by_path(world: &World, entity: EntityId, path: &str) -> Result<FieldValue, PropertyError> {
+pub fn read_by_path(
+    world: &World,
+    entity: EntityId,
+    path: &str,
+) -> Result<FieldValue, PropertyError> {
     let id = PropertyRegistry::global()
         .lock()
         .map_err(|_| PropertyError::UnknownId)?
@@ -165,7 +169,7 @@ fn read_memory(
         WireKind::U16 => Some(FieldValue::U32(unsafe { *(p as *const u16) as u32 })),
         WireKind::U8 => Some(FieldValue::U32(unsafe { *(p as *const u8) as u32 })),
         WireKind::I32 => Some(FieldValue::U32(unsafe { *(p as *const i32) as u32 })),
-        WireKind::F32 => Some(FieldValue::U32(unsafe { (* (p as *const f32)).to_bits() })),
+        WireKind::F32 => Some(FieldValue::U32(unsafe { (*(p as *const f32)).to_bits() })),
         WireKind::Bool => Some(FieldValue::U32(unsafe { *(p as *const u8) as u32 })),
         WireKind::Vec3 => {
             let x = unsafe { *(p as *const f32) };

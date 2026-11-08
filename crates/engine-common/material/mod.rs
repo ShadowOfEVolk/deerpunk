@@ -10,24 +10,22 @@
 //! - [`component`] — `DrawMaterial` ECS component
 //! - [`lighting`] — `SceneLighting` (scene-level, not per-material)
 
-pub mod shader_meta;
-pub mod vertex_layout;
-pub mod preprocessor;
 pub mod asset;
-pub mod handle;
 pub mod component;
+pub mod handle;
 pub mod lighting;
 pub mod pipeline_desc;
+pub mod preprocessor;
+pub mod shader_meta;
+pub mod vertex_layout;
 
-pub use shader_meta::{
-    PropDefault, PropertyKind, RenderPass, ShaderMeta, ShaderPropertyMeta,
-};
-pub use vertex_layout::{
-    MeshVertexChannel, VertexAttrType, VertexAttributeSpec, VertexLayoutSpec,
-};
-pub use preprocessor::{ShaderPreprocessor, ShaderError, screen_dither_preprocessor_defines};
 pub use asset::{MaterialAsset, PropertyValueSer};
-pub use handle::{GpuMaterialIndex, MaterialHandle, ShaderId, SHADER_ID_NONE, MATERIAL_HANDLE_NONE};
 pub use component::DrawMaterial;
+pub use handle::{
+    GpuMaterialIndex, MaterialHandle, ShaderId, MATERIAL_HANDLE_NONE, SHADER_ID_NONE,
+};
 pub use lighting::SceneLighting;
 pub use pipeline_desc::PipelineDesc;
+pub use preprocessor::{screen_dither_preprocessor_defines, ShaderError, ShaderPreprocessor};
+pub use shader_meta::{PropDefault, PropertyKind, RenderPass, ShaderMeta, ShaderPropertyMeta};
+pub use vertex_layout::{MeshVertexChannel, VertexAttrType, VertexAttributeSpec, VertexLayoutSpec};

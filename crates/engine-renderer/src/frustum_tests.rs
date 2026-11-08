@@ -16,7 +16,9 @@ fn deerpunk_camera(eye: Vec3, yaw: f32) -> (Mat4, Mat4) {
         order: 0,
         pass_mask: crate::snapshot::cam_features::WORLD_DEFAULT,
         color_load: deerpunk_engine_common::components::ColorLoad::Clear,
-        depth: deerpunk_engine_common::components::DepthAttachment::owned(deerpunk_engine_common::components::DepthTargetId(0)),
+        depth: deerpunk_engine_common::components::DepthAttachment::owned(
+            deerpunk_engine_common::components::DepthTargetId(0),
+        ),
         dirty: true,
     };
     let aspect = 16.0 / 9.0;
@@ -65,7 +67,9 @@ fn frustum_broad_phase_covers_visible_chunk() {
         order: 0,
         pass_mask: crate::snapshot::cam_features::WORLD_DEFAULT,
         color_load: deerpunk_engine_common::components::ColorLoad::Clear,
-        depth: deerpunk_engine_common::components::DepthAttachment::owned(deerpunk_engine_common::components::DepthTargetId(0)),
+        depth: deerpunk_engine_common::components::DepthAttachment::owned(
+            deerpunk_engine_common::components::DepthTargetId(0),
+        ),
         dirty: true,
     };
     let view = cam.view_matrix();

@@ -274,4 +274,3 @@ impl Default for Console {
         Self::new()
     }
 }
-

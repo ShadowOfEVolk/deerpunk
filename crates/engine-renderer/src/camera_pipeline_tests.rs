@@ -1,9 +1,7 @@
 use glam::{Quat, Vec3};
 
 use deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD;
-use deerpunk_engine_common::components::{
-    ColorLoad, DepthAttachment, DepthLoad, DepthTargetId,
-};
+use deerpunk_engine_common::components::{ColorLoad, DepthAttachment, DepthLoad, DepthTargetId};
 use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 
 use crate::aabb::Aabb;
@@ -36,6 +34,7 @@ fn test_scene_two_cameras() -> RenderScene {
         lightmap_gpu: 0,
         first_index: 0,
         index_count: 0,
+        face: 0,
         world_bounds: chunk,
         entity_id: 1,
         uniform_aux: 0,
@@ -55,6 +54,7 @@ fn test_scene_two_cameras() -> RenderScene {
         lightmap_gpu: 0,
         first_index: 0,
         index_count: 0,
+        face: 0,
         world_bounds: hand,
         entity_id: 2,
         uniform_aux: 0,
@@ -187,4 +187,21 @@ fn overlay_camera_has_own_depth_and_loads_color() {
     assert_ne!(snaps[1].depth.target, snaps[0].depth.target);
     assert_eq!(snaps[1].depth.load, DepthLoad::Clear(1.0));
     assert_eq!(snaps[1].pass_mask, cam_features::DEFAULT_OVERLAY);
+}
+
+#[test]
+fn prepare_system_mesh_is_in_the_camera_draw_list() {
+    let mut scene = test_scene_two_cameras();
+    let before = scene.geometry.mesh_draws.len();
+    let extra = scene.geometry.mesh_draws[0].clone();
+    let mut systems: Vec<
+        Box<dyn for<'a> FnMut(&mut crate::prepare::PrepareDrawList<'a>) + Send>,
+    > = vec![Box::new(move |draws: &mut crate::prepare::PrepareDrawList| {
+        draws.push_mesh(extra.clone());
+    })];
+    crate::prepare::run_prepare_systems(&mut scene, &mut systems);
+    assert_eq!(scene.geometry.mesh_draws.len(), before + 1);
+    let mut scratch = CullScratch::new();
+    let snaps = scene.build_snapshots(16.0 / 9.0, &mut scratch);
+    assert_eq!(snaps[0].visible_mesh.len(), 2);
 }

@@ -41,12 +41,10 @@ mod tracy_imp {
     }
 
     pub fn zone_end() {
-        ZONE_STACK.with(|s| {
-            match s.borrow_mut().pop() {
-                Some(ZoneEntry::Active(span)) => drop(span),
-                Some(ZoneEntry::Skipped) => {}
-                None => {}
-            }
+        ZONE_STACK.with(|s| match s.borrow_mut().pop() {
+            Some(ZoneEntry::Active(span)) => drop(span),
+            Some(ZoneEntry::Skipped) => {}
+            None => {}
         });
     }
 

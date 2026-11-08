@@ -187,7 +187,10 @@ mod tests {
     fn json_schema_has_properties() {
         let meta = studio_model_layout();
         let schema = layout_to_json_schema(&meta);
-        let props = schema.get("properties").and_then(|v| v.as_object()).unwrap();
+        let props = schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .unwrap();
         assert!(props.contains_key("body"));
         assert!(props.contains_key("skin"));
     }

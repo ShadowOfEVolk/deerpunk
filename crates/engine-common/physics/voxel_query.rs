@@ -118,7 +118,11 @@ pub fn cast_ray_volume(
             step[axis] = 0;
             t_max[axis] = f32::INFINITY;
         }
-        t_delta[axis] = if d[axis] != 0.0 { 1.0 / d[axis].abs() } else { f32::INFINITY };
+        t_delta[axis] = if d[axis] != 0.0 {
+            1.0 / d[axis].abs()
+        } else {
+            f32::INFINITY
+        };
     }
 
     let mut traveled = 0.0f32;
@@ -134,7 +138,11 @@ pub fn cast_ray_volume(
                     origin[2] + d[2] * traveled,
                 ];
                 return Some(RayCastHit {
-                    fraction: if max_dist > 0.0 { traveled / max_dist } else { 1.0 },
+                    fraction: if max_dist > 0.0 {
+                        traveled / max_dist
+                    } else {
+                        1.0
+                    },
                     normal,
                     point,
                     entity,

@@ -99,12 +99,7 @@ impl ShaderRegistry {
             Ok((meta, wgsl, bindings)) => {
                 let id = self.defs.len() as ShaderId + 1;
                 self.defs.push(Arc::new(make_shader_def(
-                    id,
-                    path,
-                    meta,
-                    wgsl,
-                    bindings,
-                    None,
+                    id, path, meta, wgsl, bindings, None,
                 )));
                 self.cache.insert(cache_key, id);
                 crate::upload_log::shader(path, &defines_key);
@@ -114,13 +109,9 @@ impl ShaderRegistry {
                 log::error!(
                     "[shader] '{path}' (defines={defines_key:?}): {e} — using engine error material"
                 );
-                let (meta, wgsl, bindings) = compile_shader_source(
-                    path,
-                    &[],
-                    ERROR_MESH_WGSL,
-                    content_root,
-                )
-                .map_err(|e2| format!("engine error shader failed: {e2}"))?;
+                let (meta, wgsl, bindings) =
+                    compile_shader_source(path, &[], ERROR_MESH_WGSL, content_root)
+                        .map_err(|e2| format!("engine error shader failed: {e2}"))?;
                 let id = self.defs.len() as ShaderId + 1;
                 self.defs.push(Arc::new(make_shader_def(
                     id,
@@ -185,34 +176,18 @@ impl ShaderRegistry {
 
         match compile_shader_source(path, defines, source, content_root) {
             Ok((meta, wgsl, bindings)) => {
-                self.defs[id as usize - 1] = Arc::new(make_shader_def(
-                    id,
-                    path,
-                    meta,
-                    wgsl,
-                    bindings,
-                    None,
-                ));
+                self.defs[id as usize - 1] =
+                    Arc::new(make_shader_def(id, path, meta, wgsl, bindings, None));
             }
             Err(e) => {
                 log::error!(
                     "[shader] reload '{path}' (defines={defines_key:?}): {e} — using engine error material"
                 );
-                let (meta, wgsl, bindings) = compile_shader_source(
-                    path,
-                    &[],
-                    ERROR_MESH_WGSL,
-                    content_root,
-                )
-                .map_err(|e2| format!("engine error shader failed: {e2}"))?;
-                self.defs[id as usize - 1] = Arc::new(make_shader_def(
-                    id,
-                    path,
-                    meta,
-                    wgsl,
-                    bindings,
-                    Some(e),
-                ));
+                let (meta, wgsl, bindings) =
+                    compile_shader_source(path, &[], ERROR_MESH_WGSL, content_root)
+                        .map_err(|e2| format!("engine error shader failed: {e2}"))?;
+                self.defs[id as usize - 1] =
+                    Arc::new(make_shader_def(id, path, meta, wgsl, bindings, Some(e)));
             }
         }
         Ok(id)
@@ -242,9 +217,10 @@ impl ShaderDef {
             return true;
         }
         self.meta.pass == Some(RenderPass::MeshOpaque)
-            && self.bindings.iter().any(|b| {
-                b.group == 0 && b.binding == 1 && b.kind == BindingKind::Uniform
-            })
+            && self
+                .bindings
+                .iter()
+                .any(|b| b.group == 0 && b.binding == 1 && b.kind == BindingKind::Uniform)
     }
 
     /// `#@shader pass=mesh_transparent` — alpha blend, depth write off.
@@ -311,10 +287,9 @@ fn make_shader_def(
 /// Parses the WGSL and extracts all `@group(N) @binding(M)` resource bindings.
 fn reflect_bindings(wgsl: &str) -> Result<Vec<BindingEntry>, String> {
     use naga::front::wgsl;
-    use naga::valid::{Validator, Capabilities, ValidationFlags};
+    use naga::valid::{Capabilities, ValidationFlags, Validator};
 
-    let module = wgsl::parse_str(wgsl)
-        .map_err(|e| format!("naga parse: {e:?}"))?;
+    let module = wgsl::parse_str(wgsl).map_err(|e| format!("naga parse: {e:?}"))?;
 
     // Validate to catch errors early.
     let _ = Validator::new(ValidationFlags::all(), Capabilities::all())
@@ -325,7 +300,9 @@ fn reflect_bindings(wgsl: &str) -> Result<Vec<BindingEntry>, String> {
 
     // Walk module types and global variables for @group/@binding.
     for (_, var) in module.global_variables.iter() {
-        let Some(binding) = &var.binding else { continue };
+        let Some(binding) = &var.binding else {
+            continue;
+        };
         let group = binding.group;
         let binding_idx = binding.binding;
 

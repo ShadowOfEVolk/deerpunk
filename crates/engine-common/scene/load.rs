@@ -103,13 +103,7 @@ fn spawn_prefab_children(
         let child = world.spawn();
         for (comp_name, value) in &child_def.components {
             apply_prefab_component_value(
-                world,
-                meshes,
-                gamedir,
-                resources,
-                child,
-                comp_name,
-                value,
+                world, meshes, gamedir, resources, child, comp_name, value,
             )
             .map_err(|e| format!("prefab '{prefab_name}' child[{idx}] {comp_name}: {e}"))?;
         }

@@ -158,9 +158,7 @@ impl VertexLayoutSpec {
             .filter(|t| !t.is_empty())
             .collect();
         if tokens.len() < 2 || !tokens.len().is_multiple_of(2) {
-            return Err(format!(
-                "expected pairs name type, got: {rest}"
-            ));
+            return Err(format!("expected pairs name type, got: {rest}"));
         }
         let mut attrs = Vec::new();
         let mut offset = 0u32;
@@ -170,7 +168,10 @@ impl VertexLayoutSpec {
             let ty = VertexAttrType::parse(chunk[1])
                 .ok_or_else(|| format!("unknown vertex type '{}'", chunk[1]))?;
             if !channel.allows_type(ty)
-                && !matches!(channel, MeshVertexChannel::Joints | MeshVertexChannel::Weights)
+                && !matches!(
+                    channel,
+                    MeshVertexChannel::Joints | MeshVertexChannel::Weights
+                )
             {
                 return Err(format!(
                     "channel '{}' does not accept type {:?}",
@@ -192,8 +193,7 @@ impl VertexLayoutSpec {
 
     /// Shaders without `#@vertex`: pos + normal + uv (32 bytes).
     pub fn legacy_basic() -> Self {
-        Self::parse_vertex_line("position float3 normal float3 uv float2")
-            .expect("legacy_basic")
+        Self::parse_vertex_line("position float3 normal float3 uv float2").expect("legacy_basic")
     }
 
     /// Historical extended mesh (80-byte stride, matches old `MeshVertex`).
@@ -210,8 +210,10 @@ impl VertexLayoutSpec {
 
     /// Default skinned studio mesh (64 bytes).
     pub fn legacy_skinned() -> Self {
-        Self::parse_vertex_line("position float3 normal float3 uv float2 joints uint4 weights float4")
-            .expect("legacy_skinned")
+        Self::parse_vertex_line(
+            "position float3 normal float3 uv float2 joints uint4 weights float4",
+        )
+        .expect("legacy_skinned")
     }
 
     /// 20-byte quantized layout (Sodium-style packing).
@@ -230,7 +232,11 @@ impl VertexLayoutSpec {
         if wgsl.contains("packed_u20x3") || wgsl.contains("baked_color") {
             return Self::compact_chunk();
         }
-        if lm_surface || wgsl.contains("atlas_rect") || wgsl.contains("lm_uv") || wgsl.contains("lm_styles") {
+        if lm_surface
+            || wgsl.contains("atlas_rect")
+            || wgsl.contains("lm_uv")
+            || wgsl.contains("lm_styles")
+        {
             return Self::legacy_extended();
         }
         Self::legacy_basic()

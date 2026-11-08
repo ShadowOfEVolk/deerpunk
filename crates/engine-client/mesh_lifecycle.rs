@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use deerpunk_engine_common::components::mesh3d::Mesh3D;
-use deerpunk_engine_common::components::SkinnedMesh3D;
+use deerpunk_engine_common::components::{ChunkRenderer, SkinnedMesh3D};
 use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 use deerpunk_engine_common::resource::mesh_registry::MeshRegistry;
 use deerpunk_engine_common::world::{ComponentId, EntityId, World};
@@ -16,6 +16,9 @@ pub struct MeshGpuLifecycle {
     entity_content: HashMap<EntityId, u64>,
     /// Last registry handle we attached for this entity.
     entity_mesh_handle: HashMap<EntityId, MeshHandle>,
+    /// [`ChunkRenderer`] slots. Compact layers share `opaque`; `transparent` and `cutout` are legacy.
+    chunk_handles: HashMap<EntityId, [MeshHandle; 4]>,
+    chunk_content: HashMap<EntityId, [u64; 4]>,
 }
 
 impl MeshGpuLifecycle {
@@ -25,15 +28,78 @@ impl MeshGpuLifecycle {
             skinned: None,
             entity_content: HashMap::new(),
             entity_mesh_handle: HashMap::new(),
+            chunk_handles: HashMap::new(),
+            chunk_content: HashMap::new(),
+        }
+    }
+
+    /// `ChunkRenderer` installed or replaced. Pins every slot the way `Mesh3D` does.
+    pub fn adopt_chunk(
+        &mut self,
+        meshes: &mut MeshRegistry,
+        world: &World,
+        renderer: &mut Renderer,
+        entity: EntityId,
+    ) {
+        let id = world.component_init::<ChunkRenderer>();
+        let next = world
+            .get::<ChunkRenderer>(entity, id)
+            .map(|c| c.handles())
+            .unwrap_or([MeshHandle::INVALID; 4]);
+        let prev = self
+            .chunk_handles
+            .get(&entity)
+            .copied()
+            .unwrap_or([MeshHandle::INVALID; 4]);
+        for i in 0..4 {
+            if prev[i] == next[i] {
+                continue;
+            }
+            if prev[i].is_valid() {
+                meshes.detach(prev[i]);
+            }
+            if next[i].is_valid() && meshes.get(next[i]).is_some() {
+                meshes.attach(next[i]);
+            }
+        }
+        let mut content = [0u64; 4];
+        let mut alloc = [0u32; 4];
+        for i in 0..4 {
+            content[i] = meshes.content_id(next[i]);
+            alloc[i] = meshes
+                .get(next[i])
+                .map(|mesh| mesh.allocator_id)
+                .unwrap_or(0);
+        }
+        let old_content = self.chunk_content.get(&entity).copied().unwrap_or([0; 4]);
+        for id in old_content {
+            if id != 0 && !content.contains(&id) {
+                renderer.mesh_release(id);
+            }
+        }
+        for i in 0..4 {
+            if content[i] != 0 && !old_content.contains(&content[i]) {
+                renderer.mesh_retain(content[i], alloc[i]);
+            }
+        }
+        if next.iter().any(|h| h.is_valid()) {
+            self.chunk_handles.insert(entity, next);
+            self.chunk_content.insert(entity, content);
+        } else {
+            self.chunk_handles.remove(&entity);
+            self.chunk_content.remove(&entity);
         }
     }
 
     fn mesh3d_id(&mut self, world: &World) -> ComponentId {
-        *self.mesh3d.get_or_insert_with(|| world.component_init::<Mesh3D>())
+        *self
+            .mesh3d
+            .get_or_insert_with(|| world.component_init::<Mesh3D>())
     }
 
     fn skinned_id(&mut self, world: &World) -> ComponentId {
-        *self.skinned
+        *self
+            .skinned
             .get_or_insert_with(|| world.component_init::<SkinnedMesh3D>())
     }
 
@@ -81,7 +147,10 @@ impl MeshGpuLifecycle {
             }
             let m = unsafe { &*(ptr as *const SkinnedMesh3D) };
             let id = meshes.content_id(m.mesh);
-            let alloc = meshes.get(m.mesh).map(|mesh| mesh.allocator_id).unwrap_or(0);
+            let alloc = meshes
+                .get(m.mesh)
+                .map(|mesh| mesh.allocator_id)
+                .unwrap_or(0);
             return (id, alloc);
         }
         let ptr = world.get_raw(entity, mesh3d);
@@ -90,7 +159,10 @@ impl MeshGpuLifecycle {
         }
         let m = unsafe { &*(ptr as *const Mesh3D) };
         let id = meshes.content_id(m.mesh);
-        let alloc = meshes.get(m.mesh).map(|mesh| mesh.allocator_id).unwrap_or(0);
+        let alloc = meshes
+            .get(m.mesh)
+            .map(|mesh| mesh.allocator_id)
+            .unwrap_or(0);
         (id, alloc)
     }
 
@@ -180,6 +252,20 @@ impl MeshGpuLifecycle {
                 meshes.detach(h);
             }
         }
+        if let Some(handles) = self.chunk_handles.remove(&entity) {
+            for h in handles {
+                if h.is_valid() {
+                    meshes.detach(h);
+                }
+            }
+        }
+        if let Some(ids) = self.chunk_content.remove(&entity) {
+            for id in ids {
+                if id != 0 {
+                    renderer.mesh_release(id);
+                }
+            }
+        }
         if let Some(id) = self.entity_content.remove(&entity) {
             if id != 0 {
                 renderer.mesh_release(id);
@@ -197,6 +283,8 @@ impl MeshGpuLifecycle {
     pub fn reset(&mut self, renderer: &mut Renderer) {
         self.entity_content.clear();
         self.entity_mesh_handle.clear();
+        self.chunk_handles.clear();
+        self.chunk_content.clear();
         self.mesh3d = None;
         self.skinned = None;
         renderer.reset_mesh_gpu();
@@ -205,6 +293,8 @@ impl MeshGpuLifecycle {
     pub fn reset_tracking(&mut self) {
         self.entity_content.clear();
         self.entity_mesh_handle.clear();
+        self.chunk_handles.clear();
+        self.chunk_content.clear();
         self.mesh3d = None;
         self.skinned = None;
     }

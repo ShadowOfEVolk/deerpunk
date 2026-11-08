@@ -11,12 +11,22 @@ use crate::world::{ComponentId, EntityId, World};
 
 /// Remove the `Mesh3D` component from `entity` (registry untouched; sweep
 /// reclaims the slot when no entity references it).
-pub fn release_mesh3d_at(world: &World, _meshes: &mut MeshRegistry, entity: EntityId, comp: ComponentId) {
+pub fn release_mesh3d_at(
+    world: &World,
+    _meshes: &mut MeshRegistry,
+    entity: EntityId,
+    comp: ComponentId,
+) {
     world.remove(entity, comp);
 }
 
 /// Remove the `SkinnedMesh3D` component from `entity`.
-pub fn release_skinned_at(world: &World, _meshes: &mut MeshRegistry, entity: EntityId, comp: ComponentId) {
+pub fn release_skinned_at(
+    world: &World,
+    _meshes: &mut MeshRegistry,
+    entity: EntityId,
+    comp: ComponentId,
+) {
     world.remove(entity, comp);
 }
 

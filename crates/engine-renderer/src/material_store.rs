@@ -187,7 +187,7 @@ impl MaterialStore {
         debug_path: &str,
         asset: &MaterialAsset,
         resources: &deerpunk_engine_common::resource::ResourceManager,
-        renderer: &mut crate::gpu::Renderer,
+        renderer: &mut crate::renderer::Renderer,
         shaders: &mut ShaderRegistry,
     ) -> Result<MaterialHandle, String> {
         let mut texture_cache = std::mem::take(&mut self.texture_by_uri);
@@ -207,7 +207,7 @@ impl MaterialStore {
         path: &str,
         source: &str,
         resources: &deerpunk_engine_common::resource::ResourceManager,
-        renderer: &mut crate::gpu::Renderer,
+        renderer: &mut crate::renderer::Renderer,
         shaders: &mut ShaderRegistry,
     ) -> Result<MaterialHandle, String> {
         if let Some(&h) = self.by_path.get(path) {
@@ -322,7 +322,6 @@ impl MaterialStore {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-
 }
 
 /// Load WGSL via [`ResourceManager`] (cached by URI), compile via [`ShaderRegistry`] (cached by path+defines).
@@ -535,7 +534,7 @@ pub trait TextureResolver {
 /// URI → [`ResourceManager::load`] → GPU upload. Fallback names map to `texgen://…`.
 pub struct GpuTextureResolver<'a> {
     pub resources: &'a deerpunk_engine_common::resource::ResourceManager,
-    pub renderer: &'a mut crate::gpu::Renderer,
+    pub renderer: &'a mut crate::renderer::Renderer,
     /// Dedup GPU uploads by resource URI (usually [`MaterialStore::texture_by_uri`]).
     pub uploaded: &'a mut HashMap<String, MeshTexture>,
 }
@@ -543,7 +542,7 @@ pub struct GpuTextureResolver<'a> {
 impl<'a> GpuTextureResolver<'a> {
     pub fn new(
         resources: &'a deerpunk_engine_common::resource::ResourceManager,
-        renderer: &'a mut crate::gpu::Renderer,
+        renderer: &'a mut crate::renderer::Renderer,
         uploaded: &'a mut HashMap<String, MeshTexture>,
     ) -> Self {
         Self {

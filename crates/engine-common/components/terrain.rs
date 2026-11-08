@@ -71,7 +71,10 @@ impl Terrain {
                 let py = z as f32 * self.cell_size;
                 let h = self.world_height_at(x, z);
                 positions.push([px, py, h]);
-                uvs.push([x as f32 / (self.cols - 1) as f32, z as f32 / (self.rows - 1) as f32]);
+                uvs.push([
+                    x as f32 / (self.cols - 1) as f32,
+                    z as f32 / (self.rows - 1) as f32,
+                ]);
             }
         }
 

@@ -32,9 +32,10 @@ impl TexturePool {
         width: u32,
         height: u32,
     ) -> wgpu::Texture {
-        let idx = self.free.iter().position(|t| {
-            t.format() == format && t.width() >= width && t.height() >= height
-        });
+        let idx = self
+            .free
+            .iter()
+            .position(|t| t.format() == format && t.width() >= width && t.height() >= height);
 
         match idx {
             Some(i) => self.free.swap_remove(i),
@@ -186,14 +187,7 @@ impl RenderGraph {
         user_data: *mut c_void,
     ) -> Result<Vec<&'static str>, GraphError> {
         let order = self.compile()?;
-        self.execute_on_encoder_with_order(
-            device,
-            queue,
-            encoder,
-            external,
-            user_data,
-            &order,
-        )
+        self.execute_on_encoder_with_order(device, queue, encoder, external, user_data, &order)
     }
 
     /// Registration order, no texture-view map. Forward passes read views from [`crate::frame::context::FrameCtx`].
@@ -233,14 +227,7 @@ impl RenderGraph {
         user_data: *mut c_void,
     ) -> Result<Vec<&'static str>, GraphError> {
         let order: Vec<usize> = (0..self.nodes.len()).collect();
-        self.execute_on_encoder_with_order(
-            device,
-            queue,
-            encoder,
-            external,
-            user_data,
-            &order,
-        )
+        self.execute_on_encoder_with_order(device, queue, encoder, external, user_data, &order)
     }
 
     fn execute_on_encoder_with_order(
@@ -341,18 +328,11 @@ impl RenderGraph {
         external.insert(self.input, surface_view.clone());
         external.insert(self.output, surface_view.clone());
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render_graph"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("render_graph"),
+        });
 
-        self.execute_on_encoder(
-            device,
-            queue,
-            &mut encoder,
-            &external,
-            std::ptr::null_mut(),
-        )?;
+        self.execute_on_encoder(device, queue, &mut encoder, &external, std::ptr::null_mut())?;
 
         queue.submit(std::iter::once(encoder.finish()));
         Ok(())

@@ -90,7 +90,9 @@ impl DemoWriter {
     }
 
     pub fn finish(self) -> Result<(PathBuf, u32), String> {
-        self.file.sync_all().map_err(|e| format!("demo sync: {e}"))?;
+        self.file
+            .sync_all()
+            .map_err(|e| format!("demo sync: {e}"))?;
         Ok((self.path, self.packets))
     }
 }
@@ -110,11 +112,7 @@ impl DemoPlayer {
         file.read_exact(&mut magic)
             .map_err(|e| format!("demo magic: {e}"))?;
         if &magic != MAGIC {
-            return Err(format!(
-                "bad demo magic {:?} (want {:?})",
-                magic,
-                MAGIC
-            ));
+            return Err(format!("bad demo magic {:?} (want {:?})", magic, MAGIC));
         }
         let mut records = Vec::new();
         loop {
@@ -139,10 +137,7 @@ impl DemoPlayer {
             file.read_exact(&mut data)
                 .map_err(|e| format!("demo data: {e}"))?;
             match kind[0] {
-                KIND_SVC => records.push(DemoRecord::Svc {
-                    time,
-                    packet: data,
-                }),
+                KIND_SVC => records.push(DemoRecord::Svc { time, packet: data }),
                 KIND_VIEW => {
                     if data.len() < 20 {
                         return Err("demo view truncated".into());

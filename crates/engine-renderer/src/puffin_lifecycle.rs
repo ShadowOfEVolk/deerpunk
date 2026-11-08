@@ -10,18 +10,14 @@ mod imp {
     pub fn ensure_started() {
         START.call_once(|| {
             puffin::set_scopes_on(true);
-            let listen = std::env::var("PUFFIN_LISTEN").unwrap_or_else(|_| {
-                format!("0.0.0.0:{}", puffin_http::DEFAULT_PORT)
-            });
+            let listen = std::env::var("PUFFIN_LISTEN")
+                .unwrap_or_else(|_| format!("0.0.0.0:{}", puffin_http::DEFAULT_PORT));
             match puffin_http::Server::new(&listen) {
                 Ok(server) => {
-                    let viewer = std::env::var("PUFFIN_VIEWER_URL").unwrap_or_else(|_| {
-                        format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT)
-                    });
+                    let viewer = std::env::var("PUFFIN_VIEWER_URL")
+                        .unwrap_or_else(|_| format!("127.0.0.1:{}", puffin_http::DEFAULT_PORT));
                     let _ = SERVER.set(server);
-                    log::info!(
-                        "Puffin: serving on {listen} — run: puffin_viewer --url {viewer}"
-                    );
+                    log::info!("Puffin: serving on {listen} — run: puffin_viewer --url {viewer}");
                 }
                 Err(err) => {
                     log::error!("Puffin: failed to start HTTP server on {listen}: {err}");

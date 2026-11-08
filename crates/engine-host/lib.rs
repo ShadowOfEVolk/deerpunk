@@ -1551,15 +1551,15 @@ impl Host {
                 p.prep_cull_gather_ms,
                 p.prep_cull_ms,
             ));
+            lines.push(format!(
+                "  mesh uploads {}  cache hits {}",
+                p.mesh_gpu_uploads, p.mesh_gpu_cached
+            ));
             let m = &p.mesh_stats;
             if m.uniforms_ms > 0.0 || m.mesh_for_draw_ms > 0.0 || m.draw_encode_ms > 0.0 {
                 lines.push(format!(
-                    "  mesh node: uni {:.2} gpu_cache {:.2} draw {:.2} ms | up {} hit {}",
-                    m.uniforms_ms,
-                    m.mesh_for_draw_ms,
-                    m.draw_encode_ms,
-                    p.mesh_gpu_uploads,
-                    p.mesh_gpu_cached
+                    "  mesh node: uni {:.2} encode {:.2} after {:.2} ms",
+                    m.uniforms_ms, m.mesh_for_draw_ms, m.draw_encode_ms,
                 ));
             }
             if p.debug_verts > 0 {
@@ -2094,7 +2094,7 @@ impl Host {
             let view_ent = self.client_engine.as_mut().unwrap().rep.view_entity();
             let early_cull = self.cvar.get_usize_or("cl_extract_early_cull", 1) != 0;
             let draw_world = self.cvar.get_usize_or("r_drawworld", 1) != 0;
-            let scene = {
+            let mut scene = {
                 let _g = system_profiler::scope("frame.extract");
                 let extract_start = std::time::Instant::now();
                 let (client, registry) = self.split_client_registry();
@@ -2114,6 +2114,14 @@ impl Host {
                     .note_extract_ms(extract_ms);
                 scene
             };
+            if let Some(client) = self.client_engine.as_mut() {
+                let _g = system_profiler::scope("frame.prepare");
+                client.run_prepare(&mut scene);
+                let geometry = &mut scene.geometry as *mut _;
+                client.begin_mesh_submit(geometry);
+                client.world.run_stage("renderer.prepare", dt);
+                client.finish_mesh_submit(&mut scene);
+            }
 
             {
                 let _g = system_profiler::scope("frame.debug_draw");

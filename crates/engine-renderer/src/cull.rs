@@ -8,8 +8,8 @@ use deerpunk_engine_common::components::render_layer::render_layer_visible;
 
 use crate::aabb::Aabb;
 use crate::frustum::Frustum;
-use crate::snapshot::{MeshDraw, SkinnedMeshDraw};
 use crate::octree::PersistentOctree;
+use crate::snapshot::{MeshDraw, SkinnedMeshDraw};
 
 /// Below this count, linear frustum tests beat hash bookkeeping.
 pub const GRID_MIN_DRAWS: usize = 64;
@@ -141,7 +141,11 @@ fn draws_geom_fingerprint<M>(
     h
 }
 
-fn rebuild_id_to_index<M>(draws: &[M], key_at: impl Fn(usize, &M) -> u64, out: &mut HashMap<u64, u32>) {
+fn rebuild_id_to_index<M>(
+    draws: &[M],
+    key_at: impl Fn(usize, &M) -> u64,
+    out: &mut HashMap<u64, u32>,
+) {
     out.clear();
     out.reserve(draws.len());
     for (i, d) in draws.iter().enumerate() {
@@ -355,7 +359,12 @@ pub fn cull_skinned_indices(
     }
 
     if len < GRID_MIN_DRAWS {
-        cull_draws_linear(len, |i| draws[i].world_bounds, &frustum, &mut scratch.visible_skinned);
+        cull_draws_linear(
+            len,
+            |i| draws[i].world_bounds,
+            &frustum,
+            &mut scratch.visible_skinned,
+        );
     } else {
         if cull_serial != scratch.skinned_octree_serial {
             scratch.skinned_octree_serial = cull_serial;
@@ -371,7 +380,11 @@ pub fn cull_skinned_indices(
             scratch.skinned_octree.sync_slice(&scratch.keys_scratch);
         }
         if cull_serial != scratch.skinned_id_map_serial || len != scratch.skinned_id_map_len {
-            rebuild_id_to_index(draws, |i, d| skinned_cull_key(d, i), &mut scratch.id_to_index);
+            rebuild_id_to_index(
+                draws,
+                |i, d| skinned_cull_key(d, i),
+                &mut scratch.id_to_index,
+            );
             scratch.skinned_id_map_serial = cull_serial;
             scratch.skinned_id_map_len = len;
         }

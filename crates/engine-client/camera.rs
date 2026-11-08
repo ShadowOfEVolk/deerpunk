@@ -35,8 +35,10 @@ impl Default for FreecamController {
 impl FreecamController {
     pub fn update(&mut self, input: &Input, transform: &mut TransformComponent, dt: f32) {
         self.yaw += input.mouse_dx() * self.sensitivity;
-        self.pitch = (self.pitch - input.mouse_dy() * self.sensitivity)
-            .clamp(-std::f32::consts::FRAC_PI_2 + 0.01, std::f32::consts::FRAC_PI_2 - 0.01);
+        self.pitch = (self.pitch - input.mouse_dy() * self.sensitivity).clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.01,
+            std::f32::consts::FRAC_PI_2 - 0.01,
+        );
 
         let ep = self.pitch + std::f32::consts::FRAC_PI_2;
         let forward = Vec3::new(
@@ -48,18 +50,34 @@ impl FreecamController {
         let up = Vec3::Z;
 
         let mut move_dir = Vec3::ZERO;
-        if input.is_down(0x57) { move_dir += forward; }  // W
-        if input.is_down(0x53) { move_dir -= forward; }  // S
-        if input.is_down(0x44) { move_dir += right; }    // D
-        if input.is_down(0x41) { move_dir -= right; }    // A
-        if input.is_down(0x20) { move_dir += up; }       // Space
-        if input.is_down(0xA0) { move_dir -= up; }       // LShift
+        if input.is_down(0x57) {
+            move_dir += forward;
+        } // W
+        if input.is_down(0x53) {
+            move_dir -= forward;
+        } // S
+        if input.is_down(0x44) {
+            move_dir += right;
+        } // D
+        if input.is_down(0x41) {
+            move_dir -= right;
+        } // A
+        if input.is_down(0x20) {
+            move_dir += up;
+        } // Space
+        if input.is_down(0xA0) {
+            move_dir -= up;
+        } // LShift
 
         if move_dir.length_squared() > 0.0 {
             move_dir = move_dir.normalize();
         }
 
-        let speed = if input.is_down(0xA2) { self.speed * 3.0 } else { self.speed }; // LCtrl = fast
+        let speed = if input.is_down(0xA2) {
+            self.speed * 3.0
+        } else {
+            self.speed
+        }; // LCtrl = fast
         transform.position += move_dir * speed * dt;
         transform.rotation = Quat::from_rotation_z(-self.yaw) * Quat::from_rotation_x(self.pitch);
     }

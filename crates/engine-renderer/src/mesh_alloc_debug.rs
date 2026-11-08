@@ -66,9 +66,7 @@ pub fn build_report(
         entry
             .vert_used
             .push((handle.vert_offset, handle.vert_count));
-        entry
-            .idx_used
-            .push((handle.idx_offset, handle.idx_count));
+        entry.idx_used.push((handle.idx_offset, handle.idx_count));
     }
 
     for (buffer_id, vert_cap, idx_cap, stride) in pool.enumerate_buffers() {
@@ -123,11 +121,7 @@ fn merge_intervals(raw: &[(u32, u32)]) -> Vec<(u32, u32)> {
     if raw.is_empty() {
         return Vec::new();
     }
-    let mut sorted: Vec<(u32, u32)> = raw
-        .iter()
-        .filter(|&(_, len)| *len > 0)
-        .copied()
-        .collect();
+    let mut sorted: Vec<(u32, u32)> = raw.iter().filter(|&(_, len)| *len > 0).copied().collect();
     sorted.sort_by_key(|&(off, _)| off);
     let mut out: Vec<(u32, u32)> = Vec::new();
     for (off, len) in sorted {

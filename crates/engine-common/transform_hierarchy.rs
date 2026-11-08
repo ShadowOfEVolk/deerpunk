@@ -95,8 +95,7 @@ pub fn sync_world_transforms(
             for i in 0..batch.count {
                 let ent = entities[i];
                 let local = &transforms[i];
-                let (pos, rot) =
-                    world_pose_with_ids(world, ent, local, parent_id, transform_id);
+                let (pos, rot) = world_pose_with_ids(world, ent, local, parent_id, transform_id);
                 let world_t = WorldTransformComponent {
                     position: pos,
                     rotation: rot,
@@ -145,9 +144,9 @@ pub fn entity_in_subtree(world: &World, root: u64, cam_ent: u64, parent_id: Comp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::CameraComponent;
     use crate::components::cam_pass;
     use crate::components::camera::{ColorLoad, DepthAttachment, DepthTargetId};
+    use crate::components::CameraComponent;
     use crate::world::World;
 
     fn setup_pawn_view_stack() -> (World, u64, u64, u64, ComponentId) {

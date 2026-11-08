@@ -78,7 +78,10 @@ impl MeshGpuPool {
             return None;
         }
         let slot = self.slots.get_mut(&content_id)?;
-        assert!(slot.refs > 0, "mesh_release underflow content_id={content_id}");
+        assert!(
+            slot.refs > 0,
+            "mesh_release underflow content_id={content_id}"
+        );
         slot.refs -= 1;
         if slot.refs != 0 {
             return None;

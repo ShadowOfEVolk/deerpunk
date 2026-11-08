@@ -4,12 +4,11 @@ use deerpunk_engine_common::components::mesh3d::Mesh3D;
 use deerpunk_engine_common::components::terrain_splat::TerrainSplatMaterial;
 use deerpunk_engine_common::components::SkinnedMesh3D;
 use deerpunk_engine_common::components::{
-    CameraComponent, MeshDrawHidden, PointLight, TransformComponent,
-    WorldTransformComponent,
+    CameraComponent, MeshDrawHidden, PointLight, TransformComponent, WorldTransformComponent,
 };
-use deerpunk_engine_common::transform_hierarchy::camera_world_pose;
 use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::resource::mesh_registry::MeshRegistry;
+use deerpunk_engine_common::transform_hierarchy::camera_world_pose;
 
 use crate::camera_util::camera_entity_in_view;
 use deerpunk_engine_common::world::{ComponentId, QueryId, World};
@@ -41,21 +40,22 @@ impl RenderExtractor {
     pub fn new(world: &mut World) -> Self {
         let _ = world.component_init::<TransformComponent>();
         let _ = world.component_init::<CameraComponent>();
-        let parent_id = world.component_init::<deerpunk_engine_common::components::ParentComponent>();
+        let parent_id =
+            world.component_init::<deerpunk_engine_common::components::ParentComponent>();
         let mesh3d_id = world.component_init::<Mesh3D>();
         let _ = world.component_init::<DrawMaterial>();
         let skinned_id = world.component_init::<SkinnedMesh3D>();
         let _ = world.component_init::<TerrainSplatMaterial>();
         let _ = world.component_init::<PointLight>();
-        let world_transform_id = world.component_init::<deerpunk_engine_common::components::WorldTransformComponent>();
+        let world_transform_id =
+            world.component_init::<deerpunk_engine_common::components::WorldTransformComponent>();
         let _ = world.component_init::<MeshDrawHidden>();
         let q_world_sync_roots = world.query_prepare("TransformComponent, !ParentComponent");
         let q_world_sync_parented = world.query_prepare("TransformComponent, ParentComponent");
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
-            q_draw_materials: world.query_prepare(
-                "WorldTransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden",
-            ),
+            q_draw_materials: world
+                .query_prepare("WorldTransformComponent, Mesh3D, DrawMaterial, !MeshDrawHidden"),
             q_terrain_splat: world
                 .query_prepare("TransformComponent, Mesh3D, TerrainSplatMaterial"),
             q_lights: world.query_prepare("TransformComponent, PointLight"),
@@ -176,10 +176,7 @@ impl RenderExtractor {
         );
         gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
 
-        let shader_id = material_store
-            .get(dm_handle)
-            .map(|e| e.shader)
-            .unwrap_or(0);
+        let shader_id = material_store.get(dm_handle).map(|e| e.shader).unwrap_or(0);
 
         if shader_id == 0 {
             panic!(
@@ -202,6 +199,7 @@ impl RenderExtractor {
             lightmap_gpu: 0,
             first_index: 0,
             index_count: 0,
+            face: 0,
             world_bounds: deerpunk_engine_renderer::Aabb::default(),
             entity_id: ent_copy,
             uniform_aux,
@@ -229,24 +227,23 @@ impl RenderExtractor {
         early_cull: bool,
         draw_world: bool,
     ) -> RenderScene {
-        let lookup = |ent: u64,
-                      h: deerpunk_engine_common::resource::mesh_handle::MeshHandle|
-         -> Option<&std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>> {
-            if let Some(m) = registry.get(h) {
-                return Some(m);
-            }
-            if h.is_valid() {
-                log::error!(
+        let lookup =
+            |ent: u64,
+             h: deerpunk_engine_common::resource::mesh_handle::MeshHandle|
+             -> Option<&std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>> {
+                if let Some(m) = registry.get(h) {
+                    return Some(m);
+                }
+                if h.is_valid() {
+                    log::error!(
                     "entity {ent:#x}: stale MeshHandle {:?} — skipping draw (refresh Mesh3D on entity)",
                     h
                 );
-            } else {
-                log::warn!(
-                    "entity {ent:#x}: invalid MeshHandle on Mesh3D — skipping draw",
-                );
-            }
-            None
-        };
+                } else {
+                    log::warn!("entity {ent:#x}: invalid MeshHandle on Mesh3D — skipping draw",);
+                }
+                None
+            };
         let mut scene = RenderScene::new();
         scene.geometry.mesh_draws.clear();
         scene.geometry.skinned_mesh_draws.clear();
@@ -257,8 +254,7 @@ impl RenderExtractor {
         if let Some(batches) = world.query_batches(self.q_cameras) {
             self.camera_list_scratch.clear();
             for batch in batches {
-                let entities =
-                    unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 let transforms = unsafe {
                     std::slice::from_raw_parts(
                         batch.columns[0] as *const TransformComponent,
@@ -318,195 +314,209 @@ impl RenderExtractor {
         let skinned_out = &mut scene.geometry.skinned_mesh_draws;
 
         if draw_world {
-        let _z_static = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.static");
-        if let Some(batches) = world.query_batches(self.q_draw_materials) {
-            for batch in batches {
-                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let world_xforms = unsafe {
-                    std::slice::from_raw_parts(
-                        batch.columns[0] as *const WorldTransformComponent,
-                        batch.count,
-                    )
-                };
-                let meshes = unsafe {
-                    std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
-                };
-                let draw_mats = unsafe {
-                    std::slice::from_raw_parts(batch.columns[2] as *const DrawMaterial, batch.count)
-                };
-                for i in 0..batch.count {
-                    let ent = entities[i];
-                    let wt = &world_xforms[i];
-                    let m = &meshes[i];
-                    let dm = &draw_mats[i];
-
-                    let uniform_aux = dm.material_data_y();
-                    let draw_layers = m.layer_mask;
-                    if draw_layers == 0 {
-                        continue;
-                    }
-                    let Some(world_bounds) = self.static_world_bounds(world, registry, ent, m, wt)
-                    else {
-                        continue;
+            let _z_static = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.static");
+            if let Some(batches) = world.query_batches(self.q_draw_materials) {
+                for batch in batches {
+                    let entities =
+                        unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                    let world_xforms = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[0] as *const WorldTransformComponent,
+                            batch.count,
+                        )
                     };
-                    if let Some(f) = frustum_ref {
-                        if !f.intersects_aabb(&world_bounds) {
-                            frustum_skip += 1;
+                    let meshes = unsafe {
+                        std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
+                    };
+                    let draw_mats = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[2] as *const DrawMaterial,
+                            batch.count,
+                        )
+                    };
+                    for i in 0..batch.count {
+                        let ent = entities[i];
+                        let wt = &world_xforms[i];
+                        let m = &meshes[i];
+                        let dm = &draw_mats[i];
+
+                        let uniform_aux = dm.material_data_y();
+                        let draw_layers = m.layer_mask;
+                        if draw_layers == 0 {
                             continue;
                         }
+                        let Some(world_bounds) =
+                            self.static_world_bounds(world, registry, ent, m, wt)
+                        else {
+                            continue;
+                        };
+                        if let Some(f) = frustum_ref {
+                            if !f.intersects_aabb(&world_bounds) {
+                                frustum_skip += 1;
+                                continue;
+                            }
+                        }
+                        let Some(cpu) = lookup(ent, m.mesh) else {
+                            continue;
+                        };
+                        let model = glam::Mat4::from_scale_rotation_translation(
+                            wt.scale,
+                            wt.rotation,
+                            wt.position,
+                        );
+                        let Some(mut draw) = Self::build_mesh_draw(
+                            ent,
+                            dm.handle,
+                            uniform_aux,
+                            draw_layers,
+                            m.mesh,
+                            cpu.as_ref(),
+                            material_store,
+                            material_allocator,
+                            device,
+                            queue,
+                            gpu_stats,
+                        ) else {
+                            continue;
+                        };
+                        draw.model_mat = model.to_cols_array_2d();
+                        draw.world_bounds = world_bounds;
+                        mesh_out.push(draw);
                     }
-                    let Some(cpu) = lookup(ent, m.mesh) else {
-                        continue;
-                    };
-                    let model = glam::Mat4::from_scale_rotation_translation(
-                        wt.scale,
-                        wt.rotation,
-                        wt.position,
-                    );
-                    let Some(mut draw) = Self::build_mesh_draw(
-                        ent,
-                        dm.handle,
-                        uniform_aux,
-                        draw_layers,
-                        m.mesh,
-                        cpu.as_ref(),
-                        material_store,
-                        material_allocator,
-                        device,
-                        queue,
-                        gpu_stats,
-                    ) else {
-                        continue;
-                    };
-                    draw.model_mat = model.to_cols_array_2d();
-                    draw.world_bounds = world_bounds;
-                    mesh_out.push(draw);
                 }
             }
-        }
-        drop(_z_static);
+            drop(_z_static);
 
-        let _z_terrain = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.terrain");
-        if let Some(batches) = world.query_batches(self.q_terrain_splat) {
-            for batch in batches {
-                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let transforms = unsafe {
-                    std::slice::from_raw_parts(
-                        batch.columns[0] as *const TransformComponent,
-                        batch.count,
-                    )
-                };
-                let meshes = unsafe {
-                    std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
-                };
-                let splats = unsafe {
-                    std::slice::from_raw_parts(
-                        batch.columns[2] as *const TerrainSplatMaterial,
-                        batch.count,
-                    )
-                };
-                for i in 0..batch.count {
-                    let ent = entities[i];
-                    let t = &transforms[i];
-                    let m = &meshes[i];
-                    let s = &splats[i];
-                    let model_mat = glam::Mat4::from_scale_rotation_translation(
-                        t.scale, t.rotation, t.position,
-                    );
-                    let Some(cpu) = lookup(ent, m.mesh) else {
-                        continue;
+            let _z_terrain =
+                deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.terrain");
+            if let Some(batches) = world.query_batches(self.q_terrain_splat) {
+                for batch in batches {
+                    let entities =
+                        unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                    let transforms = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[0] as *const TransformComponent,
+                            batch.count,
+                        )
                     };
-                    let _ = cpu;
-                    gpu_stats.terrain_draws += 1;
-                    scene.geometry.terrain_splat_draws.push(TerrainSplatDraw {
-                        mesh: m.mesh,
-                        model_mat: model_mat.to_cols_array_2d(),
-                        layers: s.layers,
-                        splat_map: s.splat_map,
-                        sun_dir: s.sun_dir,
-                        ambient: s.ambient,
-                    });
+                    let meshes = unsafe {
+                        std::slice::from_raw_parts(batch.columns[1] as *const Mesh3D, batch.count)
+                    };
+                    let splats = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[2] as *const TerrainSplatMaterial,
+                            batch.count,
+                        )
+                    };
+                    for i in 0..batch.count {
+                        let ent = entities[i];
+                        let t = &transforms[i];
+                        let m = &meshes[i];
+                        let s = &splats[i];
+                        let model_mat = glam::Mat4::from_scale_rotation_translation(
+                            t.scale, t.rotation, t.position,
+                        );
+                        let Some(cpu) = lookup(ent, m.mesh) else {
+                            continue;
+                        };
+                        let _ = cpu;
+                        gpu_stats.terrain_draws += 1;
+                        scene.geometry.terrain_splat_draws.push(TerrainSplatDraw {
+                            mesh: m.mesh,
+                            model_mat: model_mat.to_cols_array_2d(),
+                            layers: s.layers,
+                            splat_map: s.splat_map,
+                            sun_dir: s.sun_dir,
+                            ambient: s.ambient,
+                        });
+                    }
                 }
             }
-        }
-        drop(_z_terrain);
+            drop(_z_terrain);
 
-        let _z_skinned = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.skinned");
-        if let Some(batches) = world.query_batches(self.q_skinned) {
-            for batch in batches {
-                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let world_xforms = unsafe {
-                    std::slice::from_raw_parts(
-                        batch.columns[0] as *const WorldTransformComponent,
-                        batch.count,
-                    )
-                };
-                let meshes = unsafe {
-                    std::slice::from_raw_parts(
-                        batch.columns[1] as *const SkinnedMesh3D,
-                        batch.count,
-                    )
-                };
-                let draw_mats = unsafe {
-                    std::slice::from_raw_parts(batch.columns[2] as *const DrawMaterial, batch.count)
-                };
-                for i in 0..batch.count {
-                    let ent = entities[i];
-                    let wt = &world_xforms[i];
-                    let sm = &meshes[i];
-                    let dm = &draw_mats[i];
-                    if sm.bone_buffer == 0 {
-                        continue;
-                    }
-                    let Some(bounds) = self.skinned_world_bounds(world, registry, ent, sm, wt) else {
-                        continue;
+            let _z_skinned =
+                deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.skinned");
+            if let Some(batches) = world.query_batches(self.q_skinned) {
+                for batch in batches {
+                    let entities =
+                        unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                    let world_xforms = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[0] as *const WorldTransformComponent,
+                            batch.count,
+                        )
                     };
-                    if let Some(f) = frustum_ref {
-                        if !f.intersects_aabb(&bounds) {
-                            frustum_skip += 1;
+                    let meshes = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[1] as *const SkinnedMesh3D,
+                            batch.count,
+                        )
+                    };
+                    let draw_mats = unsafe {
+                        std::slice::from_raw_parts(
+                            batch.columns[2] as *const DrawMaterial,
+                            batch.count,
+                        )
+                    };
+                    for i in 0..batch.count {
+                        let ent = entities[i];
+                        let wt = &world_xforms[i];
+                        let sm = &meshes[i];
+                        let dm = &draw_mats[i];
+                        if sm.bone_buffer == 0 {
                             continue;
                         }
+                        let Some(bounds) = self.skinned_world_bounds(world, registry, ent, sm, wt)
+                        else {
+                            continue;
+                        };
+                        if let Some(f) = frustum_ref {
+                            if !f.intersects_aabb(&bounds) {
+                                frustum_skip += 1;
+                                continue;
+                            }
+                        }
+                        let draw_layers = sm.layer_mask;
+                        if draw_layers == 0 {
+                            continue;
+                        }
+                        let (texture, normal, orm) = match material_store.get(dm.handle) {
+                            Some(e) => (e.albedo, e.normal, e.orm),
+                            None => (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE),
+                        };
+                        let t0 = std::time::Instant::now();
+                        let material_id = material_store.resolve_gpu_tracked(
+                            dm.handle,
+                            material_allocator,
+                            device,
+                            queue,
+                            Some(gpu_stats),
+                        );
+                        gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
+                        let shader_id =
+                            material_store.get(dm.handle).map(|e| e.shader).unwrap_or(0);
+                        let model = glam::Mat4::from_scale_rotation_translation(
+                            wt.scale,
+                            wt.rotation,
+                            wt.position,
+                        );
+                        skinned_out.push(SkinnedMeshDraw {
+                            mesh: sm.mesh,
+                            model_mat: model.to_cols_array_2d(),
+                            layer_mask: draw_layers,
+                            material_id,
+                            texture,
+                            normal,
+                            orm,
+                            shader_id,
+                            bone_buffer: sm.bone_buffer,
+                            world_bounds: bounds,
+                            entity_id: ent,
+                        });
                     }
-                    let draw_layers = sm.layer_mask;
-                    if draw_layers == 0 {
-                        continue;
-                    }
-                    let (texture, normal, orm) = match material_store.get(dm.handle) {
-                        Some(e) => (e.albedo, e.normal, e.orm),
-                        None => (MeshTexture::WHITE, MeshTexture::WHITE, MeshTexture::WHITE),
-                    };
-                    let t0 = std::time::Instant::now();
-                    let material_id = material_store.resolve_gpu_tracked(
-                        dm.handle,
-                        material_allocator,
-                        device,
-                        queue,
-                        Some(gpu_stats),
-                    );
-                    gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
-                    let shader_id = material_store.get(dm.handle).map(|e| e.shader).unwrap_or(0);
-                    let model = glam::Mat4::from_scale_rotation_translation(
-                        wt.scale,
-                        wt.rotation,
-                        wt.position,
-                    );
-                    skinned_out.push(SkinnedMeshDraw {
-                        mesh: sm.mesh,
-                        model_mat: model.to_cols_array_2d(),
-                        layer_mask: draw_layers,
-                        material_id,
-                        texture,
-                        normal,
-                        orm,
-                        shader_id,
-                        bone_buffer: sm.bone_buffer,
-                        world_bounds: bounds,
-                        entity_id: ent,
-                    });
                 }
             }
-        }
-        drop(_z_skinned);
+            drop(_z_skinned);
         }
 
         let _z_lights = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.lights");

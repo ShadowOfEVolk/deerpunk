@@ -47,7 +47,9 @@ fn encode_field(path: PropertyId, value: &FieldValue, out: &mut Vec<u8>) {
     let tagged_str = reg.get(path).map(|d| {
         matches!(
             d.storage,
-            PropertyStorage::Mesh3dUri | PropertyStorage::DrawMaterialUri | PropertyStorage::MapKvStudioModel
+            PropertyStorage::Mesh3dUri
+                | PropertyStorage::DrawMaterialUri
+                | PropertyStorage::MapKvStudioModel
         )
     });
     if tagged_str == Some(true) {

@@ -11,4 +11,3 @@ impl PendingAlbedoAtlas {
         Self { image: Some(image) }
     }
 }
-

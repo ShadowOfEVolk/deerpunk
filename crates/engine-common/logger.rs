@@ -132,10 +132,7 @@ impl Log for Logger {
         let millis = now.subsec_millis();
 
         let t = time_from_epoch(secs);
-        let timestamp = format!(
-            "{:02}:{:02}:{:02}.{:03}",
-            t.hour, t.min, t.sec, millis
-        );
+        let timestamp = format!("{:02}:{:02}:{:02}.{:03}", t.hour, t.min, t.sec, millis);
         let level = record.level();
         let scope = scope_from_target(record.metadata().target());
         let message = record.args().to_string();
@@ -169,7 +166,13 @@ impl Log for Logger {
 
 /// `[HH:MM:SS.mmm LEVEL] scope: message`
 fn format_line_plain(timestamp: &str, level: Level, scope: &str, message: &str) -> String {
-    format!("[{} {}] {}: {}\n", timestamp, level.as_str(), scope, message)
+    format!(
+        "[{} {}] {}: {}\n",
+        timestamp,
+        level.as_str(),
+        scope,
+        message
+    )
 }
 
 fn format_line_colored(timestamp: &str, level: Level, scope: &str, message: &str) -> String {
@@ -307,10 +310,7 @@ fn time_from_epoch(secs: u64) -> TimeParts {
 /// If `latest.log` already exists, it is renamed to `{createdate}.log`
 /// (`YYYY-MM-DD_HH-MM-SS.log` from the file's creation time) before a fresh
 /// `latest.log` is created.
-pub fn init(
-    console_level: LevelFilter,
-    log_dir: impl AsRef<Path>,
-) -> Result<(), SetLoggerError> {
+pub fn init(console_level: LevelFilter, log_dir: impl AsRef<Path>) -> Result<(), SetLoggerError> {
     let log_dir = log_dir.as_ref();
     fs::create_dir_all(log_dir).ok();
     let path = log_dir.join("latest.log");

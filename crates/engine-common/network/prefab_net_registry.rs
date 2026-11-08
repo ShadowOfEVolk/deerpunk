@@ -60,10 +60,7 @@ impl PrefabNetRegistry {
 
     /// Deterministic ids for connect init (sorted unique classnames).
     pub fn assign_ids_sorted(names: &[String]) -> Vec<(PrefabNetId, String)> {
-        let mut uniq: Vec<String> = names
-            .iter()
-            .map(|n| normalize_classname(n))
-            .collect();
+        let mut uniq: Vec<String> = names.iter().map(|n| normalize_classname(n)).collect();
         uniq.sort();
         uniq.dedup();
         uniq.into_iter()

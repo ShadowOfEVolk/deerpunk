@@ -3,7 +3,7 @@ use tiny_skia::Color;
 use deerpunk_engine_common::frame::{frame_height, frame_width};
 
 use crate::font::{push_char, push_text, push_text_centered_shadow, text_width_f32};
-use crate::snapshot::{RenderSnapshot, rgba_u8_4};
+use crate::snapshot::{rgba_u8_4, RenderSnapshot};
 
 const GLYPH_SCALE: f32 = 2.0;
 const SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 200.0 / 255.0];

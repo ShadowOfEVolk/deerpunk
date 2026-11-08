@@ -6,7 +6,9 @@ pub struct MeshTexture(pub u32);
 
 impl MeshTexture {
     pub const WHITE: Self = Self(0);
-    pub const fn slot(n: u32) -> Self { Self(n) }
+    pub const fn slot(n: u32) -> Self {
+        Self(n)
+    }
 }
 
 #[repr(C)]

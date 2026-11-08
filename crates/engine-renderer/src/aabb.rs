@@ -151,8 +151,14 @@ mod tests {
     #[test]
     fn yaw_90_swaps_extents() {
         let local = Aabb::from_min_max(Vec3::new(-1.0, -2.0, 0.0), Vec3::new(1.0, 2.0, 4.0));
-        let world = local.transformed_trs(Vec3::ZERO, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), Vec3::ONE);
-        let corners = local.transform(glam::Mat4::from_quat(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)));
+        let world = local.transformed_trs(
+            Vec3::ZERO,
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            Vec3::ONE,
+        );
+        let corners = local.transform(glam::Mat4::from_quat(Quat::from_rotation_z(
+            std::f32::consts::FRAC_PI_2,
+        )));
         assert!((world.min - corners.min).length() < 1e-4);
         assert!((world.max - corners.max).length() < 1e-4);
     }

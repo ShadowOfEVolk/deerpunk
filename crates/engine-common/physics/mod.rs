@@ -8,22 +8,21 @@ pub mod run;
 pub mod voxel_query;
 pub mod world;
 
-use glam::Vec3;
 pub use abi::{
-    decode_shape, encode_shape_ball, encode_shape_box, encode_shape_convex,
-    encode_shape_halfspace, encode_shape_trimesh, encode_shape_voxel_volume,
-    Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle, BODY_TYPE_DYNAMIC,
-    BODY_TYPE_KINEMATIC, BODY_TYPE_STATIC, COLLIDER_FLAG_SENSOR, PARTS_HANDLE_INVALID,
-    SHAPE_ABI_VERSION, SHAPE_HANDLE_INVALID, SHAPE_KIND_BALL, SHAPE_KIND_BOX,
-    SHAPE_KIND_CONVEX, SHAPE_KIND_HALFSPACE, SHAPE_KIND_TRIMESH, SHAPE_KIND_VOXEL_VOLUME,
-    VOXEL_VOLUME_BITSET_BYTES, VOXEL_VOLUME_SIZE,
+    decode_shape, encode_shape_ball, encode_shape_box, encode_shape_convex, encode_shape_halfspace,
+    encode_shape_trimesh, encode_shape_voxel_volume, Collider, ColliderPart, PartsHandle,
+    ShapeGeom, ShapeHandle, BODY_TYPE_DYNAMIC, BODY_TYPE_KINEMATIC, BODY_TYPE_STATIC,
+    COLLIDER_FLAG_SENSOR, PARTS_HANDLE_INVALID, SHAPE_ABI_VERSION, SHAPE_HANDLE_INVALID,
+    SHAPE_KIND_BALL, SHAPE_KIND_BOX, SHAPE_KIND_CONVEX, SHAPE_KIND_HALFSPACE, SHAPE_KIND_TRIMESH,
+    SHAPE_KIND_VOXEL_VOLUME, VOXEL_VOLUME_BITSET_BYTES, VOXEL_VOLUME_SIZE,
 };
 pub use backend::{CapsuleCastHit, NullPhysics, PhysicsBackend};
 pub use character::{
-    CharacterController, CHAR_EYE_HEIGHT, CHAR_FLAG_MANUAL_MOVE, CHAR_FLAG_NOCLIP, CHAR_HALF_HEIGHT,
-    CHAR_RADIUS, CHAR_STEP_HEIGHT,
+    CharacterController, CHAR_EYE_HEIGHT, CHAR_FLAG_MANUAL_MOVE, CHAR_FLAG_NOCLIP,
+    CHAR_HALF_HEIGHT, CHAR_RADIUS, CHAR_STEP_HEIGHT,
 };
 pub use collider::Sensor;
+use glam::Vec3;
 pub use rapier_backend::RapierPhysicsBackend;
 pub use run::physics_step;
 pub use world::{

@@ -45,9 +45,21 @@ pub fn tick(
     draw_part(out, &hit, DebugColor::CYAN);
     let p = hit.hit_point;
     let s = 4.0;
-    out.line([p[0] - s, p[1], p[2]], [p[0] + s, p[1], p[2]], DebugColor::RED);
-    out.line([p[0], p[1] - s, p[2]], [p[0], p[1] + s, p[2]], DebugColor::RED);
-    out.line([p[0], p[1], p[2] - s], [p[0], p[1], p[2] + s], DebugColor::RED);
+    out.line(
+        [p[0] - s, p[1], p[2]],
+        [p[0] + s, p[1], p[2]],
+        DebugColor::RED,
+    );
+    out.line(
+        [p[0], p[1] - s, p[2]],
+        [p[0], p[1] + s, p[2]],
+        DebugColor::RED,
+    );
+    out.line(
+        [p[0], p[1], p[2] - s],
+        [p[0], p[1], p[2] + s],
+        DebugColor::RED,
+    );
 }
 
 /// Capsule wireframe from ECS feet + CC dims (bottom sphere at feet).
@@ -70,7 +82,13 @@ fn draw_player_capsules(world: &World, out: &mut DebugDrawBuf) {
         out.line(bottom.to_array(), top.to_array(), DebugColor::GREEN);
         out.circle(bottom.to_array(), r, [0.0, 0.0, 1.0], 20, DebugColor::GREEN);
         out.circle(top.to_array(), r, [0.0, 0.0, 1.0], 20, DebugColor::GREEN);
-        out.circle(center.to_array(), r, [0.0, 0.0, 1.0], 16, DebugColor::YELLOW);
+        out.circle(
+            center.to_array(),
+            r,
+            [0.0, 0.0, 1.0],
+            16,
+            DebugColor::YELLOW,
+        );
         let s = 3.0;
         out.line(
             [feet.x - s, feet.y, feet.z],
@@ -177,7 +195,8 @@ fn pick_world_part(
                     let world_verts: Vec<[f32; 3]> = vertices
                         .iter()
                         .map(|v| {
-                            let p = ent_pos + ent_rot * (part_pos + part_rot * Vec3::from_array(*v));
+                            let p =
+                                ent_pos + ent_rot * (part_pos + part_rot * Vec3::from_array(*v));
                             [p.x, p.y, p.z]
                         })
                         .collect();
@@ -189,7 +208,8 @@ fn pick_world_part(
                     let world_verts: Vec<[f32; 3]> = vertices
                         .iter()
                         .map(|v| {
-                            let p = ent_pos + ent_rot * (part_pos + part_rot * Vec3::from_array(*v));
+                            let p =
+                                ent_pos + ent_rot * (part_pos + part_rot * Vec3::from_array(*v));
                             [p.x, p.y, p.z]
                         })
                         .collect();
@@ -244,11 +264,12 @@ fn draw_part(out: &mut DebugDrawBuf, hit: &PartHit, color: DebugColor) {
         ShapeGeom::VoxelVolume { origin, .. } => {
             // Debug AABB of the whole chunk volume (16³ unit cells).
             let min = Vec3::new(origin[0] as f32, origin[1] as f32, origin[2] as f32);
-            let max = min + Vec3::new(
-                deerpunk_engine_common::physics::VOXEL_VOLUME_SIZE as f32,
-                deerpunk_engine_common::physics::VOXEL_VOLUME_SIZE as f32,
-                deerpunk_engine_common::physics::VOXEL_VOLUME_SIZE as f32,
-            );
+            let max = min
+                + Vec3::new(
+                    deerpunk_engine_common::physics::VOXEL_VOLUME_SIZE as f32,
+                    deerpunk_engine_common::physics::VOXEL_VOLUME_SIZE as f32,
+                    deerpunk_engine_common::physics::VOXEL_VOLUME_SIZE as f32,
+                );
             out.aabb(min.into(), max.into(), color);
         }
     }

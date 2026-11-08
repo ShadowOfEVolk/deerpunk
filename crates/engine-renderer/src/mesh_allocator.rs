@@ -52,13 +52,7 @@ impl MeshBufferPool {
 
     /// Create a new buffer pair for `stride` and return its id. The caller
     /// (an allocator) is informed via its `add_buffer` trait method.
-    pub fn add(
-        &mut self,
-        device: &wgpu::Device,
-        vert_cap: u32,
-        idx_cap: u32,
-        stride: u32,
-    ) -> u32 {
+    pub fn add(&mut self, device: &wgpu::Device, vert_cap: u32, idx_cap: u32, stride: u32) -> u32 {
         let vert_cap = vert_cap.max(self.default_vertex_cap);
         let idx_cap = idx_cap.max(self.default_index_cap);
         let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -177,12 +171,7 @@ impl SlabMeshAllocator {
 }
 
 impl MeshAllocator for SlabMeshAllocator {
-    fn allocate(
-        &mut self,
-        vert_count: u32,
-        idx_count: u32,
-        stride: u32,
-    ) -> MeshHandle {
+    fn allocate(&mut self, vert_count: u32, idx_count: u32, stride: u32) -> MeshHandle {
         for s in &mut self.slabs {
             if s.stride == stride
                 && s.vert_used + vert_count <= s.vert_cap
@@ -210,13 +199,7 @@ impl MeshAllocator for SlabMeshAllocator {
         // Append-only: no reclamation. Long-lived meshes only.
     }
 
-    fn add_buffer(
-        &mut self,
-        buffer_id: u32,
-        vert_cap: u32,
-        idx_cap: u32,
-        stride: u32,
-    ) {
+    fn add_buffer(&mut self, buffer_id: u32, vert_cap: u32, idx_cap: u32, stride: u32) {
         self.slabs.push(SlabInfo {
             buffer_id,
             vert_cap,

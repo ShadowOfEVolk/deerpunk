@@ -32,11 +32,7 @@ impl Frustum {
                         1 => clip.y,
                         _ => clip.z,
                     };
-                    let inside = if negative {
-                        v >= -w
-                    } else {
-                        v <= w
-                    };
+                    let inside = if negative { v >= -w } else { v <= w };
                     if inside {
                         any_inside = true;
                         break;

@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use crate::components::Mesh3D;
-use crate::resource::mesh_handle::MeshHandle;
 use crate::resource::mesh::Mesh;
+use crate::resource::mesh_handle::MeshHandle;
 use crate::resource::mesh_registry::MeshRegistry;
 use crate::resource::ResourceManager;
 use crate::world::EntityId;

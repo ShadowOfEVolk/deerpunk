@@ -6,7 +6,7 @@
 //! the active camera snapshot's `depth.target`.
 
 use crate::frame::schedule::res;
-use crate::render_graph::{Node, NodeContext, NodeExecute, RenderGraph, Resource, ResId};
+use crate::render_graph::{Node, NodeContext, NodeExecute, RenderGraph, ResId, Resource};
 
 fn forward_node(name: &'static str, inputs: &[ResId], outputs: &[ResId]) -> Node {
     let execute: NodeExecute = Box::new(|nc: &mut NodeContext<'_>| {
@@ -20,7 +20,7 @@ fn forward_node(name: &'static str, inputs: &[ResId], outputs: &[ResId]) -> Node
     }
 }
 
-/// Built once on [`crate::gpu::Renderer`] init. Passes bind via [`super::executor::GraphFrameUserData`].
+/// Built once on [`crate::renderer::Renderer`] init. Passes bind via [`super::executor::GraphFrameUserData`].
 pub fn build_forward_graph() -> RenderGraph {
     use res::{HDR, SURFACE};
     RenderGraph::new(HDR, SURFACE)

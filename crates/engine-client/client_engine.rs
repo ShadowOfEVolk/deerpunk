@@ -3,17 +3,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use deerpunk_engine_common::components::{CameraComponent, SoundEmitter, TransformComponent};
-use deerpunk_engine_common::material::DrawMaterial;
-use deerpunk_engine_common::network::ClientSessionPhase;
 use deerpunk_engine_common::input::Input;
+use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::material::{screen_dither_preprocessor_defines, ShaderPreprocessor};
 use deerpunk_engine_common::network::sound_event::SoundPlayRpc;
+use deerpunk_engine_common::network::ClientSessionPhase;
 use deerpunk_engine_common::resource::mesh::Mesh;
 use deerpunk_engine_common::resource::{path_to_file_uri, ResourceManager, ShaderSource};
 use deerpunk_engine_common::world::{QueryId, World};
 use deerpunk_engine_renderer::debug_draw::DebugDraw;
-use deerpunk_engine_renderer::gpu::{Renderer, ShaderSources};
 use deerpunk_engine_renderer::material_store::MaterialStore;
+use deerpunk_engine_renderer::renderer::{Renderer, ShaderSources};
 use deerpunk_engine_renderer::shader_registry::ShaderRegistry;
 use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget, SkyDraw};
 
@@ -34,18 +34,18 @@ use std::collections::HashMap;
 pub use deerpunk_engine_renderer::{DebugColor, DebugDraw as DebugDrawBuf, DebugPrimitive};
 
 use crate::app::App;
+use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
+use crate::bone_buffer_pool::{BoneBufferHandle, BoneBufferPool};
 use crate::client_dll::ClientDll;
 use crate::console::Console;
 use crate::demo;
 use crate::lan_browser::LanBrowser;
-use deerpunk_engine_server::ClientNet;
-use crate::network::ClientPrefabReplication;
-use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
-use crate::bone_buffer_pool::{BoneBufferHandle, BoneBufferPool};
 use crate::mesh_lifecycle::MeshGpuLifecycle;
+use crate::network::ClientPrefabReplication;
 use crate::render_extractor::RenderExtractor;
 use crate::render_thread::PipelinedSubmit;
 use crate::ui_controller::UiController;
+use deerpunk_engine_server::ClientNet;
 
 /// Client-owned camera stamp (reapplied after world replicate).
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +107,11 @@ pub struct ClientEngine {
     audio_volume: f32,
     /// Accumulated client time (seconds) for postfx / animated shaders.
     time: f32,
+    prepare_systems:
+        Vec<Box<dyn for<'a> FnMut(&mut deerpunk_engine_renderer::PrepareDrawList<'a>) + Send>>,
+    /// [`SceneGeometry`] for `renderer.prepare`. Null outside that phase.
+    prepare_scene: *mut deerpunk_engine_renderer::SceneGeometry,
+    prepare_added: bool,
     /// Host/game fills each frame; copied into [`RenderSnapshot::debug_draw`].
     pending_debug_draw: DebugDraw,
     /// Shader registry — loaded .wgsl variants, cached by (path, defines).
@@ -163,7 +168,8 @@ impl ClientEngine {
         let instance = wgpu::Instance::default();
         let surface = app.create_wgpu_surface(&instance);
 
-        let mut renderer = Renderer::new(load_shader_sources(resources, 0), &instance, Some(&surface));
+        let mut renderer =
+            Renderer::new(load_shader_sources(resources, 0), &instance, Some(&surface));
 
         let (w, h) = app.framebuffer_size();
         deerpunk_engine_common::frame::set_frame_size(w, h);
@@ -201,6 +207,9 @@ impl ClientEngine {
             audio_world_scene_hook: None,
             audio_volume: 1.0,
             time: 0.0,
+            prepare_systems: Vec::new(),
+            prepare_scene: std::ptr::null_mut(),
+            prepare_added: false,
             pending_debug_draw: DebugDraw::new(),
             shader_registry,
             material_store,
@@ -223,7 +232,9 @@ impl ClientEngine {
             procedural_sky: false,
             gamelib_sky: None,
             cull_scratch: CullScratch::new(),
-            surface_snapshot: RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear),
+            surface_snapshot: RenderSnapshot::new(
+                deerpunk_engine_common::components::ColorLoad::Clear,
+            ),
             camera_build_scratch: Vec::new(),
             camera_compose_scratch: Vec::new(),
             game_debug: DebugDraw::new(),
@@ -242,8 +253,8 @@ impl ClientEngine {
         };
         let args = deerpunk_engine_ffi::GamelibUiBuildArgs {
             version: deerpunk_engine_ffi::GAMELIB_UI_API_VERSION,
-            device: (&self.renderer.device as *const _ as *mut std::ffi::c_void),
-            queue: (&self.renderer.queue as *const _ as *mut std::ffi::c_void),
+            device: (&self.renderer.gpu.device as *const _ as *mut std::ffi::c_void),
+            queue: (&self.renderer.gpu.queue as *const _ as *mut std::ffi::c_void),
             surface_format: crate::gamelib_ui::gamelib_ui_format_token(format),
             width: w as f32,
             height: h as f32,
@@ -265,10 +276,7 @@ impl ClientEngine {
     ) {
         deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.frame");
         let _ = delta_time;
-        let gamelib_ui_render = self
-            .dll
-            .as_ref()
-            .and_then(|d| d.gamelib_ui_render_fn());
+        let gamelib_ui_render = self.dll.as_ref().and_then(|d| d.gamelib_ui_render_fn());
 
         if game_frame_fn.is_some() {
             if let Err(e) = self.renderer.render_to_surface_compose_with_game_frame(
@@ -282,12 +290,10 @@ impl ClientEngine {
             ) {
                 self.handle_surface_frame_error(e);
             }
-        } else if let Err(e) = self.renderer.render_to_surface_compose(
-            cameras,
-            post,
-            geometry,
-            &self.shader_registry,
-        ) {
+        } else if let Err(e) =
+            self.renderer
+                .render_to_surface_compose(cameras, post, geometry, &self.shader_registry)
+        {
             self.handle_surface_frame_error(e);
         }
         deerpunk_engine_renderer::gamelib_profile::zone_end();
@@ -379,6 +385,15 @@ impl ClientEngine {
         self.console_open = open;
     }
 
+    pub fn mesh_lifecycle_adopt_chunk(
+        &mut self,
+        meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
+        entity: u64,
+    ) {
+        self.mesh_lifecycle
+            .adopt_chunk(meshes, &self.world, &mut self.renderer, entity);
+    }
+
     pub fn mesh_adopt_entity(
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
@@ -422,7 +437,8 @@ impl ClientEngine {
 
     pub fn mesh_lifecycle_reset(&mut self) {
         self.mesh_lifecycle.reset(&mut self.renderer);
-        self.renderer.mesh_retain(self.fallback_mesh.content_id(), 0);
+        self.renderer
+            .mesh_retain(self.fallback_mesh.content_id(), 0);
     }
 
     /// Client-side prediction/render state (materials, mesh GPU refs). ECS cleared separately.
@@ -469,10 +485,7 @@ impl ClientEngine {
                 entity,
             );
             let _ = crate::draw_material_resolve::resolve_draw_material_uri(
-                self,
-                resources,
-                entity,
-                false,
+                self, resources, entity, false,
             );
             self.mesh_adopt_entity(meshes, entity);
         }
@@ -605,7 +618,13 @@ impl ClientEngine {
     }
 
     /// One-shot Studio event at the listener (UI / non-positional).
-    pub fn audio_play_2d(&mut self, event: &str, volume: f32, params: &[(&str, f32)], instance_id: u32) {
+    pub fn audio_play_2d(
+        &mut self,
+        event: &str,
+        volume: f32,
+        params: &[(&str, f32)],
+        instance_id: u32,
+    ) {
         if let Some(a) = self.audio.as_mut() {
             with_audio_assets(self.audio_assets, |assets| {
                 a.play_event_2d(assets, event, volume, params, instance_id);
@@ -934,8 +953,8 @@ impl ClientEngine {
                     view_entity,
                     &mut self.material_store,
                     &mut self.renderer.material_allocator,
-                    &self.renderer.device,
-                    &self.renderer.queue,
+                    &self.renderer.gpu.device,
+                    &self.renderer.gpu.queue,
                     &fallback,
                     &mut extract_gpu,
                     aspect,
@@ -955,9 +974,115 @@ impl ClientEngine {
             self.fill_procedural_sky(&mut scene);
         }
         extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
-
         self.renderer.note_extract_gpu_stats(extract_gpu);
         scene
+    }
+
+    /// Register a system that runs after extract and before camera snapshots.
+    ///
+    /// [`PrepareDrawList::push_mesh`] appends a draw. `batchable` draws join the
+    /// mesh pass groups; the batch plan itself is still built by the renderer.
+    pub fn add_prepare_system<F>(&mut self, system: F)
+    where
+        F: for<'a> FnMut(&mut deerpunk_engine_renderer::PrepareDrawList<'a>) + Send + 'static,
+    {
+        self.prepare_systems.push(Box::new(system));
+    }
+
+    /// Append prepare-system draws into `scene` and refresh the cull serial.
+    pub fn run_prepare(&mut self, scene: &mut deerpunk_engine_renderer::RenderScene) {
+        deerpunk_engine_renderer::run_prepare_systems(scene, &mut self.prepare_systems);
+    }
+
+    /// Draw list for the upcoming `renderer.prepare` stage. The pointer stays
+    /// valid until [`Self::finish_mesh_submit`].
+    pub fn begin_mesh_submit(&mut self, geometry: *mut deerpunk_engine_renderer::SceneGeometry) {
+        self.prepare_scene = geometry;
+        self.prepare_added = false;
+    }
+
+    pub fn finish_mesh_submit(&mut self, scene: &mut deerpunk_engine_renderer::RenderScene) {
+        self.prepare_scene = std::ptr::null_mut();
+        if self.prepare_added {
+            scene.geometry.refresh_cull_serial();
+            self.prepare_added = false;
+        }
+    }
+
+    /// Append one static mesh to the prepare draw list. `batchable` so it joins
+    /// the material/shader group. Position / rotation (xyzw) / scale are world TRS.
+    pub fn submit_mesh(
+        &mut self,
+        meshes: &deerpunk_engine_common::resource::MeshRegistry,
+        entity: u64,
+        mesh: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+        material: deerpunk_engine_common::material::MaterialHandle,
+        uniform_aux: u32,
+        layer_mask: u32,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+        first_index: u32,
+        index_count: u32,
+        face: u8,
+    ) -> bool {
+        if self.prepare_scene.is_null() || !mesh.is_valid() || layer_mask == 0 || index_count == 0 {
+            return false;
+        }
+        let Some(cpu) = meshes.get(mesh) else {
+            return false;
+        };
+        let Some(entry) = self.material_store.get(material) else {
+            return false;
+        };
+        if entry.shader == 0 {
+            return false;
+        }
+        let texture = entry.albedo;
+        let normal = entry.normal;
+        let orm = entry.orm;
+        let shader_id = entry.shader;
+        let material_id = self.material_store.resolve_gpu(
+            material,
+            &mut self.renderer.material_allocator,
+            &self.renderer.gpu.device,
+            &self.renderer.gpu.queue,
+        );
+        let model = glam::Mat4::from_scale_rotation_translation(
+            glam::Vec3::from_array(scale),
+            glam::Quat::from_xyzw(rotation[0], rotation[1], rotation[2], rotation[3]),
+            glam::Vec3::from_array(position),
+        );
+        let local = deerpunk_engine_renderer::Aabb::from_min_max(
+            glam::Vec3::from_array(cpu.bounds_min),
+            glam::Vec3::from_array(cpu.bounds_max),
+        );
+        let world_bounds = local.transform(model);
+        let draw = deerpunk_engine_renderer::snapshot::MeshDraw {
+            mesh,
+            model_mat: model.to_cols_array_2d(),
+            layer_mask,
+            batchable: true,
+            material_id,
+            texture,
+            normal,
+            orm,
+            sun_dir: [0.0, 0.0, 1.0, 0.0],
+            ambient: [0.0; 4],
+            shader_id,
+            lightmap_gpu: 0,
+            first_index,
+            index_count,
+            face,
+            world_bounds,
+            entity_id: entity,
+            uniform_aux,
+        };
+        unsafe {
+            (*self.prepare_scene).mesh_draws.push(draw);
+        }
+        self.prepare_added = true;
+        true
     }
 
     pub fn bone_buffer_alloc(&mut self, bone_count: usize) -> BoneBufferHandle {
@@ -1035,11 +1160,8 @@ impl ClientEngine {
         if self.ui.is_none() {
             return Err("ui runtime not ready".into());
         }
-        self.ui_controller.data_model_set(
-            document,
-            field,
-            deerpunk_ui::DataModelValue::Bool(value),
-        )
+        self.ui_controller
+            .data_model_set(document, field, deerpunk_ui::DataModelValue::Bool(value))
     }
 
     pub fn ui_data_model_set_number(
@@ -1104,9 +1226,7 @@ impl ClientEngine {
             return;
         }
         self.ui_latch.wheel += wheel;
-        self.ui_latch
-            .keys
-            .extend(self.input.drain_ui_keys());
+        self.ui_latch.keys.extend(self.input.drain_ui_keys());
         let mut buf = [0u8; 128];
         let n = self.input.take_text(&mut buf);
         if n > 0 {
@@ -1226,13 +1346,14 @@ impl ClientEngine {
                 ));
                 self.input.clear_keys();
             }
-            self.renderer.set_host_ui_input(deerpunk_engine_renderer::host_ui::UiFrameInput {
-                mouse: [mx, my],
-                buttons: [b & 1 != 0, b & 2 != 0, b & 4 != 0],
-                wheel: if self.console_open { wheel } else { 0.0 },
-                text,
-                keys,
-            });
+            self.renderer
+                .set_host_ui_input(deerpunk_engine_renderer::host_ui::UiFrameInput {
+                    mouse: [mx, my],
+                    buttons: [b & 1 != 0, b & 2 != 0, b & 4 != 0],
+                    wheel: if self.console_open { wheel } else { 0.0 },
+                    text,
+                    keys,
+                });
         }
         deerpunk_engine_renderer::gamelib_profile::zone_end();
 
@@ -1269,7 +1390,11 @@ impl ClientEngine {
         let snap_start = std::time::Instant::now();
         let aspect = w as f32 / h as f32;
         if let Some(s) = scene.as_ref() {
-            s.build_snapshots_into(aspect, &mut self.cull_scratch, &mut self.camera_build_scratch);
+            s.build_snapshots_into(
+                aspect,
+                &mut self.cull_scratch,
+                &mut self.camera_build_scratch,
+            );
         } else {
             self.camera_build_scratch.clear();
         }
@@ -1370,7 +1495,8 @@ impl ClientEngine {
         }
         deerpunk_engine_renderer::gamelib_profile::zone_end();
         if !rendered_surface {
-            let snapshot = RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear);
+            let snapshot =
+                RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear);
             self.render_surface_frame(
                 std::slice::from_ref(&snapshot),
                 &snapshot,
@@ -1395,7 +1521,7 @@ impl ClientEngine {
         self.renderer.set_defer_surface_submit(mode >= 1);
         if mode >= 1 {
             if self.pipelined_submit.is_none() {
-                let queue = self.renderer.queue.clone();
+                let queue = self.renderer.gpu.queue.clone();
                 self.pipelined_submit = Some(PipelinedSubmit::new(queue));
             }
         } else {
@@ -1418,7 +1544,7 @@ impl ClientEngine {
         if !self.renderer.defer_surface_submit() {
             return;
         }
-        let queue = self.renderer.queue.clone();
+        let queue = self.renderer.gpu.queue.clone();
         let ps = self
             .pipelined_submit
             .get_or_insert_with(|| PipelinedSubmit::new(queue));
@@ -1455,7 +1581,10 @@ impl ClientEngine {
         &mut self.renderer
     }
 
-    pub fn material_handle_for_path(&self, path: &str) -> Option<deerpunk_engine_common::material::MaterialHandle> {
+    pub fn material_handle_for_path(
+        &self,
+        path: &str,
+    ) -> Option<deerpunk_engine_common::material::MaterialHandle> {
         self.material_store.handle_for_path(path)
     }
 
@@ -1513,7 +1642,6 @@ impl ClientEngine {
             "debug",
             "tonemap",
             "luminance",
-            "storm",
             "bloom_threshold",
             "bloom_blur",
             "bloom_composite",
@@ -1573,7 +1701,10 @@ fn listener_from_view(view: glam::Mat4) -> AudioListener {
 }
 
 /// `ClientEngine::audio_assets` — Host-owned [`ResourceManager`], client tick thread only.
-fn with_audio_assets<R>(ptr: *const ResourceManager, f: impl FnOnce(&ResourceManager) -> R) -> Option<R> {
+fn with_audio_assets<R>(
+    ptr: *const ResourceManager,
+    f: impl FnOnce(&ResourceManager) -> R,
+) -> Option<R> {
     if ptr.is_null() {
         None
     } else {
@@ -1627,7 +1758,6 @@ fn load_shader_sources(rm: &ResourceManager, screen_dither_mode: i32) -> ShaderS
         debug: load_wgsl_required(rm, shader_dir, "debug", no_defines),
         tonemap: load_wgsl_required(rm, shader_dir, "tonemap", no_defines),
         luminance: load_wgsl_required(rm, shader_dir, "luminance", no_defines),
-        storm: load_wgsl_required(rm, shader_dir, "storm", no_defines),
         bloom_threshold: load_wgsl_required(rm, shader_dir, "bloom_threshold", no_defines),
         bloom_blur: load_wgsl_required(rm, shader_dir, "bloom_blur", no_defines),
         bloom_composite: load_wgsl_required(rm, shader_dir, "bloom_composite", no_defines),

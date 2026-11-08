@@ -45,7 +45,10 @@ pub struct DepthAttachment {
 impl DepthAttachment {
     /// Fresh depth buffer for this camera (most common case).
     pub const fn owned(target: DepthTargetId) -> Self {
-        Self { target, load: DepthLoad::Clear(1.0) }
+        Self {
+            target,
+            load: DepthLoad::Clear(1.0),
+        }
     }
 }
 

@@ -3,14 +3,10 @@ use std::path::Path;
 
 fn embed_proggy_clean_inc(ttf_path: &Path, out_path: &Path) {
     let bytes = std::fs::read(ttf_path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read {}: {e}",
-            ttf_path.display()
-        );
+        panic!("failed to read {}: {e}", ttf_path.display());
     });
-    let mut s = String::from(
-        "/* Auto-generated from assets/internal/fonts/ProggyClean.ttf (MIT). */\n",
-    );
+    let mut s =
+        String::from("/* Auto-generated from assets/internal/fonts/ProggyClean.ttf (MIT). */\n");
     s.push_str("static const unsigned char host_ui_proggy_clean_ttf[] = {\n");
     for (i, b) in bytes.iter().enumerate() {
         if i % 16 == 0 {
