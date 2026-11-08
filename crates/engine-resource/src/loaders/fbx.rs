@@ -134,6 +134,7 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         joint_indices: Vec::new(),
         joint_weights: Vec::new(),
         content_id: 0,
+        gpu_revision: 1,
         allocator_id: 0,
         bounds_min: [f32::INFINITY, f32::INFINITY, f32::INFINITY],
         bounds_max: [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY],

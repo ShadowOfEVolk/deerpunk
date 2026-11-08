@@ -1,0 +1,15 @@
+[package]
+name = "deerpunk-engine-world"
+version = "0.1.0"
+edition = "2021"
+description = "ECS world. Flecs stays inside this crate."
+
+[dependencies]
+deerpunk-engine-ffi = { path = "../engine-ffi" }
+deerpunk-engine-resource = { path = "../engine-resource" }
+log = { workspace = true }
+serde_json = "1"
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+bitflags = "2"
+flecs_ecs_sys = { git = "https://github.com/Indra-db/Flecs-Rust.git", default-features = false, features = ["flecs_meta_c", "flecs_alerts", "flecs_json"] }

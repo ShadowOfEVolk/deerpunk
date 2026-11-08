@@ -35,7 +35,7 @@ pub mod transform_hierarchy;
 pub mod ui_draw;
 
 pub use components::{
-    CameraComponent, LightmapId, MapKv, MeshDrawAux, MeshRenderer, MeshTexture,
+    CameraComponent, LightmapId, MapKv, MeshRenderer, MeshTexture,
     NetReplicatedComponent, NetworkEntity, PendingAlbedoAtlas, PendingLightmap,
     PointLight,
     SimpleEntity, Terrain, TerrainCollider, TerrainNeedRebuild, TerrainRenderer,
@@ -66,3 +66,12 @@ pub use material::{
     DrawMaterial, GpuMaterialIndex, MaterialAsset, MaterialHandle, PropertyValueSer,
     SceneLighting, ShaderError, ShaderId, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
 };
+
+/// Property registry follows component layout blobs registered on [`world::World`].
+pub fn install_property_layout_hook() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        deerpunk_engine_world::set_layout_hook(crate::property::sync_properties_from_layout);
+    });
+}

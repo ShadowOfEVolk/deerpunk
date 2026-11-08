@@ -21,12 +21,6 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
-    "cl_draw_distance",
-    "192",
-    "Hide client mesh draws beyond this radius (world units, MeshDrawHidden). 0=off.",
-    RENDERINFO
-);
-deerpunk_engine_common::cvar_def!(
     "cl_extract_early_cull",
     "1",
     "Frustum-cull during scene extract (before geometry build).",

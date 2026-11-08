@@ -110,5 +110,46 @@ pub fn mesh_from_desc(desc: &MeshCreateDesc) -> Option<Mesh> {
     }
     mesh.allocator_id = desc.allocator_id;
     mesh.ensure_content_id();
+    mesh.ensure_local_bounds();
+    Some(mesh)
+}
+
+/// Packed GPU buffer + caller-supplied AABB. No SoA `positions` and no bounds scan.
+pub struct MeshPackedDesc {
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+    pub packed_stride: u32,
+    pub vertex_bytes: *const u8,
+    pub vertex_byte_len: u32,
+    pub indices: *const u32,
+    pub index_count: u32,
+    pub allocator_id: u32,
+}
+
+pub fn mesh_from_packed(desc: &MeshPackedDesc) -> Option<Mesh> {
+    if desc.packed_stride == 0 || desc.vertex_bytes.is_null() || desc.vertex_byte_len == 0 {
+        return None;
+    }
+    if desc.vertex_byte_len as usize % desc.packed_stride as usize != 0 {
+        return None;
+    }
+    let mut mesh = Mesh::empty();
+    mesh.positions.clear();
+    mesh.packed_stride = desc.packed_stride;
+    mesh.vertex_bytes =
+        unsafe { std::slice::from_raw_parts(desc.vertex_bytes, desc.vertex_byte_len as usize) }
+            .to_vec();
+    if !desc.indices.is_null() && desc.index_count > 0 {
+        mesh.indices = unsafe {
+            std::slice::from_raw_parts(desc.indices, desc.index_count as usize).to_vec()
+        };
+    }
+    mesh.bounds_min = desc.bounds_min;
+    mesh.bounds_max = desc.bounds_max;
+    mesh.allocator_id = desc.allocator_id;
+    mesh.ensure_content_id();
+    if !mesh.has_local_bounds() || !mesh.uses_prepacked_vertices() {
+        return None;
+    }
     Some(mesh)
 }

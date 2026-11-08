@@ -17,7 +17,7 @@ deerpunk_engine_common::cvar_def!(
 deerpunk_engine_common::cvar_def!(
     "r_showalloc",
     "0",
-    "ImGui mesh GPU pool bars (0=off, 1=all allocators, N>1=only allocator id N-1).",
+    "Nuklear mesh GPU pool bars (0=off, 1=all allocators, N>1=only allocator id N-1).",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
@@ -45,6 +45,12 @@ deerpunk_engine_common::cvar_def!(
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
+    "r_logbindgroups",
+    "0",
+    "Log each mesh-pass set_bind_group (0=off, 1=on). repeat = same slot+key as earlier in the pass.",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
     "r_log_uploads",
     "0",
     "Log GPU resource uploads: mesh, material SSBO, shader compile, textures (0=off, 1=on).",
@@ -54,6 +60,36 @@ deerpunk_engine_common::cvar_def!(
     "r_phys_debug",
     "0",
     "Wireframe world collider part under crosshair (0=off, 1=on).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_drawworld",
+    "1",
+    "Draw world meshes (0=skip scene mesh extract, UI and sky stay).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_drawsky",
+    "1",
+    "Draw the sky pass (0=clear HDR only, world stays).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_drawclouds",
+    "1",
+    "Draw the cloud pass (0=sky only).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_drawtransparent",
+    "1",
+    "Draw mesh_transparent queue (0=skip alpha-blended meshes).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_drawui",
+    "1",
+    "Run and draw RmlUi (0=skip layout and the UI pass).",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(

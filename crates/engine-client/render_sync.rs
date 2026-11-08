@@ -53,8 +53,13 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
     r.set_sky_debug_log(cvar.get_f32_or("r_sky_debug", 0.0) >= 0.5);
     r.set_occlusion_cull(cvar.get_bool_or("r_occlusion_cull", false));
     r.set_mesh_draw_batching(cvar.get_bool_or("r_mesh_batch", true));
+    r.set_draw_transparent(cvar.get_bool_or("r_drawtransparent", true));
+    r.set_draw_sky(cvar.get_bool_or("r_drawsky", true));
+    r.set_draw_clouds(cvar.get_bool_or("r_drawclouds", true));
     deerpunk_engine_renderer::upload_log::set_enabled(cvar.get_usize_or("r_log_uploads", 0) != 0);
+    deerpunk_engine_renderer::bind_log::set_enabled(cvar.get_usize_or("r_logbindgroups", 0) != 0);
     r.set_mesh_batch_mdi(cvar.get_bool_or("r_mesh_batch_mdi", true));
+    client.set_draw_ui(cvar.get_bool_or("r_drawui", true));
 }
 
 pub fn build_debug_draw(

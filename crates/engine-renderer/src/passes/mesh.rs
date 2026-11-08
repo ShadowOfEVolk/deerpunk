@@ -102,6 +102,34 @@ fn mesh_draw_depth_sq(md: &crate::snapshot::MeshDraw, camera_pos: [f32; 3]) -> f
     }
 }
 
+fn mesh_batch_fingerprint(
+    meshes: &MeshDrawListView<'_>,
+    shaders: &ShaderRegistry,
+    camera: [f32; 3],
+) -> u64 {
+    let mut h = meshes.len() as u64;
+    h ^= camera[0].to_bits() as u64;
+    h ^= camera[1].to_bits() as u64;
+    h ^= camera[2].to_bits() as u64;
+    for i in 0..meshes.len() {
+        let md = meshes.get(i);
+        let transparent = mesh_draw_is_transparent(shaders, md) as u64;
+        h = h.wrapping_mul(31).wrapping_add(md.shader_id as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.material_id as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.texture.0 as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.normal.0 as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.orm.0 as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.lightmap_gpu as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.batchable as u64);
+        h = h.wrapping_mul(31).wrapping_add(transparent);
+        let m = md.model_mat;
+        h ^= m[3][0].to_bits() as u64;
+        h ^= m[3][1].to_bits() as u64;
+        h ^= m[3][2].to_bits() as u64;
+    }
+    h
+}
+
 fn mesh_draw_sort_cmp(
     shaders: &ShaderRegistry,
     a: &crate::snapshot::MeshDraw,
@@ -140,10 +168,7 @@ impl Renderer {
     let owns_scene_occlusion = ctx.snapshot.depth.target
         == deerpunk_engine_common::components::DepthTargetId(0);
     if static_count > 0 || skinned_count > 0 {
-        let mesh_align = 256u64;
-        let mesh_uniform_size = ((std::mem::size_of::<MeshUniform>() as u64 + mesh_align - 1)
-            / mesh_align)
-            * mesh_align;
+        let mesh_uniform_size = Self::mesh_uniform_stride();
 
         let resolved_static: Vec<u32> = (0..static_count)
             .map(|i| meshes.get(i).material_id)
@@ -161,13 +186,22 @@ impl Renderer {
         }
         let slab_bytes = (mesh_uniform_size * draw_count as u64) as usize;
         assert!(
-            slab_bytes as u64 <= self.mesh_globals_buf.size(),
+            slab_bytes as u64 <= self.mesh_globals_bufs[self.frame_uniform_ring as usize].size(),
             "mesh uniform upload {} bytes > mesh_globals_buf {} ({} draws)",
             slab_bytes,
-            self.mesh_globals_buf.size(),
+            self.mesh_globals_bufs[self.frame_uniform_ring as usize].size(),
             draw_count
         );
         self.mesh_uniform_scratch.resize(slab_bytes, 0);
+        self.queue.write_buffer(
+            &self.mesh_view_bufs[self.frame_uniform_ring as usize],
+            0,
+            bytemuck::bytes_of(&crate::gpu::MeshViewUniform {
+                view_proj: ctx.snapshot.view_proj,
+                camera_pos: ctx.snapshot.camera_pos,
+                _pad_cam: 0.0,
+            }),
+        );
 
         let occlusion_active =
             self.mesh_occlusion.filters_draws() && owns_scene_occlusion;
@@ -213,7 +247,6 @@ impl Renderer {
             min_uniform_slot = min_uniform_slot.min(i as u64);
             max_uniform_slot = max_uniform_slot.max(i as u64);
             let uniform = MeshUniform {
-                view_proj: ctx.snapshot.view_proj,
                 model: md.model_mat,
                 material_data: [
                     resolved_static[i],
@@ -221,9 +254,6 @@ impl Renderer {
                     fullbright_flag,
                     lightmap_flag,
                 ],
-                camera_pos: ctx.snapshot.camera_pos,
-                _pad_cam: 0.0,
-                _pad: [0.0; 24],
             };
             let off = (i as u64 * mesh_uniform_size) as usize;
             let uniform_bytes = bytemuck::bytes_of(&uniform);
@@ -239,12 +269,8 @@ impl Renderer {
             min_uniform_slot = min_uniform_slot.min(i as u64);
             max_uniform_slot = max_uniform_slot.max(i as u64);
             let uniform = MeshUniform {
-                view_proj: ctx.snapshot.view_proj,
                 model: sd.model_mat,
                 material_data: [resolved_skinned[j], 0, fullbright_flag, lightmap_flag],
-                camera_pos: ctx.snapshot.camera_pos,
-                _pad_cam: 0.0,
-                _pad: [0.0; 24],
             };
             let off = (i as u64 * mesh_uniform_size) as usize;
             let uniform_bytes = bytemuck::bytes_of(&uniform);
@@ -254,7 +280,7 @@ impl Renderer {
         if wrote_uniform {
             let start_byte = (min_uniform_slot * mesh_uniform_size) as usize;
             let end_byte = ((max_uniform_slot + 1) * mesh_uniform_size) as usize;
-            self.queue.write_buffer(&self.mesh_globals_buf,
+            self.queue.write_buffer(&self.mesh_globals_bufs[self.frame_uniform_ring as usize],
                 min_uniform_slot * mesh_uniform_size,
                 &self.mesh_uniform_scratch[start_byte..end_byte],
             );
@@ -290,7 +316,11 @@ impl Renderer {
                     intensity: pl.intensity,
                 };
             }
-            self.queue.write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
+            self.queue.write_buffer(
+                &self.lights_bufs[self.frame_uniform_ring as usize],
+                0,
+                bytemuck::bytes_of(&lights),
+            );
         }
 
         let depth_view = self.ensure_depth(
@@ -310,6 +340,21 @@ impl Renderer {
             std::collections::HashMap::new();
         let mut sample_set = false;
 
+        let batch_fp = if occlusion_active {
+            0
+        } else {
+            mesh_batch_fingerprint(&meshes, ctx.shaders, ctx.snapshot.camera_pos)
+        };
+        let cache_hit = batch_fp != 0
+            && batch_fp == self.mesh_batch_fp
+            && self.mesh_batch_for_index.len() == meshes.len();
+        let (draw_order, mut batch_groups, batch_for_index) = if cache_hit {
+            (
+                self.mesh_batch_order.clone(),
+                std::mem::take(&mut self.mesh_batch_groups),
+                std::mem::take(&mut self.mesh_batch_for_index),
+            )
+        } else {
         self.mesh_draw_order.clear();
         self.mesh_draw_order.extend(0..meshes.len());
         let camera_pos = ctx.snapshot.camera_pos;
@@ -367,6 +412,10 @@ impl Renderer {
                 }
             }
         }
+        self.mesh_batch_fp = batch_fp;
+        self.mesh_batch_order = draw_order.clone();
+        (draw_order, batch_groups, batch_for_index)
+        };
 
         let indirect_command_stride =
             std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
@@ -432,13 +481,15 @@ impl Renderer {
             }
             if !self.mesh_indirect_cmd_scratch.is_empty() {
                 self.ensure_mesh_indirect_capacity(self.mesh_indirect_cmd_scratch.len());
-                self.queue.write_buffer(&self.mesh_indirect_buf,
+                self.queue.write_buffer(&self.mesh_indirect_bufs[self.frame_uniform_ring as usize],
                     0,
                     bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
                 );
             }
         }
 
+        ctx.draw_acc.note_pass();
+        crate::bind_log::begin_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mesh pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -462,14 +513,21 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_bind_group(3, &self.lights_bg, &[]);
+        ctx.draw_acc.note_bind(); pass.set_bind_group(3, &self.lights_bgs[self.frame_uniform_ring as usize], &[]);
+        crate::bind_log::group(3, "lights");
 
         let mut last_mesh_pipeline: Option<MeshPipelineKey> = None;
+        let mut globals_bound = false;
+        let mut last_g1: Option<(u32, u32)> = None;
+        let mut last_g2: Option<(u32, u32, u32)> = None;
 
         let mut emitted_batches = std::collections::HashSet::new();
         for i in draw_order {
             let md = &meshes.get(i);
             if !static_vis(i) {
+                continue;
+            }
+            if !self.draw_transparent && mesh_draw_is_transparent(ctx.shaders, md) {
                 continue;
             }
             if let Some(key) = batch_for_index[i] {
@@ -495,15 +553,26 @@ impl Renderer {
                     if key.lm_surface {
                         let bind1 =
                             self.ensure_albedo_lightmap_bg(key.texture, key.lightmap_gpu);
-                        pass.set_bind_group(1, &bind1, &[]);
+                        ctx.draw_acc.note_bind(); pass.set_bind_group(1, &bind1, &[]);
+                        crate::bind_log::group(
+                            1,
+                            &format!(
+                                "batch shader={} tex={} lm={}",
+                                key.shader_id, key.texture, key.lightmap_gpu
+                            ),
+                        );
                     } else {
-                        pass.set_bind_group(
+                        ctx.draw_acc.note_bind(); pass.set_bind_group(
                             1,
                             self.mesh_bind_group(MeshTexture::slot(key.texture)),
                             &[],
                         );
+                        crate::bind_log::group(
+                            1,
+                            &format!("batch shader={} tex={}", key.shader_id, key.texture),
+                        );
                     }
-                    pass.set_bind_group(
+                    ctx.draw_acc.note_bind(); pass.set_bind_group(
                         2,
                         self.ensure_material_bg(
                             key.material_id,
@@ -512,7 +581,20 @@ impl Renderer {
                         ),
                         &[],
                     );
-                    pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
+                    crate::bind_log::group(
+                        2,
+                        &format!(
+                            "batch mat={} n={} orm={}",
+                            key.material_id, key.normal, key.orm
+                        ),
+                    );
+                    if !globals_bound {
+                        ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.mesh_globals_bgs[self.frame_uniform_ring as usize], &[]);
+                        crate::bind_log::group(0, "mesh_globals");
+                        globals_bound = true;
+                    }
+                    last_g1 = Some((key.texture, key.lightmap_gpu));
+                    last_g2 = Some((key.material_id, key.normal, key.orm));
 
                     let mut batch_done = false;
                     if let Some(segments) = batch_mdi.get(&key) {
@@ -521,10 +603,10 @@ impl Renderer {
                         for seg in segments {
                             let vb = self.mesh_pool.vertex_buffer(seg.buffer_id);
                             let ib = self.mesh_pool.index_buffer(seg.buffer_id);
-                            pass.set_vertex_buffer(0, vb.slice(..));
-                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                            pass.multi_draw_indexed_indirect(
-                                &self.mesh_indirect_buf,
+                            ctx.draw_acc.note_vertex_buffer(); pass.set_vertex_buffer(0, vb.slice(..));
+                            ctx.draw_acc.note_index_buffer(); pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            ctx.draw_acc.note_indirect(); pass.multi_draw_indexed_indirect(
+                                &self.mesh_indirect_bufs[self.frame_uniform_ring as usize],
                                 seg.byte_offset,
                                 seg.cmd_count,
                             );
@@ -567,7 +649,7 @@ impl Renderer {
                                 ctx.prof.mesh_stats.sample_lightmap_gpu = key.lightmap_gpu;
                                 ctx.prof.mesh_stats.sample_material_id = key.material_id;
                                 ctx.prof.mesh_stats.sample_has_bsp_mesh =
-                                    Self::mesh_has_bsp_surface_data(&rep.mesh);
+                                    self.mesh_handle_has_bsp(&rep.mesh);
                             }
                             batch_done = true;
                         }
@@ -589,11 +671,11 @@ impl Renderer {
                             self.mesh_static_handle_at(group_index, &group_md.mesh, vtx);
                         let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
                         let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-                        pass.set_vertex_buffer(
+                        ctx.draw_acc.note_vertex_buffer(); pass.set_vertex_buffer(
                             0,
                             vb.slice(self.mesh_pool.vertex_byte_range(handle)),
                         );
-                        pass.set_index_buffer(
+                        ctx.draw_acc.note_index_buffer(); pass.set_index_buffer(
                             ib.slice(self.mesh_pool.index_byte_range(handle)),
                             wgpu::IndexFormat::Uint32,
                         );
@@ -651,7 +733,7 @@ impl Renderer {
                             ctx.prof.mesh_stats.sample_lightmap_gpu = key.lightmap_gpu;
                             ctx.prof.mesh_stats.sample_material_id = key.material_id;
                             ctx.prof.mesh_stats.sample_has_bsp_mesh =
-                                Self::mesh_has_bsp_surface_data(&rep.mesh);
+                                self.mesh_handle_has_bsp(&rep.mesh);
                         }
                     }
                     }
@@ -670,13 +752,17 @@ impl Renderer {
                 .mesh_vertex_layout();
             let handle = self.mesh_static_handle_at(i, &md.mesh, vtx);
             let material_id = resolved_static[i];
-            pass.set_bind_group(0, &self.mesh_globals_bg, &[]);
+            if !globals_bound {
+                ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.mesh_globals_bgs[self.frame_uniform_ring as usize], &[]);
+                crate::bind_log::group(0, "mesh_globals");
+                globals_bound = true;
+            }
 
             let lm_surface = ctx.shaders
                 .get(md.shader_id)
                 .map(|d| d.group1_uses_lightmap_array())
                 .unwrap_or(false);
-            let bsp_mesh = Self::mesh_has_bsp_surface_data(&md.mesh);
+            let bsp_mesh = self.mesh_handle_has_bsp(&md.mesh);
 
             let pipeline = self.ensure_shader_mesh_pipeline(
                 ctx.shaders,
@@ -691,16 +777,46 @@ impl Renderer {
                 last_mesh_pipeline = Some(pipe_key);
             }
             if lm_surface {
-                let bind1 = self.ensure_albedo_lightmap_bg(md.texture.0, md.lightmap_gpu);
-                pass.set_bind_group(1, &bind1, &[]);
+                let g1 = (md.texture.0, md.lightmap_gpu);
+                if last_g1 != Some(g1) {
+                    let bind1 = self.ensure_albedo_lightmap_bg(md.texture.0, md.lightmap_gpu);
+                    ctx.draw_acc.note_bind(); pass.set_bind_group(1, &bind1, &[]);
+                    crate::bind_log::group(
+                        1,
+                        &format!(
+                            "draw shader={} tex={} lm={}",
+                            md.shader_id, md.texture.0, md.lightmap_gpu
+                        ),
+                    );
+                    last_g1 = Some(g1);
+                }
             } else {
-                pass.set_bind_group(1, self.mesh_bind_group(md.texture), &[]);
+                let g1 = (md.texture.0, 0);
+                if last_g1 != Some(g1) {
+                    ctx.draw_acc.note_bind(); pass.set_bind_group(1, self.mesh_bind_group(md.texture), &[]);
+                    crate::bind_log::group(
+                        1,
+                        &format!("draw shader={} tex={}", md.shader_id, md.texture.0),
+                    );
+                    last_g1 = Some(g1);
+                }
             }
-            pass.set_bind_group(2, self.ensure_material_bg(material_id, md.normal, md.orm), &[]);
+            let g2 = (material_id, md.normal.0, md.orm.0);
+            if last_g2 != Some(g2) {
+                ctx.draw_acc.note_bind(); pass.set_bind_group(2, self.ensure_material_bg(material_id, md.normal, md.orm), &[]);
+                crate::bind_log::group(
+                    2,
+                    &format!(
+                        "draw mat={} n={} orm={}",
+                        material_id, md.normal.0, md.orm.0
+                    ),
+                );
+                last_g2 = Some(g2);
+            }
             let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
             let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-            pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
-            pass.set_index_buffer(
+            ctx.draw_acc.note_vertex_buffer(); pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
+            ctx.draw_acc.note_index_buffer(); pass.set_index_buffer(
                 ib.slice(self.mesh_pool.index_byte_range(handle)),
                 wgpu::IndexFormat::Uint32,
             );
@@ -753,6 +869,14 @@ impl Renderer {
             if !skinned_vis(j) {
                 continue;
             }
+            if !self.draw_transparent
+                && ctx
+                    .shaders
+                    .get(sd.shader_id)
+                    .is_some_and(|d| d.mesh_transparent())
+            {
+                continue;
+            }
             if last_skinned_shader != Some(sd.shader_id) {
                 let pipeline =
                     self.ensure_skinned_draw_pipeline(ctx.shaders, sd.shader_id, ctx.hdr_format);
@@ -769,17 +893,27 @@ impl Renderer {
             let material_id = resolved_skinned[j];
             let i = static_count + j;
             let offset = (i as u64 * mesh_uniform_size) as u32;
-            let bone_bg = self
+            let bone_bg = &self
                 .skinned_mesh_globals_bgs
                 .get(&sd.bone_buffer)
-                .expect("bone palette missing — upload bone_palettes before draw");
-            pass.set_bind_group(0, bone_bg, &[]);
-            pass.set_bind_group(1, self.mesh_bind_group(sd.texture), &[]);
-            pass.set_bind_group(2, self.ensure_material_bg(material_id, sd.normal, sd.orm), &[]);
+                .expect("bone palette missing — upload bone_palettes before draw")
+                [self.frame_uniform_ring as usize];
+            ctx.draw_acc.note_bind(); pass.set_bind_group(0, bone_bg, &[]);
+            crate::bind_log::group(0, &format!("skinned {j} bone={}", sd.bone_buffer));
+            ctx.draw_acc.note_bind(); pass.set_bind_group(1, self.mesh_bind_group(sd.texture), &[]);
+            crate::bind_log::group(
+                1,
+                &format!("skinned {j} shader={} tex={}", sd.shader_id, sd.texture.0),
+            );
+            ctx.draw_acc.note_bind(); pass.set_bind_group(2, self.ensure_material_bg(material_id, sd.normal, sd.orm), &[]);
+            crate::bind_log::group(
+                2,
+                &format!("skinned {j} mat={}", material_id),
+            );
             let vb = self.mesh_pool.vertex_buffer(handle.buffer_id);
             let ib = self.mesh_pool.index_buffer(handle.buffer_id);
-            pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
-            pass.set_index_buffer(
+            ctx.draw_acc.note_vertex_buffer(); pass.set_vertex_buffer(0, vb.slice(self.mesh_pool.vertex_byte_range(handle)));
+            ctx.draw_acc.note_index_buffer(); pass.set_index_buffer(
                 ib.slice(self.mesh_pool.index_byte_range(handle)),
                 wgpu::IndexFormat::Uint32,
             );
@@ -794,6 +928,9 @@ impl Renderer {
             }
         }
 
+        self.mesh_batch_groups = batch_groups;
+        self.mesh_batch_for_index = batch_for_index;
+        crate::bind_log::end_pass();
         ctx.prof.mesh_stats.mesh_for_draw_ms = lap_ms(ctx.lap);
         ctx.prof.mesh_gpu_uploads = self.frame_mesh_gpu_uploads;
         ctx.prof.mesh_gpu_cached = self.frame_mesh_gpu_cached;

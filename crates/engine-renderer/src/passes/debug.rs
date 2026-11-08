@@ -44,6 +44,7 @@ impl Renderer {
 
             // 1) Behind geometry — dim (depth test: farther than scene).
             if let Some(ref pipeline) = self.debug_pipeline_occluded {
+                ctx.draw_acc.note_pass();
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("debug occluded"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -69,14 +70,15 @@ impl Renderer {
                 });
                 ctx.draw_acc.note_pipeline();
                 pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &self.debug_globals_bg, &[]);
-                pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
+                ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.debug_globals_bg, &[]);
+                ctx.draw_acc.note_vertex_buffer(); pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
                 pass.draw(0..vcount, 0..1);
                 ctx.draw_acc.note_draw_verts(vcount);
             }
 
             // 2) In front / on surface — full color.
             if let Some(ref pipeline) = self.debug_pipeline {
+                ctx.draw_acc.note_pass();
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("debug visible"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -102,8 +104,8 @@ impl Renderer {
                 });
                 ctx.draw_acc.note_pipeline();
                 pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &self.debug_globals_bg, &[]);
-                pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
+                ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.debug_globals_bg, &[]);
+                ctx.draw_acc.note_vertex_buffer(); pass.set_vertex_buffer(0, self.debug_vertex_buf.slice(..));
                 pass.draw(0..vcount, 0..1);
                 ctx.draw_acc.note_draw_verts(vcount);
             }

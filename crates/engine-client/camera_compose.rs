@@ -65,17 +65,16 @@ mod tests {
 
     fn scene_with_two_layered_draws() -> RenderScene {
         use deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD;
-        use deerpunk_engine_common::resource::mesh::Mesh;
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
         use deerpunk_engine_renderer::snapshot::SkyDraw;
         use deerpunk_engine_renderer::snapshot::MeshDraw;
-        use std::sync::Arc;
 
         let chunk = Aabb::from_min_max(Vec3::ZERO, Vec3::splat(16.0));
         let hand = Aabb::from_min_max(Vec3::new(-0.2, -0.2, -0.2), Vec3::splat(0.2));
 
         let mut geo = SceneGeometry::default();
         geo.mesh_draws.push(MeshDraw {
-            mesh: Arc::new(Mesh::empty()),
+            mesh: MeshHandle(1),
             model_mat: glam::Mat4::IDENTITY.to_cols_array_2d(),
             layer_mask: RENDER_LAYER_WORLD,
             batchable: false,
@@ -94,7 +93,7 @@ mod tests {
             uniform_aux: 0,
         });
         geo.mesh_draws.push(MeshDraw {
-            mesh: Arc::new(Mesh::empty()),
+            mesh: MeshHandle(1),
             model_mat: glam::Mat4::IDENTITY.to_cols_array_2d(),
             layer_mask: OVERLAY_LAYER,
             batchable: false,
@@ -182,13 +181,16 @@ mod tests {
 
         let mut world_out = RenderSnapshot::new(ColorLoad::Clear);
         pack_surface_camera(&scene, &snaps[0], &mut world_out);
-        assert_eq!(world_out.mesh_draws.len(), 1);
+        assert!(world_out.frustum_culled);
+        assert_eq!(world_out.mesh_geometry_indices.len(), 1);
+        assert!(world_out.mesh_draws.is_empty());
         assert!(world_out.sky.is_some() || snaps[0].sky.is_some());
         assert_eq!(world_out.pass_mask, cam_features::WORLD_DEFAULT);
 
         let mut stack_out = RenderSnapshot::new(ColorLoad::Load);
         pack_surface_camera(&scene, &snaps[1], &mut stack_out);
-        assert_eq!(stack_out.mesh_draws.len(), 1);
+        assert_eq!(stack_out.mesh_geometry_indices.len(), 1);
+        assert!(stack_out.mesh_draws.is_empty());
         assert!(stack_out.sky.is_none());
         assert_eq!(stack_out.pass_mask, cam_features::DEFAULT_OVERLAY);
         assert!(stack_out.terrain_splat_draws.is_empty());

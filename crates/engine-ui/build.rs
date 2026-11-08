@@ -99,6 +99,9 @@ fn main() {
             println!("cargo:rustc-link-lib=static=freetype");
         }
         println!("cargo:rustc-link-lib=framework=OpenGL");
+        // Final link is rustc with -nodefaultlibs, so the C++ runtime is not
+        // pulled in automatically. RmlUi needs Itanium ABI symbols (___cxa_*).
+        println!("cargo:rustc-link-lib=c++");
     } else {
         if cfg!(debug_assertions) {
             println!("cargo:rustc-link-lib=static=freetyped");

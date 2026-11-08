@@ -56,6 +56,7 @@ impl App {
         // If `SDL_Metal_CreateView` returns NULL (e.g. Homebrew `sdl2-compat` shim), raw_window_handle panics.
         let mut wb = video.window(title, width, height);
         wb.resizable();
+        wb.allow_highdpi();
         #[cfg(target_os = "macos")]
         {
             use sdl2::sys::SDL_WindowFlags;
@@ -117,11 +118,9 @@ impl App {
                 Event::Quit { .. } => return false,
                 Event::Window { win_event, .. } => match win_event {
                     sdl2::event::WindowEvent::Close => return false,
-                    sdl2::event::WindowEvent::Resized(w, h) => {
-                        self.pending_resize = Some((w.max(1) as u32, h.max(1) as u32));
-                    }
-                    sdl2::event::WindowEvent::SizeChanged(w, h) => {
-                        self.pending_resize = Some((w.max(1) as u32, h.max(1) as u32));
+                    sdl2::event::WindowEvent::Resized(_, _) | sdl2::event::WindowEvent::SizeChanged(_, _) => {
+                        let (w, h) = self.window.drawable_size();
+                        self.pending_resize = Some((w.max(1), h.max(1)));
                     }
                     _ => {}
                 },
@@ -146,7 +145,11 @@ impl App {
                 }
                 Event::MouseMotion { x, y, xrel, yrel, .. } => {
                     input.add_mouse_delta(xrel as f32, yrel as f32);
-                    input.set_mouse_position(x as f32, y as f32);
+                    let (lw, lh) = self.window.size();
+                    let (dw, dh) = self.window.drawable_size();
+                    let sx = dw as f32 / lw.max(1) as f32;
+                    let sy = dh as f32 / lh.max(1) as f32;
+                    input.set_mouse_position(x as f32 * sx, y as f32 * sy);
                 }
                 Event::MouseButtonDown { mouse_btn, .. } => {
                     let bit = match mouse_btn {
@@ -193,8 +196,30 @@ impl App {
             .expect("Failed to create wgpu surface from SDL2")
     }
 
+    /// Logical window size in points (SDL `window.size()`).
     pub fn window_size(&self) -> (u32, u32) {
         self.window.size()
+    }
+
+    /// Backing-store / drawable size in physical pixels (swapchain, wgpu).
+    pub fn framebuffer_size(&self) -> (u32, u32) {
+        self.window.drawable_size()
+    }
+
+    /// `drawable / window` — framebuffer pixels per window point.
+    pub fn content_scale(&self) -> (f32, f32) {
+        let (lw, lh) = self.window.size();
+        let (dw, dh) = self.window.drawable_size();
+        (
+            dw as f32 / lw.max(1) as f32,
+            dh as f32 / lh.max(1) as f32,
+        )
+    }
+
+    /// SDL mouse `x`/`y` (window client / points) → framebuffer pixels for UI hit-testing.
+    pub fn pointer_to_framebuffer(&self, x: f32, y: f32) -> (f32, f32) {
+        let (sx, sy) = self.content_scale();
+        (x * sx, y * sy)
     }
 
     pub fn set_title(&mut self, title: &str) {

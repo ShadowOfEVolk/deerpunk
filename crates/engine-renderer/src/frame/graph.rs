@@ -31,9 +31,7 @@ pub fn build_forward_graph() -> RenderGraph {
         .add_node(forward_node("clear_hdr", &[], &[HDR]))
         .add_node(forward_node("sprites_3d", &[HDR], &[HDR]))
         .add_node(forward_node("mesh", &[HDR], &[HDR]))
-        .add_node(forward_node("terrain_splat", &[HDR], &[HDR]))
         .add_node(forward_node("debug", &[HDR], &[HDR]))
         .add_node(forward_node("hud", &[HDR], &[HDR]))
-        .add_node(forward_node("luminance", &[HDR], &[HDR]))
         .add_node(forward_node("tonemap_ui", &[HDR], &[SURFACE]))
 }

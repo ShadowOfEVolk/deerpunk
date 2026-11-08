@@ -9,10 +9,15 @@ impl Renderer {
         &mut self,
         ctx: &mut FrameCtx<'_>, encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline,
     ) {
+    if ctx.snapshot.instances.is_empty() {
+        let _ = lap_ms(ctx.lap);
+        return;
+    }
     // --- Pass 1: 3D scene (clear + draw) ---
     let gpu_insts = self.build_instances_from(&ctx.snapshot.instances);
     self.write_buffers(&gpu_insts, ctx.snapshot.view_proj);
     {
+        ctx.draw_acc.note_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("3d pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -31,7 +36,7 @@ impl Renderer {
         });
         ctx.draw_acc.note_pipeline();
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &self.globals_bg, &[]);
+        ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.globals_bg, &[]);
         Self::draw_batched(
             &mut pass,
             &ctx.snapshot.instances,

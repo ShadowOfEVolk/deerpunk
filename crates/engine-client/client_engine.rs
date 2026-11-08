@@ -63,6 +63,14 @@ struct ServerLoopSound {
     origin: [f32; 3],
 }
 
+#[derive(Default)]
+struct UiLatch {
+    wheel: f32,
+    text: String,
+    keys: Vec<(i32, bool)>,
+    clicks: Vec<bool>,
+}
+
 pub struct ClientEngine {
     pub(crate) app: App,
     renderer: Renderer,
@@ -74,6 +82,13 @@ pub struct ClientEngine {
     /// then RmlUi shuts down (declaration order).
     pub ui_controller: UiController,
     ui: Option<UiRuntime>,
+    ui_fps: i32,
+    ui_accum: f32,
+    ui_screen: (u32, u32),
+    ui_mouse: Option<(i32, i32)>,
+    ui_has_frame: bool,
+    draw_ui: bool,
+    ui_latch: UiLatch,
     /// Plugged audio backend (`None` → disabled).
     audio: Option<Box<dyn AudioBackend>>,
     /// [`Host::resources`], set in [`set_audio_backend`]. Client tick thread only.
@@ -102,7 +117,7 @@ pub struct ClientEngine {
     pub bone_buffers: BoneBufferPool,
     /// Shared fallback mesh (stable `content_id`, retained on GPU).
     fallback_mesh: Arc<Mesh>,
-    /// In-game `~` console — keyboard routed to ImGui before render.
+    /// In-game `~` console — keyboard routed to Nuklear before render.
     console_open: bool,
     pub dll: Option<ClientDll>,
     pub console: Console,
@@ -150,7 +165,7 @@ impl ClientEngine {
 
         let mut renderer = Renderer::new(load_shader_sources(resources, 0), &instance, Some(&surface));
 
-        let (w, h) = app.window_size();
+        let (w, h) = app.framebuffer_size();
         deerpunk_engine_common::frame::set_frame_size(w, h);
         renderer.set_surface(surface, w, h);
 
@@ -169,6 +184,13 @@ impl ClientEngine {
             input: Input::new(),
             ui_controller: UiController::new(),
             ui: None,
+            ui_fps: 30,
+            ui_accum: 0.0,
+            ui_screen: (0, 0),
+            ui_mouse: None,
+            ui_has_frame: false,
+            draw_ui: true,
+            ui_latch: UiLatch::default(),
             audio: None,
             audio_assets: std::ptr::null(),
             audio_started: HashSet::new(),
@@ -210,11 +232,7 @@ impl ClientEngine {
         }
     }
 
-    pub fn imgui_context_ptr(&self) -> *mut std::ffi::c_void {
-        self.renderer.imgui_context_ptr()
-    }
-
-    /// Gamelib Dear ImGui widgets (host GPU). Skipped for legacy client DLLs that rasterize in-process.
+    /// Gamelib Nuklear widgets (host GPU). Skipped for legacy client DLLs that rasterize in-process.
     pub fn gamelib_ui_build_frame(&self, _delta_time: f32) {
         let Some(ref dll) = self.dll else {
             return;
@@ -229,6 +247,7 @@ impl ClientEngine {
             surface_format: crate::gamelib_ui::gamelib_ui_format_token(format),
             width: w as f32,
             height: h as f32,
+            nk: crate::gamelib_ui::nuklear_draw_host(),
         };
         unsafe {
             let _ = dll.gamelib_ui_build(&args);
@@ -244,7 +263,8 @@ impl ClientEngine {
         game_frame_ctx: *mut std::ffi::c_void,
         delta_time: f32,
     ) {
-        self.gamelib_ui_build_frame(delta_time);
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.frame");
+        let _ = delta_time;
         let gamelib_ui_render = self
             .dll
             .as_ref()
@@ -270,6 +290,7 @@ impl ClientEngine {
         ) {
             self.handle_surface_frame_error(e);
         }
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
     }
 
     pub fn clear_game_debug(&mut self) {
@@ -427,7 +448,9 @@ impl ClientEngine {
 
     /// Single client [`ecs_progress`] for this frame (after net apply, before gamelib `pre_render`).
     pub fn tick_world(&mut self, dt: f32) {
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.ecs.simulate");
         self.world.simulate(dt.max(0.0));
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
     }
 
     pub fn refresh_stream_meshes(
@@ -539,13 +562,13 @@ impl ClientEngine {
         use deerpunk_engine_renderer::FrameError;
         match err {
             FrameError::SurfaceOutdated | FrameError::SurfaceLost => {
-                let (w, h) = self.app.window_size();
+                let (w, h) = self.app.framebuffer_size();
                 self.resize_window(w, h);
             }
             FrameError::SurfaceOccluded | FrameError::SurfaceTimeout => {}
             FrameError::SurfaceValidation => {
                 log::warn!("[client] surface validation error — reconfiguring");
-                let (w, h) = self.app.window_size();
+                let (w, h) = self.app.framebuffer_size();
                 self.resize_window(w, h);
             }
         }
@@ -850,7 +873,7 @@ impl ClientEngine {
     pub fn init_ui(&mut self, ui_root: impl Into<PathBuf>) {
         let ui_root = ui_root.into();
         log::info!("[client] init_ui from {}", ui_root.display());
-        let (w, h) = self.app.window_size();
+        let (w, h) = self.app.framebuffer_size();
         let assets = Box::new(UiDirAssets::new(ui_root));
         let ui = UiRuntime::new(assets, (w, h), "main");
         if !ui.is_ready() {
@@ -877,7 +900,7 @@ impl ClientEngine {
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
     ) -> RenderScene {
-        self.extract_scene_view(meshes, None, true, 0.0)
+        self.extract_scene_view(meshes, None, true, true)
     }
 
     /// Extract with optional view entity (server `SetView` net pawn).
@@ -886,23 +909,20 @@ impl ClientEngine {
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
         view_entity: Option<u64>,
         early_cull: bool,
-        draw_distance: f32,
+        draw_world: bool,
     ) -> RenderScene {
         let mut extract_gpu = deerpunk_engine_renderer::SceneExtractGpuStats::default();
 
+        self.renderer.bind_mesh_registry(meshes);
         let fallback = self.fallback_mesh.clone();
         let aspect = deerpunk_engine_common::frame::frame_width() as f32
             / deerpunk_engine_common::frame::frame_height().max(1) as f32;
         if let Some(ext) = self.extractor.as_ref() {
+            let _z = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.sync_world");
             let sync_start = std::time::Instant::now();
             let sync_stats = ext.sync_world_transforms(&mut self.world);
             extract_gpu.sync_world_ms = sync_start.elapsed().as_secs_f32() * 1000.0;
             extract_gpu.sync_world_unchanged = sync_stats.unchanged;
-        }
-        if draw_distance > 0.0 {
-            if let Some(ext) = self.extractor.as_ref() {
-                ext.apply_draw_stream_distance(&mut self.world, view_entity, draw_distance);
-            }
         }
         let mut scene = self
             .extractor
@@ -920,13 +940,20 @@ impl ClientEngine {
                     &mut extract_gpu,
                     aspect,
                     early_cull,
+                    draw_world,
                 )
             })
             .unwrap_or_else(RenderScene::new);
         let post_start = std::time::Instant::now();
         scene.game_time = self.time;
-        self.fill_bone_palettes(&mut scene);
-        self.fill_procedural_sky(&mut scene);
+        {
+            let _z = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.bones");
+            self.fill_bone_palettes(&mut scene);
+        }
+        {
+            let _z = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.sky");
+            self.fill_procedural_sky(&mut scene);
+        }
         extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
 
         self.renderer.note_extract_gpu_stats(extract_gpu);
@@ -963,6 +990,10 @@ impl ClientEngine {
                 });
             }
         }
+    }
+
+    pub fn set_draw_ui(&mut self, draw: bool) {
+        self.draw_ui = draw;
     }
 
     pub fn ui_runtime(&self) -> Option<&UiRuntime> {
@@ -1043,6 +1074,101 @@ impl ClientEngine {
         )
     }
 
+    pub fn set_ui_fps(&mut self, fps: i32) {
+        self.ui_fps = fps;
+    }
+
+    fn ui_due(&mut self, dt: f32) -> bool {
+        if !self.ui_has_frame || self.ui_fps <= 0 {
+            self.ui_accum = 0.0;
+            return true;
+        }
+        self.ui_accum += dt;
+        let step = 1.0 / self.ui_fps.max(1) as f32;
+        if self.ui_accum >= step {
+            self.ui_accum = (self.ui_accum - step).min(step);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn latch_ui_input(&mut self, wheel: f32) {
+        if self.input.mouse_button_pressed(0) {
+            self.ui_latch.clicks.push(true);
+        }
+        if self.input.mouse_button_released(0) {
+            self.ui_latch.clicks.push(false);
+        }
+        if self.console_open {
+            return;
+        }
+        self.ui_latch.wheel += wheel;
+        self.ui_latch
+            .keys
+            .extend(self.input.drain_ui_keys());
+        let mut buf = [0u8; 128];
+        let n = self.input.take_text(&mut buf);
+        if n > 0 {
+            if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                self.ui_latch.text.push_str(s);
+            }
+        }
+    }
+
+    fn flush_ui(&mut self, w: u32, h: u32) {
+        let latch = std::mem::take(&mut self.ui_latch);
+        let resize = self.ui_screen != (w, h);
+        if resize {
+            self.ui_screen = (w, h);
+        }
+        let (mx, my) = self.input.mouse_position();
+        let mouse = (mx as i32, my as i32);
+        let mouse_moved = self.ui_mouse != Some(mouse);
+        if mouse_moved {
+            self.ui_mouse = Some(mouse);
+        }
+        let frame = {
+            let Some(ui) = self.ui.as_ref() else {
+                return;
+            };
+            if resize {
+                ui.resize(w, h);
+            }
+            if mouse_moved {
+                ui.mouse_move(mouse.0, mouse.1);
+            }
+            for down in latch.clicks {
+                ui.mouse_button(0, down);
+            }
+            if latch.wheel != 0.0 {
+                ui.mouse_wheel(latch.wheel);
+            }
+            if !latch.keys.is_empty() {
+                crate::ui_rml_input::feed_rml_keys(ui, latch.keys.into_iter());
+            }
+            if !latch.text.is_empty() {
+                crate::ui_rml_input::feed_rml_text(ui, &latch.text);
+            }
+            ui.frame()
+        };
+        if let Some(frame) = frame {
+            static LOG_ONCE: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !LOG_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::info!(
+                    "[client] first UiFrame: batches={} verts={} idx={} tex_uploads={}",
+                    frame.batches.len(),
+                    frame.vertices.len(),
+                    frame.indices.len(),
+                    frame.textures.len()
+                );
+            }
+            self.ui_has_frame = true;
+            self.renderer.set_ui_frame(Some(frame));
+        }
+    }
+
     pub fn tick(
         &mut self,
         scene: Option<&RenderScene>,
@@ -1066,72 +1192,65 @@ impl ClientEngine {
             return false;
         }
 
-        if self.console_open {
-            unsafe {
-                crate::imgui_console_input::feed(&mut self.input, &self.app);
-            }
-            self.input.clear_keys();
-        }
-
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.input");
         let wheel = self.input.take_mouse_wheel();
         {
             let (mx, my) = self.input.mouse_position();
             let b = self.input.mouse_buttons();
-            let (wheel_y, wheel_h) = if self.console_open {
-                (wheel, 0.0)
-            } else {
-                (0.0, 0.0)
-            };
-            self.renderer.set_imgui_input(
-                [mx, my],
-                [b & 1 != 0, b & 2 != 0, b & 4 != 0, false, false],
-                wheel_y,
-                wheel_h,
-            );
+            let mut text = String::new();
+            let mut keys = Vec::new();
+            if self.console_open {
+                self.console.capture_keys(&self.input);
+                let mut buf = [0u8; 512];
+                let n = self.input.take_text(&mut buf);
+                if n > 0 {
+                    text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                }
+                let map = [
+                    (40u16, deerpunk_engine_renderer::host_ui::UiKey::enter()),
+                    (42, deerpunk_engine_renderer::host_ui::UiKey::backspace()),
+                    (76, deerpunk_engine_renderer::host_ui::UiKey::del()),
+                    (80, deerpunk_engine_renderer::host_ui::UiKey::left()),
+                    (79, deerpunk_engine_renderer::host_ui::UiKey::right()),
+                ];
+                for (sc, key) in map {
+                    keys.push((key, self.input.is_down(sc)));
+                }
+                keys.push((
+                    deerpunk_engine_renderer::host_ui::UiKey::ctrl(),
+                    self.input.is_down(224) || self.input.is_down(228),
+                ));
+                keys.push((
+                    deerpunk_engine_renderer::host_ui::UiKey::shift(),
+                    self.input.is_down(225) || self.input.is_down(229),
+                ));
+                self.input.clear_keys();
+            }
+            self.renderer.set_host_ui_input(deerpunk_engine_renderer::host_ui::UiFrameInput {
+                mouse: [mx, my],
+                buttons: [b & 1 != 0, b & 2 != 0, b & 4 != 0],
+                wheel: if self.console_open { wheel } else { 0.0 },
+                text,
+                keys,
+            });
         }
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
 
         let prep_start = std::time::Instant::now();
-        let (w, h) = self.app.window_size();
+        let (w, h) = self.app.framebuffer_size();
         let ui_start = std::time::Instant::now();
-        if let Some(ui) = self.ui.as_ref() {
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.rmlui");
+        if !self.draw_ui {
+            self.ui_has_frame = false;
+            self.renderer.set_ui_frame(None);
+        } else if self.ui.is_some() {
             if self.ui_controller.any_visible() {
-                ui.resize(w, h);
-                let (mx, my) = self.input.mouse_position();
-                ui.mouse_move(mx as i32, my as i32);
-                if self.input.mouse_button_pressed(0) {
-                    ui.mouse_button(0, true);
-                }
-                if self.input.mouse_button_released(0) {
-                    ui.mouse_button(0, false);
-                }
-                if !self.console_open && wheel != 0.0 {
-                    ui.mouse_wheel(wheel);
-                }
-                if !self.console_open {
-                    crate::ui_rml_input::feed_rml_keys(ui, self.input.drain_ui_keys());
-                    let mut buf = [0u8; 128];
-                    let n = self.input.take_text(&mut buf);
-                    if n > 0 {
-                        if let Ok(s) = std::str::from_utf8(&buf[..n]) {
-                            crate::ui_rml_input::feed_rml_text(ui, s);
-                        }
-                    }
-                }
-                if let Some(frame) = ui.frame() {
-                    static LOG_ONCE: std::sync::atomic::AtomicBool =
-                        std::sync::atomic::AtomicBool::new(false);
-                    if !LOG_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        log::info!(
-                            "[client] first UiFrame: batches={} verts={} idx={} tex_uploads={}",
-                            frame.batches.len(),
-                            frame.vertices.len(),
-                            frame.indices.len(),
-                            frame.textures.len()
-                        );
-                    }
-                    self.renderer.set_ui_frame(Some(frame));
+                self.latch_ui_input(wheel);
+                if self.ui_due(delta_time) {
+                    self.flush_ui(w, h);
                 }
             } else {
+                self.ui_has_frame = false;
                 self.renderer.set_ui_frame(None);
             }
         } else {
@@ -1142,9 +1261,11 @@ impl ClientEngine {
             }
         }
         self.input.end_frame_input();
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
         let ui_ms = ui_start.elapsed().as_secs_f32() * 1000.0;
 
         // No cameras (e.g. menu-only) still need a surface pass so the UI overlay runs.
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.snapshots");
         let snap_start = std::time::Instant::now();
         let aspect = w as f32 / h as f32;
         if let Some(s) = scene.as_ref() {
@@ -1155,6 +1276,7 @@ impl ClientEngine {
         let build_snap_ms = snap_start.elapsed().as_secs_f32() * 1000.0;
         let frustum_ms = self.cull_scratch.last_frustum_ms;
         let assemble_ms = self.cull_scratch.last_assemble_ms;
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
 
         let mut surface_indices: Vec<usize> = self
             .camera_build_scratch
@@ -1169,6 +1291,7 @@ impl ClientEngine {
         });
 
         // Audio: listener from lowest-order surface camera.
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.audio");
         let audio_start = std::time::Instant::now();
         {
             let listener = surface_indices
@@ -1183,6 +1306,7 @@ impl ClientEngine {
             self.audio_tick(listener);
         }
         let audio_ms = audio_start.elapsed().as_secs_f32() * 1000.0;
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
 
         self.renderer
             .note_prep_breakdown(ui_ms, build_snap_ms, audio_ms);
@@ -1190,9 +1314,11 @@ impl ClientEngine {
         let mut gather_ms = 0.0f32;
         let _ = prep_start;
 
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present");
         let mut rendered_surface = false;
         if !surface_indices.is_empty() {
             self.camera_compose_scratch.clear();
+            deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.gather");
             if let Some(sc) = scene {
                 for (i, &cam_idx) in surface_indices.iter().enumerate() {
                     let cam = &self.camera_build_scratch[cam_idx];
@@ -1206,10 +1332,13 @@ impl ClientEngine {
                     self.camera_compose_scratch.push(snap);
                 }
             }
+            deerpunk_engine_renderer::gamelib_profile::zone_end();
             let post_idx = 0usize;
+            deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.clone");
             let cameras = self.camera_compose_scratch.clone();
             let post_snap = cameras[post_idx].clone();
             let geometry_owned = scene.as_ref().map(|s| s.geometry.clone());
+            deerpunk_engine_renderer::gamelib_profile::zone_end();
             self.render_surface_frame(
                 &cameras,
                 &post_snap,
@@ -1218,10 +1347,16 @@ impl ClientEngine {
                 game_frame_ctx,
                 delta_time,
             );
+            deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.drop");
+            drop(cameras);
+            drop(post_snap);
+            drop(geometry_owned);
+            deerpunk_engine_renderer::gamelib_profile::zone_end();
             rendered_surface = true;
         }
         self.renderer
             .note_cull_detail(frustum_ms, assemble_ms, gather_ms);
+        deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.scratch");
         for snap in self.camera_build_scratch.drain(..) {
             if !snap.frustum_culled {
                 continue;
@@ -1233,6 +1368,7 @@ impl ClientEngine {
                 self.cull_scratch.visible_skinned = snap.visible_skinned;
             }
         }
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
         if !rendered_surface {
             let snapshot = RenderSnapshot::new(deerpunk_engine_common::components::ColorLoad::Clear);
             self.render_surface_frame(
@@ -1245,8 +1381,11 @@ impl ClientEngine {
             );
         }
         if self.render_pipeline_mode >= 1 {
+            deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.kick");
             self.pipelined_submit_kick();
+            deerpunk_engine_renderer::gamelib_profile::zone_end();
         }
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
         true
     }
 
@@ -1299,8 +1438,9 @@ impl ClientEngine {
         self.render_pipeline_mode = 0;
     }
 
+    /// Drawable size in physical pixels (render resolution).
     pub fn window_size(&self) -> (u32, u32) {
-        self.app.window_size()
+        self.app.framebuffer_size()
     }
 
     pub fn set_text_input_active(&mut self, active: bool) {
@@ -1489,7 +1629,7 @@ fn load_shader_sources(rm: &ResourceManager, screen_dither_mode: i32) -> ShaderS
         mesh_skinned: load_wgsl_required(rm, shader_dir, "mesh_skinned", no_defines),
         terrain_splat: load_wgsl_required(rm, shader_dir, "terrain_splat", no_defines),
         sky: load_wgsl_required(rm, shader_dir, "sky", no_defines),
-        cloud: load_wgsl_required(rm, shader_dir, "cloud", &dither_defines),
+        cloud: load_wgsl_required(rm, shader_dir, "cloud", no_defines),
         debug: load_wgsl_required(rm, shader_dir, "debug", no_defines),
         tonemap: load_wgsl_required(rm, shader_dir, "tonemap", no_defines),
         luminance: load_wgsl_required(rm, shader_dir, "luminance", no_defines),

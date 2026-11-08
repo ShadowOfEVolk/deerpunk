@@ -147,6 +147,8 @@ pub struct PostFx {
     shaders: PostFxShaders,
     hdr_format: wgpu::TextureFormat,
     frame_binds: Option<FrameBindGroups>,
+    /// HDR → surface only. Bloom and grain are not part of the runtime frame.
+    tonemap_bind: Option<wgpu::BindGroup>,
 }
 
 fn generate_noise_rgba(size: u32) -> Vec<u8> {
@@ -459,6 +461,7 @@ impl PostFx {
             shaders,
             hdr_format,
             frame_binds: None,
+            tonemap_bind: None,
         }
     }
 
@@ -820,14 +823,20 @@ impl PostFx {
         mut prof: Option<&mut RenderFrameProfile>,
     ) {
         let mut lap = Instant::now();
-        self.ensure_targets(device, w, h);
-        self.ensure_pipelines(device, surface_format);
+        if self.tonemap_bind.is_none() || self.full_w != w || self.full_h != h {
+            self.full_w = w;
+            self.full_h = h;
+            self.tonemap_bind = Some(Self::make_tonemap_bg(
+                device,
+                &self.tonemap_bg_layout,
+                hdr_view,
+                &self.linear_sampler,
+                tonemap_uniform_buf,
+                "tonemap hdr bg",
+            ));
+        }
 
-        self.ensure_frame_binds(device, hdr_view, tonemap_uniform_buf);
-        let binds = self.frame_binds.as_ref().unwrap();
-
-        // POSTFX OFF: bloom + grain disabled (commented).
-        let use_bloom = false;
+        // Bloom and grain are not runtime passes. Tonemap is exposure + curve only.
         /*
         let use_bloom = self.bloom_enabled && self.bloom_intensity > 0.001;
         if use_bloom {
@@ -937,12 +946,6 @@ impl PostFx {
         let _ = game_time;
         queue.write_buffer(tonemap_uniform_buf, 0, bytemuck::bytes_of(&globals));
 
-        let tonemap_bg = if use_bloom {
-            &binds.tonemap_bloom
-        } else {
-            &binds.tonemap_hdr
-        };
-
         /* POSTFX grain off
         if self.grain_enabled && self.grain_strength > 0.001 {
             let ldr_view = self.ldr_view.as_ref().unwrap().clone();
@@ -1027,6 +1030,7 @@ impl PostFx {
                 multiview_mask: None,
             });
             pass.set_pipeline(tonemap_surface_pipeline);
+            let tonemap_bg = self.tonemap_bind.as_ref().unwrap();
             pass.set_bind_group(0, tonemap_bg, &[]);
             pass.draw(0..3, 0..1);
             if let Some(p) = prof.as_mut() {

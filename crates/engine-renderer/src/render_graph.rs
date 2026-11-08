@@ -196,6 +196,30 @@ impl RenderGraph {
         )
     }
 
+    /// Registration order, no texture-view map. Forward passes read views from [`crate::frame::context::FrameCtx`].
+    pub fn execute_registered(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        user_data: *mut c_void,
+    ) {
+        let inputs = HashMap::new();
+        let outputs = HashMap::new();
+        for node in &self.nodes {
+            let mut ctx = NodeContext {
+                device,
+                queue,
+                encoder,
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                user_data,
+                node_name: node.name,
+            };
+            (node.execute)(&mut ctx);
+        }
+    }
+
     /// Forward / aliased-external frames: run nodes in **registration order** (no topological sort).
     ///
     /// When several nodes read/write the same [`Resource::External`] id (e.g. one HDR target),

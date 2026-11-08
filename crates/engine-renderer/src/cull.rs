@@ -81,16 +81,19 @@ impl CullScratch {
     }
 }
 
+pub fn mesh_local_bounds(mesh: &deerpunk_engine_common::resource::mesh::Mesh) -> Aabb {
+    assert!(
+        mesh.has_local_bounds(),
+        "mesh local AABB is an invariant (set at upload)"
+    );
+    Aabb::from_min_max(
+        glam::Vec3::from_array(mesh.bounds_min),
+        glam::Vec3::from_array(mesh.bounds_max),
+    )
+}
+
 pub fn world_bounds(model: Mat4, mesh: &deerpunk_engine_common::resource::mesh::Mesh) -> Aabb {
-    let local = if mesh.has_local_bounds() {
-        Aabb::from_min_max(
-            glam::Vec3::from_array(mesh.bounds_min),
-            glam::Vec3::from_array(mesh.bounds_max),
-        )
-    } else {
-        Aabb::from_positions(&mesh.positions)
-    };
-    local.transform(model)
+    mesh_local_bounds(mesh).transform(model)
 }
 
 pub struct CullCamera {

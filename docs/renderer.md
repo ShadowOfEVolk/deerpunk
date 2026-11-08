@@ -44,18 +44,15 @@ flowchart TB
 
 ### 1. Extract (client)
 
-**Where:** `crates/engine-client/render_extractor.rs`, `render_extract_cache.rs`  
+**Where:** `crates/engine-client/render_extractor.rs`  
 **When:** Each frame before render, from `ClientEngine::extract_scene_view`.
 
 1. **`sync_world_transforms`** — [`TransformComponent`] + [`ParentComponent`] → [`WorldTransformComponent`] (hierarchy is **not** render-specific; extract only reads world pose).
 2. Extractor runs **prepared ECS queries** (cameras, `Mesh3D` + `DrawMaterial`, skinned meshes, terrain splats, lights). It outputs:
 
 - **`RenderScene`** — cameras + **`SceneGeometry`** (all draw lists, sky, lights, viewmodel pass).
-- Optional **early frustum** during extract (`MeshDrawExtractCache`) to skip building draws for entities already outside the view (`frustum_skip` counter). Cvar **`cl_extract_early_cull`** (default `1`). When enabled with a **single** surface camera, **`build_snapshots`** skips the second CPU frustum pass (layer mask only).
-- **`cl_draw_distance`** (default `192`, `0`=off): client sets [`MeshDrawHidden`] on mesh entities farther than the radius so they drop out of the extract query. **Gamelib should still destroy** unloaded chunk entities; this cvar reduces extract work for entities that remain replicated/loaded.
-- **Root mesh entities** (no `ParentComponent`): cache hit avoids `world_pose` and reuses cached `MeshDraw` (`try_mesh_root_hit`). Typical voxel chunks at rest spend most frames in `hit` + `frustum_skip`.
-
-**Extract cache:** For static meshes, per-entity data is cached by `(mesh, material, aux)`. If only the transform changed, the engine updates `model_mat` and world AABB without rebuilding material/texture fields (`xform_only` vs `static_rebuild`).
+- Optional **early frustum** during extract skips entities already outside the view (`frustum_skip` counter). Bounds come from the mesh AABB invariant plus the world transform. Cvar **`cl_extract_early_cull`** (default `1`). When enabled with a **single** surface camera, **`build_snapshots`** skips the second CPU frustum pass (layer mask only).
+- [`MeshDrawHidden`] is a gamelib marker (cave culling). Extract queries exclude it. Distant chunks are not loaded; there is no engine draw-distance pass.
 
 After extract, the client fills bone palettes and procedural sky, then calls **`geometry.refresh_cull_serial()`** so frustum broad-phase knows when draw sets or bounds changed.
 
@@ -291,7 +288,6 @@ Shaders load from **`gamedir/shaders/`**; reload via **`v1:renderer:reload_shade
 | Module | Role |
 |--------|------|
 | `render_extractor.rs` | ECS → `RenderScene` |
-| `render_extract_cache.rs` | Cached static draws + early frustum |
 | `draw_material_resolve.rs` | `DrawMaterial` → engine material ids |
 | `mesh_lifecycle.rs` | Retain/release mesh GPU content with entities |
 | `bone_buffer_pool.rs` | CPU bone matrices → GPU palette |

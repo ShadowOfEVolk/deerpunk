@@ -17,12 +17,15 @@ use crate::cull::{
 use deerpunk_engine_common::components::render_layer::render_layer_visible;
 
 pub use deerpunk_engine_common::material::ShaderId;
+pub use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 pub use deerpunk_engine_common::MeshTexture;
 
-/// Один draw-вызов меша в3D.
+/// Один draw-вызов меша в 3D.
+///
+/// `mesh` is a handle into the frame's mesh registry. Encode resolves CPU bytes there.
 #[derive(Clone)]
 pub struct MeshDraw {
-    pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    pub mesh: MeshHandle,
     pub model_mat: [[f32; 4]; 4],
     /// [`deerpunk_engine_common::components::render_layer`] mask — which cameras may draw this.
     pub layer_mask: u32,
@@ -39,7 +42,7 @@ pub struct MeshDraw {
     pub shader_id: ShaderId,
     /// GPU lightmap pool id when the material shader binds `texture_2d_array` (`0` = white).
     pub lightmap_gpu: u32,
-    /// Submesh index range into `mesh.indices`. `index_count == 0` → full mesh.
+    /// Submesh index range. `index_count == 0` → full mesh.
     pub first_index: u32,
     pub index_count: u32,
     /// World-space bounds for frustum culling (set during scene extract).
@@ -53,7 +56,7 @@ pub struct MeshDraw {
 /// Skinned mesh draw — [`bone_buffer`] indexes [`RenderSnapshot::bone_palettes`].
 #[derive(Clone)]
 pub struct SkinnedMeshDraw {
-    pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    pub mesh: MeshHandle,
     pub model_mat: [[f32; 4]; 4],
     pub layer_mask: u32,
     pub material_id: u32,
@@ -76,7 +79,7 @@ pub struct BonePaletteUpload {
 /// Один draw-вызов террейна со сплат-маппингом.
 #[derive(Clone)]
 pub struct TerrainSplatDraw {
-    pub mesh: Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+    pub mesh: MeshHandle,
     pub model_mat: [[f32; 4]; 4],
     pub layers: [MeshTexture; 4],
     pub splat_map: MeshTexture,
@@ -357,7 +360,8 @@ impl RenderSnapshot {
 
     pub fn push_mesh(
         &mut self,
-        mesh: deerpunk_engine_common::resource::mesh::Mesh,
+        mesh: MeshHandle,
+        mesh_cpu: &deerpunk_engine_common::resource::mesh::Mesh,
         model_mat: [[f32; 4]; 4],
         material_id: u32,
         texture: MeshTexture,
@@ -365,9 +369,9 @@ impl RenderSnapshot {
         lightmap_gpu: u32,
     ) {
         let model = glam::Mat4::from_cols_array_2d(&model_mat);
-        let bounds = crate::cull::world_bounds(model, &mesh);
+        let bounds = crate::cull::world_bounds(model, mesh_cpu);
         self.mesh_draws.push(MeshDraw {
-            mesh: Arc::new(mesh),
+            mesh,
             model_mat,
             batchable: false,
             material_id,
@@ -389,7 +393,8 @@ impl RenderSnapshot {
 
     pub fn push_mesh_lit(
         &mut self,
-        mesh: deerpunk_engine_common::resource::mesh::Mesh,
+        mesh: MeshHandle,
+        mesh_cpu: &deerpunk_engine_common::resource::mesh::Mesh,
         model_mat: [[f32; 4]; 4],
         material_id: u32,
         texture: MeshTexture,
@@ -399,9 +404,9 @@ impl RenderSnapshot {
         ambient: [f32; 4],
     ) {
         let model = glam::Mat4::from_cols_array_2d(&model_mat);
-        let bounds = crate::cull::world_bounds(model, &mesh);
+        let bounds = crate::cull::world_bounds(model, mesh_cpu);
         self.mesh_draws.push(MeshDraw {
-            mesh: Arc::new(mesh),
+            mesh,
             model_mat,
             batchable: false,
             material_id,

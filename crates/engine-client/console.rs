@@ -1,9 +1,9 @@
-//! In-game ImGui console (GoldSrc/Source style). Cvar: `cl_console_show`.
+//! In-game Nuklear console (GoldSrc/Source style). Cvar: `cl_console_show`.
 
 deerpunk_engine_common::cvar_def!(
     "cl_console_show",
     "0",
-    "Show in-game ImGui console (1=visible). Toggle with ~."
+    "Show in-game Nuklear console (1=visible). Toggle with ~."
 );
 
 use std::ffi::{c_void, CStr, CString};
@@ -34,8 +34,14 @@ pub struct Console {
     /// Auto-scroll log to bottom until the user scrolls up.
     log_follow_tail: bool,
     line_z: [u8; logger::LOG_LINE_CAP + 1],
-    /// Tab candidates for ImGui input callback (filled each `draw`).
+    /// Tab candidates for the Nuklear input callback (filled each `draw`).
     tab_cycle: Vec<String>,
+    prev_up: bool,
+    prev_down: bool,
+    prev_tab: bool,
+    edge_up: bool,
+    edge_down: bool,
+    edge_tab: bool,
 }
 
 impl Console {
@@ -51,6 +57,12 @@ impl Console {
             log_follow_tail: true,
             line_z: [0; logger::LOG_LINE_CAP + 1],
             tab_cycle: Vec::new(),
+            prev_up: false,
+            prev_down: false,
+            prev_tab: false,
+            edge_up: false,
+            edge_down: false,
+            edge_tab: false,
         }
     }
 
@@ -81,7 +93,7 @@ impl Console {
         self.grave_down = grave;
     }
 
-    /// ImGui widgets — must run between `imgui_begin_frame` / end.
+    /// Nuklear widgets — must run between `host_ui_begin_frame` and `host_ui_end_frame`.
     pub fn tick_draw(
         &mut self,
         cvar: &CvarSystem,
@@ -177,154 +189,83 @@ impl Console {
         self.set_input_str(candidate);
     }
 
+    pub fn capture_keys(&mut self, input: &deerpunk_engine_common::input::Input) {
+        let up = input.is_down(82);
+        let down = input.is_down(81);
+        let tab = input.is_down(43);
+        self.edge_up = up && !self.prev_up;
+        self.edge_down = down && !self.prev_down;
+        self.edge_tab = tab && !self.prev_tab;
+        self.prev_up = up;
+        self.prev_down = down;
+        self.prev_tab = tab;
+    }
+
     fn draw(&mut self, cmd: &impl ConsoleCmdSink, _cvar_sys: &CvarSystem) {
-        unsafe {
-            let io = imgui::sys::igGetIO();
-            if io.is_null() {
-                return;
-            }
-            let w = (*io).DisplaySize.x;
-            let h = (*io).DisplaySize.y * 0.5;
-
-            imgui::sys::igSetNextWindowPos(
-                imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
-                imgui::sys::ImGuiCond_Always as i32,
-                imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
-            );
-            imgui::sys::igSetNextWindowSize(
-                imgui::sys::ImVec2 { x: w, y: h },
-                imgui::sys::ImGuiCond_Always as i32,
-            );
-
-            let flags = imgui::sys::ImGuiWindowFlags_NoTitleBar
-                | imgui::sys::ImGuiWindowFlags_NoResize
-                | imgui::sys::ImGuiWindowFlags_NoMove
-                | imgui::sys::ImGuiWindowFlags_NoCollapse
-                | imgui::sys::ImGuiWindowFlags_NoSavedSettings;
-
-            let mut open = true;
-            if !imgui::sys::igBegin(
-                b"##cl_console\0".as_ptr() as *const i8,
-                &mut open,
-                flags as i32,
-            ) {
-                imgui::sys::igEnd();
-                return;
-            }
-            push_console_theme();
-
-            let suggestions = self.autocomplete_candidates(cmd);
-            self.tab_cycle = suggestions.clone();
-            if self.completion_pick >= suggestions.len() {
+        let suggestions = self.autocomplete_candidates(cmd);
+        if self.edge_tab && !suggestions.is_empty() {
+            let n = suggestions.len();
+            if self.completion_pick >= n {
                 self.completion_pick = 0;
             }
-
-            let suggest_row_h = imgui::sys::igGetTextLineHeightWithSpacing();
-            let suggest_h = if suggestions.is_empty() {
-                0.0
+            self.completion_pick = (self.completion_pick + 1) % n;
+            let pick = suggestions[self.completion_pick].clone();
+            self.apply_completion(&pick);
+        } else if self.edge_up {
+            if self.history_nav > 0 {
+                self.history_nav -= 1;
+                let line = self.history[self.history_nav].clone();
+                self.set_input_str(&line);
+            }
+        } else if self.edge_down {
+            if self.history_nav + 1 < self.history.len() {
+                self.history_nav += 1;
+                let line = self.history[self.history_nav].clone();
+                self.set_input_str(&line);
             } else {
-                let rows = suggestions.len().min(SUGGEST_VISIBLE_ROWS) as f32;
-                suggest_row_h * rows + 8.0
-            };
-            let input_row_h = imgui::sys::igGetFrameHeightWithSpacing() + 6.0;
-            let footer_h = input_row_h + suggest_h + 6.0;
+                self.history_nav = self.history.len();
+                self.set_input_str("");
+            }
+        }
+        self.edge_up = false;
+        self.edge_down = false;
+        self.edge_tab = false;
 
-            imgui::sys::igBeginChild_Str(
-                b"##cl_console_log\0".as_ptr() as *const i8,
-                imgui::sys::ImVec2 {
-                    x: 0.0,
-                    y: -footer_h,
-                },
-                true,
-                (imgui::sys::ImGuiWindowFlags_HorizontalScrollbar
-                    | imgui::sys::ImGuiWindowFlags_AlwaysVerticalScrollbar) as i32,
-            );
-
+        let [sw, sh] = deerpunk_engine_renderer::host_ui::screen();
+        if !deerpunk_engine_renderer::host_ui::begin_console(sw, sh * 0.5) {
+            return;
+        }
+        let log_h = (sh * 0.5 - 28.0 - suggestions.len().min(6) as f32 * 18.0).max(40.0);
+        if deerpunk_engine_renderer::host_ui::group_begin("console-log", log_h) {
             logger::for_each_line(|bytes| {
                 let n = bytes.len().min(logger::LOG_LINE_CAP);
                 self.line_z[..n].copy_from_slice(&bytes[..n]);
                 self.line_z[n] = 0;
-                let text = CStr::from_ptr(self.line_z.as_ptr() as *const i8)
-                    .to_string_lossy();
-                draw_log_line(&text);
+                let text = String::from_utf8_lossy(&self.line_z[..n]).to_string();
+                let col = if let Some(p) = logger::parse_plain_log_line(&text) {
+                    logger::level_ui_color(p.level)
+                } else {
+                    logger::console_legacy_ui_color()
+                };
+                deerpunk_engine_renderer::host_ui::label_colored(&text, col);
             });
-
-            let scroll_y = imgui::sys::igGetScrollY();
-            let scroll_max = imgui::sys::igGetScrollMaxY();
-            if scroll_max > 1.0 && scroll_y < scroll_max - 2.0 {
-                self.log_follow_tail = false;
-            } else if scroll_max > 0.0 && scroll_y >= scroll_max - 2.0 {
-                self.log_follow_tail = true;
-            }
-            if self.log_follow_tail {
-                imgui::sys::igSetScrollHereY(1.0);
-            }
-            imgui::sys::igEndChild();
-
-            if !suggestions.is_empty() {
-                imgui::sys::igBeginChild_Str(
-                    b"##cl_console_suggest\0".as_ptr() as *const i8,
-                    imgui::sys::ImVec2 {
-                        x: 0.0,
-                        y: suggest_h,
-                    },
-                    true,
-                    imgui::sys::ImGuiWindowFlags_AlwaysVerticalScrollbar as i32,
-                );
-                for (i, s) in suggestions.iter().enumerate() {
-                    let label = CString::new(format!("{s}##suggest{i}")).unwrap_or_default();
-                    let selected = i == self.completion_pick;
-                    let clicked = imgui::sys::igSelectable_Bool(
-                        label.as_ptr(),
-                        selected,
-                        0,
-                        imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
-                    );
-                    if selected {
-                        imgui::sys::igSetScrollHereY(0.5);
-                    }
-                    if clicked {
-                        self.apply_completion(s);
-                        self.completion_pick = i;
-                    }
-                }
-                imgui::sys::igEndChild();
-            }
-
-            if self.focus_input_next {
-                imgui::sys::igSetKeyboardFocusHere(0);
-                self.focus_input_next = false;
-            }
-
-            imgui::sys::igSetNextItemWidth(-1.0);
-
-            let input_flags = (imgui::sys::ImGuiInputTextFlags_EnterReturnsTrue
-                | imgui::sys::ImGuiInputTextFlags_CallbackHistory
-                | imgui::sys::ImGuiInputTextFlags_CallbackCompletion
-                | imgui::sys::ImGuiInputTextFlags_CallbackEdit
-                | imgui::sys::ImGuiInputTextFlags_EscapeClearsAll) as i32;
-
-            let user_data = self as *mut Console as *mut c_void;
-            let mut submitted = false;
-            if imgui::sys::igInputTextWithHint(
-                b"##cl_console_cmd\0".as_ptr() as *const i8,
-                b"command - Tab complete, Up/Down history\0".as_ptr() as *const i8,
-                self.input_buf.as_mut_ptr() as *mut i8,
-                INPUT_CAP,
-                input_flags,
-                Some(input_callback),
-                user_data,
-            ) {
-                submitted = true;
-            }
-            if submitted {
-                self.submit(cmd);
-            }
-
-            pop_console_theme();
-            self.tab_cycle.clear();
-            imgui::sys::igEnd();
+            deerpunk_engine_renderer::host_ui::group_end("console-log", self.log_follow_tail);
         }
+        for (i, s) in suggestions.iter().enumerate().take(6) {
+            if deerpunk_engine_renderer::host_ui::selectable(s, i == self.completion_pick) {
+                self.apply_completion(s);
+                self.completion_pick = i;
+            }
+        }
+        if self.focus_input_next {
+            deerpunk_engine_renderer::host_ui::edit_focus();
+            self.focus_input_next = false;
+        }
+        deerpunk_engine_renderer::host_ui::edit_focus();
+        if deerpunk_engine_renderer::host_ui::edit_line(&mut self.input_buf) {
+            self.submit(cmd);
+        }
+        deerpunk_engine_renderer::host_ui::end_window();
     }
 }
 
@@ -334,146 +275,3 @@ impl Default for Console {
     }
 }
 
-const CONSOLE_THEME_COLORS: usize = 16;
-
-unsafe fn push_console_theme() {
-    use imgui::sys::ImVec4;
-    let c = |r: f32, g: f32, b: f32, a: f32| ImVec4 { x: r, y: g, z: b, w: a };
-    let push = |idx: imgui::sys::ImGuiCol_, v: ImVec4| {
-        imgui::sys::igPushStyleColor_Vec4(idx as i32, v);
-    };
-    push(imgui::sys::ImGuiCol_WindowBg, c(0.07, 0.07, 0.08, 0.94));
-    push(imgui::sys::ImGuiCol_ChildBg, c(0.05, 0.05, 0.06, 1.0));
-    push(imgui::sys::ImGuiCol_FrameBg, c(0.13, 0.13, 0.15, 1.0));
-    push(imgui::sys::ImGuiCol_FrameBgHovered, c(0.17, 0.17, 0.19, 1.0));
-    push(imgui::sys::ImGuiCol_FrameBgActive, c(0.20, 0.20, 0.22, 1.0));
-    push(imgui::sys::ImGuiCol_Text, c(0.90, 0.90, 0.90, 1.0));
-    push(imgui::sys::ImGuiCol_TextDisabled, c(0.42, 0.42, 0.45, 1.0));
-    push(imgui::sys::ImGuiCol_Border, c(0.24, 0.24, 0.26, 0.6));
-    push(imgui::sys::ImGuiCol_NavHighlight, c(0.35, 0.35, 0.38, 0.45));
-    push(imgui::sys::ImGuiCol_TextSelectedBg, c(0.35, 0.35, 0.38, 0.55));
-    push(imgui::sys::ImGuiCol_Header, c(0.22, 0.22, 0.24, 1.0));
-    push(imgui::sys::ImGuiCol_HeaderHovered, c(0.28, 0.28, 0.30, 1.0));
-    push(imgui::sys::ImGuiCol_HeaderActive, c(0.32, 0.32, 0.34, 1.0));
-    push(imgui::sys::ImGuiCol_Button, c(0.18, 0.18, 0.20, 1.0));
-    push(imgui::sys::ImGuiCol_ButtonHovered, c(0.24, 0.24, 0.26, 1.0));
-    push(imgui::sys::ImGuiCol_ButtonActive, c(0.28, 0.28, 0.30, 1.0));
-}
-
-unsafe fn pop_console_theme() {
-    imgui::sys::igPopStyleColor(CONSOLE_THEME_COLORS as i32);
-}
-
-unsafe fn draw_log_line(text: &str) {
-    if let Some(p) = logger::parse_plain_log_line(text) {
-        let ts_col = logger::console_timestamp_imgui_color();
-        let lvl_col = logger::level_imgui_color(p.level);
-        let scope_col = logger::console_scope_imgui_color();
-        let msg_col = logger::console_message_imgui_color();
-        text_colored(&ts_col, "[");
-        imgui::sys::igSameLine(0.0, 0.0);
-        text_colored(&ts_col, &p.timestamp);
-        imgui::sys::igSameLine(0.0, 0.0);
-        text_colored(&lvl_col, &format!(" {}", p.level.as_str()));
-        imgui::sys::igSameLine(0.0, 0.0);
-        text_colored(&ts_col, "] ");
-        imgui::sys::igSameLine(0.0, 0.0);
-        text_colored(&scope_col, &format!("{}:", p.scope));
-        imgui::sys::igSameLine(0.0, 0.0);
-        text_colored(&msg_col, &p.message);
-    } else {
-        let col = logger::console_legacy_imgui_color();
-        text_colored(&col, text);
-    }
-}
-
-unsafe fn text_colored(color: &[f32; 4], text: &str) {
-    let c = CString::new(text).unwrap_or_default();
-    let col = imgui::sys::ImVec4 {
-        x: color[0],
-        y: color[1],
-        z: color[2],
-        w: color[3],
-    };
-    imgui::sys::igPushStyleColor_Vec4(imgui::sys::ImGuiCol_Text as i32, col);
-    imgui::sys::igTextUnformatted(c.as_ptr(), std::ptr::null());
-    imgui::sys::igPopStyleColor(1);
-}
-
-unsafe extern "C" fn input_callback(data: *mut imgui::sys::ImGuiInputTextCallbackData) -> i32 {
-    if data.is_null() {
-        return 0;
-    }
-    let data = &mut *data;
-    let console = data.UserData as *mut Console;
-    if console.is_null() {
-        return 0;
-    }
-    let console = &mut *console;
-
-    if data.EventFlag as u32 == imgui::sys::ImGuiInputTextFlags_CallbackHistory {
-        if data.EventKey == imgui::sys::ImGuiKey_UpArrow {
-            if console.history_nav > 0 {
-                console.history_nav -= 1;
-                copy_buf(data, console.history[console.history_nav].as_str());
-            }
-        } else if data.EventKey == imgui::sys::ImGuiKey_DownArrow {
-            if console.history_nav + 1 < console.history.len() {
-                console.history_nav += 1;
-                copy_buf(data, console.history[console.history_nav].as_str());
-            } else if console.history_nav < console.history.len() {
-                console.history_nav = console.history.len();
-                copy_buf(data, "");
-            }
-        }
-        return 0;
-    }
-
-    if data.EventFlag as u32 == imgui::sys::ImGuiInputTextFlags_CallbackEdit {
-        console.completion_pick = 0;
-        return 0;
-    }
-
-    if data.EventFlag as u32 == imgui::sys::ImGuiInputTextFlags_CallbackCompletion {
-        if data.EventKey == imgui::sys::ImGuiKey_Tab {
-            let n = console.tab_cycle.len();
-            if n == 0 {
-                return 0;
-            }
-            let io = imgui::sys::igGetIO();
-            let shift = !io.is_null() && (*io).KeyShift;
-            if shift {
-                console.completion_pick = if console.completion_pick == 0 {
-                    n - 1
-                } else {
-                    console.completion_pick - 1
-                };
-            } else {
-                console.completion_pick = (console.completion_pick + 1) % n;
-            }
-            let pick = console.tab_cycle[console.completion_pick].clone();
-            console.apply_completion(&pick);
-            copy_buf(data, console.input_str());
-        }
-        return 0;
-    }
-
-    0
-}
-
-unsafe fn copy_buf(data: &mut imgui::sys::ImGuiInputTextCallbackData, s: &str) {
-    let buf = data.Buf;
-    if buf.is_null() || data.BufSize <= 0 {
-        return;
-    }
-    let max = (data.BufSize - 1) as usize;
-    let bytes = s.as_bytes();
-    let n = bytes.len().min(max);
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
-    buf.add(n).write(0);
-    data.BufTextLen = n as i32;
-    data.BufDirty = true;
-    data.CursorPos = n as i32;
-    data.SelectionStart = data.CursorPos;
-    data.SelectionEnd = data.CursorPos;
-}

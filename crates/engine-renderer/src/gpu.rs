@@ -32,11 +32,12 @@ use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
 #[path = "passes/mod.rs"]
 mod passes;
 
-/// Host Dear ImGui (console, infobox, debug HUD). When `false`, no `NewFrame` / ImGui render pass
-/// on the swapchain — gamelib may still use its own `imgui::Context` via `client_gamelib_ui_*`.
-pub const HOST_IMGUI_ENABLED: bool = true;
+/// Host Nuklear debug HUD (console, infobox, alloc bars).
+/// When `false`, `host_ui_begin_frame` / the swapchain UI pass are skipped.
+pub const HOST_UI_ENABLED: bool = true;
 
 /// `vsync=true` → FIFO (ждёт vblank). `false` → без ожидания vblank, если драйвер умеет.
+/// Prefer an sRGB swapchain so the display does the gamma encode. Tonemap writes linear LDR.
 fn pick_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
     const ORDER: [wgpu::TextureFormat; 4] = [
         wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -271,18 +272,23 @@ pub struct GpuMesh {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
+/// Per-draw object data. Camera matrix lives in [`MeshViewUniform`] (one upload per pass).
 pub(crate) struct MeshUniform {
-    view_proj: [[f32; 4]; 4],
     model: [[f32; 4]; 4],
     material_data: [u32; 4],
-    /// World-space camera position (for correct view vector).
-    camera_pos: [f32; 3],
-    _pad_cam: f32,
-    /// Pad to 256 bytes so WGSL `array<MeshUniform>` matches CPU slot stride.
-    _pad: [f32; 24],
 }
 
-const _: () = assert!(std::mem::size_of::<MeshUniform>() == 256);
+const _: () = assert!(std::mem::size_of::<MeshUniform>() == 80);
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct MeshViewUniform {
+    view_proj: [[f32; 4]; 4],
+    camera_pos: [f32; 3],
+    _pad_cam: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<MeshViewUniform>() == 80);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct MeshBatchKey {
@@ -368,6 +374,8 @@ pub(crate) struct DebugViewUniform {
 }
 
 pub(crate) const SKY_UNIFORM_RING: usize = 2;
+/// Per-frame uniform / indirect copies. Slot N is written while the GPU may still read N-1.
+pub(crate) const FRAME_UNIFORM_RING: usize = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -441,9 +449,13 @@ pub struct Renderer {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Set by the client before encode. Draws store [`MeshHandle`], CPU bytes live in the registry.
+    frame_meshes: *const deerpunk_engine_common::resource::MeshRegistry,
 
     ui_pass: crate::ui_pass::UiPass,
     pending_ui: Option<deerpunk_engine_common::ui_draw::UiFrame>,
+    /// Upload `pending_ui` into GPU buffers on the next UI pass. Draw still runs after that.
+    ui_upload: bool,
 
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     pipeline_layout: wgpu::PipelineLayout,
@@ -451,13 +463,15 @@ pub struct Renderer {
     tex_bg_layout: wgpu::BindGroupLayout,
 
     mesh_globals_bg_layout: wgpu::BindGroupLayout,
-    mesh_globals_buf: wgpu::Buffer,
-    mesh_globals_bg: wgpu::BindGroup,
+    mesh_globals_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
+    mesh_view_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
+    mesh_globals_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING],
+    frame_uniform_ring: u8,
     skinned_mesh_globals_bg_layout: wgpu::BindGroupLayout,
     skinned_mesh_pipeline_layout: wgpu::PipelineLayout,
     skinned_mesh_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     bone_gpu_bufs: HashMap<u32, wgpu::Buffer>,
-    skinned_mesh_globals_bgs: HashMap<u32, wgpu::BindGroup>,
+    skinned_mesh_globals_bgs: HashMap<u32, [wgpu::BindGroup; FRAME_UNIFORM_RING]>,
     mesh_pipeline_layout: wgpu::PipelineLayout,
     mesh_white_bg: wgpu::BindGroup,
     mesh_user_bgs: HashMap<u32, wgpu::BindGroup>,
@@ -484,8 +498,8 @@ pub struct Renderer {
     lightmap_only: bool,
     wireframe: bool,
     lights_bg_layout: wgpu::BindGroupLayout,
-    lights_buf: wgpu::Buffer,
-    lights_bg: wgpu::BindGroup,
+    lights_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
+    lights_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING],
 
     // Terrain splat pipeline
     terrain_splat_bg_layout: wgpu::BindGroupLayout,
@@ -587,14 +601,9 @@ pub struct Renderer {
 
     shaders: ShaderSources,
 
-    // Host Dear ImGui (console, infobox, …)
-    imgui_ctx: Option<imgui::Context>,
-    imgui_wgpu: Option<imgui_wgpu::Renderer>,
-    imgui_mouse_pos: [f32; 2],
-    imgui_mouse_down: [bool; 5],
-    imgui_mouse_wheel: f32,
-    imgui_mouse_wheel_h: f32,
-    gamelib_imgui_wgpu: Option<imgui_wgpu::Renderer>,
+    host_ui: Option<crate::host_ui::HostUi>,
+    host_ui_format: Option<wgpu::TextureFormat>,
+    pending_ui_input: crate::host_ui::UiFrameInput,
 
     // Mesh slab allocator + cache (Arc ptr → O(1); content hash fallback)
     mesh_pool: crate::mesh_allocator::MeshBufferPool,
@@ -603,7 +612,7 @@ pub struct Renderer {
     /// Staging for batched per-draw `MeshUniform` uploads (one `write_buffer` per frame).
     mesh_uniform_scratch: Vec<u8>,
     /// Indirect commands for world-space multi-draw batches.
-    mesh_indirect_buf: wgpu::Buffer,
+    mesh_indirect_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
     /// Some adapters cannot execute indirect draw commands. Keep the normal
     /// per-draw path available on those devices.
     multi_draw_indirect_supported: bool,
@@ -611,6 +620,13 @@ pub struct Renderer {
     indirect_first_instance_supported: bool,
     /// Reused draw order for mesh pass (sort by shader / material to cut pipeline binds).
     mesh_draw_order: Vec<usize>,
+    /// Opaque batch groups reused while draw keys (shader/material/textures) stay put.
+    mesh_batch_fp: u64,
+    mesh_batch_order: Vec<usize>,
+    mesh_batch_for_index: Vec<Option<MeshBatchKey>>,
+    mesh_batch_groups: HashMap<MeshBatchKey, Vec<usize>>,
+    /// `upload_prep` already ran for this frame (multi-camera).
+    upload_prepped: bool,
     /// Per-frame lazy GPU mesh handles (index = snapshot draw index).
     mesh_pass_static_handles: Vec<Option<crate::mesh_allocator::MeshHandle>>,
     mesh_pass_skinned_handles: Vec<Option<crate::mesh_allocator::MeshHandle>>,
@@ -619,6 +635,12 @@ pub struct Renderer {
     mesh_occlusion: crate::occlusion::MeshOcclusion,
     /// `r_mesh_batch` — group pooled static draws for shared pipeline/texture binds.
     mesh_draw_batching: bool,
+    /// `r_drawtransparent` — alpha-blended mesh queue.
+    draw_transparent: bool,
+    /// `r_drawsky` — sky fullscreen pass.
+    draw_sky: bool,
+    /// `r_drawclouds` — cloud fullscreen pass after the sky.
+    draw_clouds: bool,
     /// `r_mesh_batch_mdi` — multi-draw indirect for batch groups (needs draw-slot in WGSL).
     mesh_batch_mdi: bool,
     frame_occlusion_queries: bool,
@@ -693,7 +715,7 @@ pub struct PendingSurfacePresent {
 /// CPU-side timings applied after async submit completes.
 #[derive(Clone)]
 pub struct PendingSurfaceTail {
-    pub after_imgui_ms: f32,
+    pub after_host_ui_ms: f32,
     pub encoder_finish_ms: f32,
     pub game_frame_ui_ms: Option<f32>,
     pub after_encode_ms: f32,
@@ -817,49 +839,90 @@ impl Renderer {
         });
 
         let mesh_uniform_bytes = std::mem::size_of::<MeshUniform>() as u64;
+        let mesh_view_layout_entry = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let mesh_globals_bg_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("mesh globals bg layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    mesh_view_layout_entry,
+                ],
             });
-        // Mesh uniform buffer: one 256-byte-aligned slot per mesh draw (grows at runtime).
-        let mesh_align = 256u64; // min_uniform_buffer_offset_alignment
-        let mesh_uniform_size = ((std::mem::size_of::<MeshUniform>() as u64 + mesh_align - 1)
-            / mesh_align)
-            * mesh_align;
-        let mesh_globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mesh globals"),
-            size: mesh_uniform_size * MESH_UNIFORM_SLOTS_INIT,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mesh_globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mesh globals bg"),
-            layout: &mesh_globals_bg_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &mesh_globals_buf,
-                    offset: 0,
-                    size: None,
-                }),
-            }],
-        });
-        let mesh_indirect_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mesh multi-draw indirect"),
-            size: (std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() * 4096) as u64,
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // Storage-array stride (16). Camera lives in `mesh_view`, not in each slot.
+        let mesh_uniform_size = Self::mesh_uniform_stride();
+        let mut mesh_globals_bufs = Vec::with_capacity(FRAME_UNIFORM_RING);
+        let mut mesh_view_bufs = Vec::with_capacity(FRAME_UNIFORM_RING);
+        let mut mesh_globals_bgs = Vec::with_capacity(FRAME_UNIFORM_RING);
+        let mut mesh_indirect_bufs = Vec::with_capacity(FRAME_UNIFORM_RING);
+        for i in 0..FRAME_UNIFORM_RING {
+            let mesh_globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("mesh globals {i}")),
+                size: mesh_uniform_size * MESH_UNIFORM_SLOTS_INIT,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mesh_view_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("mesh view {i}")),
+                size: 256,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mesh_globals_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("mesh globals bg {i}")),
+                layout: &mesh_globals_bg_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &mesh_globals_buf,
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: mesh_view_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            mesh_globals_bufs.push(mesh_globals_buf);
+            mesh_view_bufs.push(mesh_view_buf);
+            mesh_globals_bgs.push(mesh_globals_bg);
+            mesh_indirect_bufs.push(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("mesh multi-draw indirect {i}")),
+                size: (std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() * 4096) as u64,
+                usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let mesh_globals_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
+            mesh_globals_bufs.try_into().ok().expect("mesh globals ring");
+        let mesh_view_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
+            mesh_view_bufs.try_into().ok().expect("mesh view ring");
+        let mesh_globals_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] =
+            mesh_globals_bgs.try_into().ok().expect("mesh globals bg ring");
+        let mesh_indirect_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] = mesh_indirect_bufs
+            .try_into()
+            .ok()
+            .expect("mesh indirect ring");
         // Material SSBO bind group (now with PBR texture slots)
         let material_bg_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1004,20 +1067,30 @@ impl Renderer {
                 },
             ],
         });
-        let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("point lights"),
-            size: std::mem::size_of::<LightsUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let lights_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("point lights bg"),
-            layout: &lights_bg_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: lights_buf.as_entire_binding(),
-            }],
-        });
+        let mut lights_bufs = Vec::with_capacity(FRAME_UNIFORM_RING);
+        let mut lights_bgs = Vec::with_capacity(FRAME_UNIFORM_RING);
+        for i in 0..FRAME_UNIFORM_RING {
+            let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("point lights {i}")),
+                size: std::mem::size_of::<LightsUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let lights_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("point lights bg {i}")),
+                layout: &lights_bg_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: lights_buf.as_entire_binding(),
+                }],
+            });
+            lights_bufs.push(lights_buf);
+            lights_bgs.push(lights_bg);
+        }
+        let lights_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
+            lights_bufs.try_into().ok().expect("lights ring");
+        let lights_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] =
+            lights_bgs.try_into().ok().expect("lights bg ring");
 
         let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh pipeline layout"),
@@ -1054,6 +1127,7 @@ impl Renderer {
                         },
                         count: None,
                     },
+                    mesh_view_layout_entry,
                 ],
             });
         let skinned_mesh_pipeline_layout =
@@ -1809,16 +1883,20 @@ impl Renderer {
             adapter,
             device,
             queue,
+            frame_meshes: std::ptr::null(),
             ui_pass,
             pending_ui: None,
+            ui_upload: false,
             pipelines: HashMap::new(),
             pipeline_layout,
             globals_bg_layout,
             tex_bg_layout,
 
             mesh_globals_bg_layout,
-            mesh_globals_buf,
-            mesh_globals_bg,
+            mesh_globals_bufs,
+            mesh_view_bufs,
+            mesh_globals_bgs,
+            frame_uniform_ring: 0,
             skinned_mesh_globals_bg_layout,
             skinned_mesh_pipeline_layout,
             skinned_mesh_pipelines: HashMap::new(),
@@ -1842,8 +1920,8 @@ impl Renderer {
             lightmap_only: false,
             wireframe: false,
             lights_bg_layout,
-            lights_buf,
-            lights_bg,
+            lights_bufs,
+            lights_bgs,
 
             terrain_splat_bg_layout,
             terrain_splat_pipeline_layout,
@@ -1929,33 +2007,31 @@ impl Renderer {
 
             shaders,
 
-            imgui_ctx: if HOST_IMGUI_ENABLED {
-                let mut ctx = imgui::Context::create();
-                ctx.set_ini_filename(None);
-                Some(ctx)
-            } else {
-                None
-            },
-            imgui_wgpu: None,
-            imgui_mouse_pos: [-1.0e6, -1.0e6],
-            imgui_mouse_down: [false; 5],
-            imgui_mouse_wheel: 0.0,
-            imgui_mouse_wheel_h: 0.0,
-            gamelib_imgui_wgpu: None,
+            host_ui: None,
+            host_ui_format: None,
+            pending_ui_input: crate::host_ui::UiFrameInput::default(),
 
             mesh_pool,
             mesh_allocators,
             mesh_gpu: crate::mesh_gpu_pool::MeshGpuPool::default(),
             mesh_uniform_scratch: Vec::new(),
-            mesh_indirect_buf,
+            mesh_indirect_bufs,
             multi_draw_indirect_supported,
             indirect_first_instance_supported,
             mesh_draw_order: Vec::new(),
+            mesh_batch_fp: 0,
+            mesh_batch_order: Vec::new(),
+            mesh_batch_for_index: Vec::new(),
+            mesh_batch_groups: HashMap::new(),
+            upload_prepped: false,
             mesh_pass_static_handles: Vec::new(),
             mesh_pass_skinned_handles: Vec::new(),
             mesh_indirect_cmd_scratch: Vec::new(),
             mesh_occlusion: crate::occlusion::MeshOcclusion::new(),
             mesh_draw_batching: true,
+            draw_transparent: true,
+            draw_sky: true,
+            draw_clouds: true,
             mesh_batch_mdi: true,
             frame_occlusion_queries: false,
             asset_meta: HashMap::new(),
@@ -2000,6 +2076,14 @@ impl Renderer {
         }
     }
 
+    /// Block until the GPU finishes the last submitted command buffer.
+    /// Call before `queue.write_buffer` into buffers that frame may still read.
+    fn wait_gpu_idle(&self) {
+        crate::gamelib_profile::zone_begin("render.wait_gpu");
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        crate::gamelib_profile::zone_end();
+    }
+
     pub fn set_defer_surface_submit(&mut self, defer: bool) {
         self.defer_surface_submit = defer;
     }
@@ -2027,7 +2111,7 @@ impl Renderer {
         if let Some(ui) = tail.game_frame_ui_ms {
             self.last_profile.game_frame_ui_ms = ui;
         }
-        self.last_profile.after_imgui_ms = tail.after_imgui_ms;
+        self.last_profile.after_host_ui_ms = tail.after_host_ui_ms;
         self.last_profile.encoder_finish_ms = tail.encoder_finish_ms;
         self.last_profile.queue_submit_ms = submit_ms;
         self.last_profile.after_submit_ms = tail.encoder_finish_ms + submit_ms;
@@ -2275,55 +2359,14 @@ impl Renderer {
         self.ensure_hdr_texture(width, height);
         self.ensure_tonemap_pipeline(format);
 
-        if HOST_IMGUI_ENABLED {
-            if let Some(ctx) = &mut self.imgui_ctx {
-                let config = imgui_wgpu::RendererConfig {
-                    texture_format: format,
-                    depth_format: None,
-                    sample_count: 1,
-                    ..Default::default()
-                };
-                self.imgui_wgpu = Some(imgui_wgpu::Renderer::new(
-                    ctx,
-                    &self.device,
-                    &self.queue,
-                    config,
-                ));
-            }
-        }
     }
 
-    pub fn imgui_context_ptr(&self) -> *mut std::ffi::c_void {
-        self.imgui_ctx.as_ref().map_or(std::ptr::null_mut(), |ctx| {
-            ctx as *const imgui::Context as *mut std::ffi::c_void
-        })
+    pub fn set_host_ui_input(&mut self, input: crate::host_ui::UiFrameInput) {
+        self.pending_ui_input = input;
     }
 
-    pub fn set_imgui_input(&mut self, pos: [f32; 2], down: [bool; 5], wheel_y: f32, wheel_h: f32) {
-        self.imgui_mouse_pos = pos;
-        self.imgui_mouse_down = down;
-        self.imgui_mouse_wheel = wheel_y;
-        self.imgui_mouse_wheel_h = wheel_h;
-    }
-
-    pub fn imgui_begin_frame(&mut self, width: f32, height: f32) {
-        if let Some(ctx) = &mut self.imgui_ctx {
-            ctx.io_mut().display_size = [width, height];
-            ctx.io_mut().mouse_pos = self.imgui_mouse_pos;
-            ctx.io_mut().mouse_down = self.imgui_mouse_down;
-            ctx.io_mut().mouse_wheel = self.imgui_mouse_wheel;
-            ctx.io_mut().mouse_wheel_h = self.imgui_mouse_wheel_h;
-            ctx.new_frame();
-            self.imgui_mouse_wheel = 0.0;
-            self.imgui_mouse_wheel_h = 0.0;
-        }
-    }
-
-    /// Legacy: host passes external context (unused — context lives on [`Renderer`]).
-    pub fn ensure_imgui_wgpu(&mut self, _ctx: &mut imgui::Context) {}
-
-    pub fn ensure_gamelib_imgui_wgpu(&mut self, ctx: &mut imgui::Context) {
-        if self.gamelib_imgui_wgpu.is_some() {
+    pub fn host_ui_begin_frame(&mut self, width: f32, height: f32) {
+        if !HOST_UI_ENABLED {
             return;
         }
         let format = self
@@ -2331,18 +2374,15 @@ impl Renderer {
             .as_ref()
             .map(|c| c.format)
             .unwrap_or(TEX_FORMAT);
-        let config = imgui_wgpu::RendererConfig {
-            texture_format: format,
-            depth_format: None,
-            sample_count: 1,
-            ..Default::default()
-        };
-        self.gamelib_imgui_wgpu = Some(imgui_wgpu::Renderer::new(
-            ctx,
-            &self.device,
-            &self.queue,
-            config,
-        ));
+        if self.host_ui_format != Some(format) {
+            self.host_ui = Some(crate::host_ui::HostUi::new(&self.device, &self.queue, format));
+            self.host_ui_format = Some(format);
+        }
+        if let Some(ui) = self.host_ui.as_mut() {
+            let input = std::mem::take(&mut self.pending_ui_input);
+            ui.set_input(input);
+            ui.begin_frame(width, height);
+        }
     }
 
     fn ensure_hdr_texture(&mut self, width: u32, height: u32) {
@@ -2703,7 +2743,8 @@ impl Renderer {
         self.postfx.aa_strength = strength.clamp(0.0, 1.0);
     }
 
-    // ── ImGui ────────────────────────────────────────────────────
+    // ── Nuklear ──────────────────────────────────────────────────
+
 
     pub fn swapchain_layout(&self) -> Option<(u32, u32, wgpu::TextureFormat)> {
         self.surface_config
@@ -2711,86 +2752,17 @@ impl Renderer {
             .map(|c| (c.width, c.height, c.format))
     }
 
-    pub fn imgui_end_frame_and_render(
+    pub fn host_ui_end_frame(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) {
-        if self.imgui_ctx.is_none() || self.imgui_wgpu.is_none() {
+        if !HOST_UI_ENABLED {
             return;
         }
-
-        let draw_data = self.imgui_ctx.as_mut().unwrap().render();
-
-        if let Some(renderer) = &mut self.imgui_wgpu {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("imgui"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-            let _ = renderer.render(draw_data, &self.queue, &self.device, &mut rpass);
+        if let Some(ui) = self.host_ui.as_mut() {
+            ui.end_frame(&self.device, &self.queue, encoder, target);
         }
-    }
-
-    pub fn render_imgui_draw_data(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        draw_data: &imgui::DrawData,
-    ) {
-        let Some(renderer) = &mut self.imgui_wgpu else {
-            return;
-        };
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("imgui"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
-        let _ = renderer.render(draw_data, &self.queue, &self.device, &mut rpass);
-    }
-
-    pub fn render_gamelib_imgui_draw_data(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        draw_data: &imgui::DrawData,
-    ) {
-        let Some(renderer) = &mut self.gamelib_imgui_wgpu else {
-            return;
-        };
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("gamelib-imgui"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
-        let _ = renderer.render(draw_data, &self.queue, &self.device, &mut rpass);
     }
 
     pub fn render_to_surface(
@@ -2807,7 +2779,10 @@ impl Renderer {
         };
 
         let acquire_start = std::time::Instant::now();
-        let current = match surface.get_current_texture() {
+        crate::gamelib_profile::zone_begin("render.acquire");
+        let acquired = surface.get_current_texture();
+        crate::gamelib_profile::zone_end();
+        let current = match acquired {
             wgpu::CurrentSurfaceTexture::Success(st) => st,
             wgpu::CurrentSurfaceTexture::Suboptimal(st) => st,
             wgpu::CurrentSurfaceTexture::Timeout => return Err(FrameError::SurfaceTimeout),
@@ -2834,7 +2809,7 @@ impl Renderer {
             .as_ref()
             .map(|c| (c.width as f32, c.height as f32))
             .unwrap_or((800.0, 600.0));
-        self.imgui_begin_frame(sw, sh);
+        self.host_ui_begin_frame(sw, sh);
 
         let encoder = self.encode_compose(
             std::slice::from_ref(snapshot),
@@ -2866,7 +2841,10 @@ impl Renderer {
         };
 
         let acquire_start = std::time::Instant::now();
-        let current = match surface.get_current_texture() {
+        crate::gamelib_profile::zone_begin("render.acquire");
+        let acquired = surface.get_current_texture();
+        crate::gamelib_profile::zone_end();
+        let current = match acquired {
             wgpu::CurrentSurfaceTexture::Success(st) => st,
             wgpu::CurrentSurfaceTexture::Suboptimal(st) => st,
             wgpu::CurrentSurfaceTexture::Timeout => return Err(FrameError::SurfaceTimeout),
@@ -2894,9 +2872,9 @@ impl Renderer {
             .map(|c| (c.width as f32, c.height as f32))
             .unwrap_or((800.0, 600.0));
         // Match `render_to_surface_compose_with_game_frame` / `render_to_surface_with_hdr`:
-        // `finish_surface_encoder` ends the host ImGui frame (`render()`), so we must
-        // call `new_frame()` here or ImGui aborts on the next frame.
-        self.imgui_begin_frame(sw, sh);
+        // `finish_surface_encoder` ends the host Nuklear frame, so begin must run
+        // here or the next frame has no open context.
+        self.host_ui_begin_frame(sw, sh);
 
         let encoder = self.encode_compose(
             cameras,
@@ -2922,15 +2900,20 @@ impl Renderer {
         gamelib_ui_render: Option<deerpunk_engine_ffi::GamelibUiRenderFn>,
         shaders: &ShaderRegistry,
     ) -> Result<(), FrameError> {
+        crate::gamelib_profile::zone_begin("render.readback");
         self.process_lum_readback();
         self.mesh_occlusion.process_readback(&self.device);
+        crate::gamelib_profile::zone_end();
 
         let Some(surface) = &self.surface else {
             return Ok(());
         };
 
         let acquire_start = std::time::Instant::now();
-        let current = match surface.get_current_texture() {
+        crate::gamelib_profile::zone_begin("render.acquire");
+        let acquired = surface.get_current_texture();
+        crate::gamelib_profile::zone_end();
+        let current = match acquired {
             wgpu::CurrentSurfaceTexture::Success(st) => st,
             wgpu::CurrentSurfaceTexture::Suboptimal(st) => st,
             wgpu::CurrentSurfaceTexture::Timeout => return Err(FrameError::SurfaceTimeout),
@@ -2957,14 +2940,17 @@ impl Renderer {
             .as_ref()
             .map(|c| (c.width as f32, c.height as f32))
             .unwrap_or((800.0, 600.0));
-        self.imgui_begin_frame(sw, sh);
+        self.host_ui_begin_frame(sw, sh);
 
         let game_ui_start = std::time::Instant::now();
+        crate::gamelib_profile::zone_begin("render.game_ui");
         if let Some(f) = game_frame_fn {
             f(game_frame_ctx);
         }
+        crate::gamelib_profile::zone_end();
         let game_frame_ui_ms = game_ui_start.elapsed().as_secs_f32() * 1000.0;
 
+        crate::gamelib_profile::zone_begin("render.encode");
         let encoder = self.encode_compose(
             cameras,
             post,
@@ -2974,6 +2960,7 @@ impl Renderer {
             Some(&surface_view),
             shaders,
         );
+        crate::gamelib_profile::zone_end();
         self.finish_surface_encoder(
             encoder,
             current,
@@ -2996,6 +2983,12 @@ impl Renderer {
     ) -> wgpu::CommandEncoder {
         use crate::frame::scope::Phase;
 
+        // `write_buffer` goes through wgpu's staging belt and is ordered before this
+        // submit. The uniform ring keeps the previous frame's slot alive. Do not
+        // `poll(wait_indefinitely)` here — that stalls the GPU for a full frame.
+        self.upload_prepped = false;
+        self.frame_uniform_ring =
+            self.frame_uniform_ring.wrapping_add(1) % FRAME_UNIFORM_RING as u8;
         let frame_start = std::time::Instant::now();
         let mut lap = frame_start;
         let mut prof = RenderFrameProfile::default();
@@ -3112,6 +3105,11 @@ impl Renderer {
         prof.speeds_hud = FrameSpeedsHud {
             dip_count: draw_acc.dip_count,
             shader_bind: draw_acc.shader_bind,
+            render_passes: draw_acc.render_passes,
+            bind_groups: draw_acc.bind_groups,
+            vertex_binds: draw_acc.vertex_binds,
+            index_binds: draw_acc.index_binds,
+            indirect_draws: draw_acc.indirect_draws,
             frame_total_tris: (draw_acc.index_count / 3).min(u32::MAX as u64) as u32,
             visible_world_lights: post.visible_world_lights,
             visible_dyn_lights: primary.point_lights.len() as u32,
@@ -3155,9 +3153,12 @@ impl Renderer {
         game_frame_ui_ms: Option<f32>,
         gamelib_ui_render: Option<deerpunk_engine_ffi::GamelibUiRenderFn>,
     ) {
+        crate::gamelib_profile::zone_begin("render.poll");
         let _ = self.device.poll(wgpu::PollType::Poll);
+        crate::gamelib_profile::zone_end();
         let tail_start = std::time::Instant::now();
 
+        crate::gamelib_profile::zone_begin("render.host_ui");
         if let Some(f) = gamelib_ui_render {
             let (sw, sh) = self
                 .surface_config
@@ -3176,17 +3177,20 @@ impl Renderer {
             }
         }
 
-        self.imgui_end_frame_and_render(&mut encoder, surface_view);
-        let after_imgui_ms = tail_start.elapsed().as_secs_f32() * 1000.0;
+        self.host_ui_end_frame(&mut encoder, surface_view);
+        crate::gamelib_profile::zone_end();
+        let after_host_ui_ms = tail_start.elapsed().as_secs_f32() * 1000.0;
 
         let lum_copied = self.append_lum_copy_to_encoder(&mut encoder);
 
         let finish_start = std::time::Instant::now();
+        crate::gamelib_profile::zone_begin("render.finish");
         let cmd_buf = encoder.finish();
+        crate::gamelib_profile::zone_end();
         let encoder_finish_ms = finish_start.elapsed().as_secs_f32() * 1000.0;
 
         let tail = PendingSurfaceTail {
-            after_imgui_ms,
+            after_host_ui_ms,
             encoder_finish_ms,
             game_frame_ui_ms,
             after_encode_ms: tail_start.elapsed().as_secs_f32() * 1000.0,
@@ -3204,7 +3208,9 @@ impl Renderer {
         }
 
         let submit_start = std::time::Instant::now();
+        crate::gamelib_profile::zone_begin("render.submit");
         self.queue.submit([cmd_buf]);
+        crate::gamelib_profile::zone_end();
         let queue_submit_ms = submit_start.elapsed().as_secs_f32() * 1000.0;
         self.queue_lum_readback_after_submit(lum_copied);
         if self.frame_occlusion_queries {
@@ -3213,13 +3219,15 @@ impl Renderer {
         let after_submit_ms = encoder_finish_ms + queue_submit_ms;
 
         let present_start = std::time::Instant::now();
+        crate::gamelib_profile::zone_begin("render.present");
         self.queue.present(current);
+        crate::gamelib_profile::zone_end();
         let after_present_ms = present_start.elapsed().as_secs_f32() * 1000.0;
 
         if let Some(ui) = game_frame_ui_ms {
             self.last_profile.game_frame_ui_ms = ui;
         }
-        self.last_profile.after_imgui_ms = after_imgui_ms;
+        self.last_profile.after_host_ui_ms = after_host_ui_ms;
         self.last_profile.encoder_finish_ms = encoder_finish_ms;
         self.last_profile.queue_submit_ms = queue_submit_ms;
         self.last_profile.after_submit_ms = after_submit_ms;
@@ -3231,36 +3239,9 @@ impl Renderer {
         self.exposure_override.is_none()
     }
 
-    /// GPU luminance pass lives in `encode_frame`; this only copies 64×64 → staging (async).
-    fn append_lum_copy_to_encoder(&self, encoder: &mut wgpu::CommandEncoder) -> bool {
-        if !self.auto_exposure_enabled() || self.lum_readback_pending {
-            return false;
-        }
-        let Some(lum_tex) = &self.lum_texture else {
-            return false;
-        };
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: lum_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.lum_staging_buf,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(64 * 4),
-                    rows_per_image: Some(64),
-                },
-            },
-            wgpu::Extent3d {
-                width: 64,
-                height: 64,
-                depth_or_array_layers: 1,
-            },
-        );
-        true
+    /// Luminance readback is not part of the runtime frame.
+    fn append_lum_copy_to_encoder(&self, _encoder: &mut wgpu::CommandEncoder) -> bool {
+        false
     }
 
     /// Call immediately after `queue.submit` when this frame's encoder included a lum copy.
@@ -4183,32 +4164,40 @@ impl Renderer {
             self.bone_gpu_bufs.insert(handle, buf);
         }
         if !self.skinned_mesh_globals_bgs.contains_key(&handle) {
-            let mesh_uniform_bytes = std::mem::size_of::<MeshUniform>() as u64;
             let bone_buf = self.bone_gpu_bufs.get(&handle).expect("bone palette buf");
-            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("skinned mesh globals bg"),
-                layout: &self.skinned_mesh_globals_bg_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.mesh_globals_buf,
-                            offset: 0,
-                            size: wgpu::BufferSize::new(mesh_uniform_bytes),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: bone_buf.as_entire_binding(),
-                    },
-                ],
-            });
-            self.skinned_mesh_globals_bgs.insert(handle, bg);
+            let mut bgs = Vec::with_capacity(FRAME_UNIFORM_RING);
+            for slot in 0..FRAME_UNIFORM_RING {
+                bgs.push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("skinned mesh globals bg"),
+                    layout: &self.skinned_mesh_globals_bg_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &self.mesh_globals_bufs[slot],
+                                offset: 0,
+                                size: None,
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: bone_buf.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.mesh_view_bufs[slot].as_entire_binding(),
+                        },
+                    ],
+                }));
+            }
+            let bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] =
+                bgs.try_into().ok().expect("skinned globals ring");
+            self.skinned_mesh_globals_bgs.insert(handle, bgs);
         }
         let block = GpuBoneBlock::from_palette(palette);
         let buf = self.bone_gpu_bufs.get(&handle).unwrap();
         self.queue.write_buffer(buf, 0, bytemuck::bytes_of(&block));
-        self.skinned_mesh_globals_bgs.get(&handle).unwrap()
+        &self.skinned_mesh_globals_bgs.get(&handle).unwrap()[self.frame_uniform_ring as usize]
     }
 
     fn mesh_vertex_layout_extended() -> wgpu::VertexBufferLayout<'static> {
@@ -4531,6 +4520,19 @@ impl Renderer {
         id
     }
 
+    /// Renderer-only: drop GPU regions whose CPU [`Mesh::gpu_revision`] moved.
+    fn free_stale_mesh_uploads(&mut self, content_id: u64, revision: u64) {
+        let Some((allocator_id, handles)) = self.mesh_gpu.take_stale_uploads(content_id, revision)
+        else {
+            return;
+        };
+        if let Some(alloc) = self.mesh_allocators.get_mut(allocator_id as usize) {
+            for handle in handles {
+                alloc.free(handle);
+            }
+        }
+    }
+
     pub fn mesh_release(&mut self, content_id: u64) {
         if let Some((allocator_id, handles)) = self.mesh_gpu.release(content_id) {
             if let Some(alloc) = self.mesh_allocators.get_mut(allocator_id as usize) {
@@ -4577,10 +4579,11 @@ impl Renderer {
             "mesh content_id={content_id} not retained (entity lifecycle)"
         );
         let layout_key = vertex_layout.layout_key();
-        if self.mesh_gpu.needs_upload(content_id, layout_key) {
+        self.free_stale_mesh_uploads(content_id, mesh.gpu_revision);
+        if self.mesh_gpu.needs_upload(content_id, layout_key, mesh.gpu_revision) {
             let handle = self.upload_mesh_content(mesh.as_ref(), content_id, vertex_layout);
             self.mesh_gpu
-                .set_uploaded(content_id, layout_key, handle);
+                .set_uploaded(content_id, layout_key, handle, mesh.gpu_revision);
             self.frame_mesh_gpu_uploads += 1;
         } else {
             self.frame_mesh_gpu_cached += 1;
@@ -4590,37 +4593,53 @@ impl Renderer {
             .expect("mesh upload missing after needs_upload")
     }
 
-    /// Hot path when GPU data is already resident (no upload bookkeeping beyond stats).
+    /// GPU handle prepared by [`Self::mesh_for_draw`]. Does not upload.
     pub(crate) fn mesh_resolve_for_draw(
-        &mut self,
+        &self,
         mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>,
         vertex_layout: &VertexLayoutSpec,
     ) -> crate::mesh_allocator::MeshHandle {
         let content_id = mesh.content_id();
-        assert_ne!(content_id, 0, "Mesh.content_id unset");
-        assert!(
-            self.mesh_gpu.is_retained(content_id),
-            "mesh content_id={content_id} not retained (entity lifecycle)"
-        );
         let layout_key = vertex_layout.layout_key();
-        if !self.mesh_gpu.needs_upload(content_id, layout_key) {
-            if let Some(h) = self.mesh_gpu.handle(content_id, layout_key) {
-                self.frame_mesh_gpu_cached += 1;
-                return h;
-            }
-        }
-        self.mesh_for_draw(mesh, vertex_layout)
+        assert!(
+            !self.mesh_gpu.needs_upload(content_id, layout_key, mesh.gpu_revision),
+            "mesh content_id={content_id} rev {} was not uploaded in prepare",
+            mesh.gpu_revision
+        );
+        self.mesh_gpu
+            .handle(content_id, layout_key)
+            .expect("mesh upload missing after prepare")
+    }
+
+    /// CPU mesh registry for this frame. Pointer is only read during encode on this thread.
+    pub fn bind_mesh_registry(&mut self, meshes: &deerpunk_engine_common::resource::MeshRegistry) {
+        self.frame_meshes = meshes;
+    }
+
+    fn cpu_mesh(
+        &self,
+        handle: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+    ) -> std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh> {
+        assert!(
+            !self.frame_meshes.is_null(),
+            "bind_mesh_registry before drawing meshes"
+        );
+        let reg = unsafe { &*self.frame_meshes };
+        reg.get(handle)
+            .cloned()
+            .unwrap_or_else(|| panic!("mesh {handle:?} missing from registry"))
     }
 
     pub(crate) fn mesh_static_handle_at(
         &mut self,
         i: usize,
-        mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+        mesh: &deerpunk_engine_common::resource::mesh_handle::MeshHandle,
         vertex_layout: &VertexLayoutSpec,
     ) -> crate::mesh_allocator::MeshHandle {
         if self.mesh_pass_static_handles[i].is_none() {
+            let cpu = self.cpu_mesh(*mesh);
             self.mesh_pass_static_handles[i] =
-                Some(self.mesh_resolve_for_draw(mesh, vertex_layout));
+                Some(self.mesh_resolve_for_draw(&cpu, vertex_layout));
         }
         self.mesh_pass_static_handles[i].expect("mesh_static_handle_at")
     }
@@ -4628,14 +4647,31 @@ impl Renderer {
     pub(crate) fn mesh_skinned_handle_at(
         &mut self,
         j: usize,
-        mesh: &std::sync::Arc<deerpunk_engine_common::resource::mesh::Mesh>,
+        mesh: &deerpunk_engine_common::resource::mesh_handle::MeshHandle,
         vertex_layout: &VertexLayoutSpec,
     ) -> crate::mesh_allocator::MeshHandle {
         if self.mesh_pass_skinned_handles[j].is_none() {
+            let cpu = self.cpu_mesh(*mesh);
             self.mesh_pass_skinned_handles[j] =
-                Some(self.mesh_resolve_for_draw(mesh, vertex_layout));
+                Some(self.mesh_resolve_for_draw(&cpu, vertex_layout));
         }
         self.mesh_pass_skinned_handles[j].expect("mesh_skinned_handle_at")
+    }
+
+    pub(crate) fn mesh_for_draw_handle(
+        &mut self,
+        mesh: &deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+        vertex_layout: &VertexLayoutSpec,
+    ) -> crate::mesh_allocator::MeshHandle {
+        let cpu = self.cpu_mesh(*mesh);
+        self.mesh_for_draw(&cpu, vertex_layout)
+    }
+
+    fn mesh_handle_has_bsp(
+        &self,
+        mesh: &deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+    ) -> bool {
+        Self::mesh_has_bsp_surface_data(self.cpu_mesh(*mesh).as_ref())
     }
 
     pub(crate) fn mesh_static_handle_cached(&self, i: usize) -> crate::mesh_allocator::MeshHandle {
@@ -4654,7 +4690,7 @@ impl Renderer {
     }
 
     fn mesh_uniform_stride() -> u64 {
-        let mesh_align = 256u64;
+        let mesh_align = 16u64;
         ((std::mem::size_of::<MeshUniform>() as u64 + mesh_align - 1) / mesh_align) * mesh_align
     }
 
@@ -4662,30 +4698,38 @@ impl Renderer {
     fn ensure_mesh_uniform_slots(&mut self, draw_count: u64) {
         let stride = Self::mesh_uniform_stride();
         let need_slots = draw_count.max(1);
-        let cap_slots = self.mesh_globals_buf.size() / stride;
+        let cap_slots = self.mesh_globals_bufs[0].size() / stride;
         if need_slots <= cap_slots {
             return;
         }
         let new_slots = need_slots.next_power_of_two().max(MESH_UNIFORM_SLOTS_INIT);
-        let mesh_uniform_bytes = std::mem::size_of::<MeshUniform>() as u64;
-        self.mesh_globals_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mesh globals"),
-            size: stride * new_slots,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.mesh_globals_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mesh globals bg"),
-            layout: &self.mesh_globals_bg_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &self.mesh_globals_buf,
-                    offset: 0,
-                    size: None,
-                }),
-            }],
-        });
+        for i in 0..FRAME_UNIFORM_RING {
+            let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mesh globals"),
+                size: stride * new_slots,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.mesh_globals_bgs[i] = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mesh globals bg"),
+                layout: &self.mesh_globals_bg_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &buf,
+                            offset: 0,
+                            size: None,
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.mesh_view_bufs[i].as_entire_binding(),
+                    },
+                ],
+            });
+            self.mesh_globals_bufs[i] = buf;
+        }
         // Skinned bind groups embed `mesh_globals_buf`; drop stale entries after resize.
         self.skinned_mesh_globals_bgs.clear();
         eprintln!(
@@ -4699,15 +4743,18 @@ impl Renderer {
     fn ensure_mesh_indirect_capacity(&mut self, command_count: usize) {
         let command_bytes =
             (command_count * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>()) as u64;
-        if command_bytes <= self.mesh_indirect_buf.size() {
+        if command_bytes <= self.mesh_indirect_bufs[0].size() {
             return;
         }
-        self.mesh_indirect_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mesh multi-draw indirect"),
-            size: command_bytes.next_power_of_two(),
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let size = command_bytes.next_power_of_two();
+        for i in 0..FRAME_UNIFORM_RING {
+            self.mesh_indirect_bufs[i] = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mesh multi-draw indirect"),
+                size,
+                usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
     }
 
     /// Allocate a GPU region for `mesh` via its allocator, growing the pool
@@ -4930,6 +4977,29 @@ impl Renderer {
     /// `r_mesh_batch` — static mesh bind-state batching in the mesh pass.
     pub fn set_mesh_draw_batching(&mut self, on: bool) {
         self.mesh_draw_batching = on;
+    }
+
+    /// `r_drawtransparent` — skip the alpha-blended mesh queue when off.
+    pub fn set_draw_transparent(&mut self, on: bool) {
+        self.draw_transparent = on;
+    }
+
+    /// `r_drawsky` — skip the sky and cloud passes when off (HDR still clears).
+    pub fn set_draw_sky(&mut self, on: bool) {
+        self.draw_sky = on;
+    }
+
+    pub(crate) fn draws_sky(&self) -> bool {
+        self.draw_sky
+    }
+
+    /// `r_drawclouds` — skip the cloud pass when off. Sky still draws.
+    pub fn set_draw_clouds(&mut self, on: bool) {
+        self.draw_clouds = on;
+    }
+
+    pub(crate) fn draws_clouds(&self) -> bool {
+        self.draw_clouds
     }
 
     /// `r_mesh_batch_mdi` — use `multi_draw_indexed_indirect` for batch groups (shader must use `instance_index` slot).
@@ -5229,6 +5299,7 @@ impl Renderer {
         surface_view: Option<&wgpu::TextureView>,
         shaders: &ShaderRegistry,
     ) -> wgpu::CommandEncoder {
+        self.upload_prepped = false;
         let frame_start = std::time::Instant::now();
         let mut lap = frame_start;
         let mut prof = RenderFrameProfile::default();
@@ -5316,6 +5387,11 @@ impl Renderer {
         prof.speeds_hud = FrameSpeedsHud {
             dip_count: draw_acc.dip_count,
             shader_bind: draw_acc.shader_bind,
+            render_passes: draw_acc.render_passes,
+            bind_groups: draw_acc.bind_groups,
+            vertex_binds: draw_acc.vertex_binds,
+            index_binds: draw_acc.index_binds,
+            indirect_draws: draw_acc.indirect_draws,
             frame_total_tris: (draw_acc.index_count / 3).min(u32::MAX as u64) as u32,
             visible_world_lights: snapshot.visible_world_lights,
             visible_dyn_lights: snapshot.point_lights.len() as u32,
@@ -5334,6 +5410,7 @@ impl Renderer {
 
     /// Queue a UI frame to be drawn after tonemap on the next `encode_frame`.
     pub fn set_ui_frame(&mut self, frame: Option<deerpunk_engine_common::ui_draw::UiFrame>) {
+        self.ui_upload = frame.is_some();
         self.pending_ui = frame;
     }
 

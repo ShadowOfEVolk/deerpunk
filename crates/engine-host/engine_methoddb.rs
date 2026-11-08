@@ -1782,6 +1782,165 @@ impl crate::Host {
         }
     }
 
+    /// Replace CPU vertices of an existing mesh. Same [`MeshHandle`] and `content_id`.
+    /// Bumps `gpu_revision`; the renderer re-uploads on the next extract. No GPU calls here.
+    #[methoddb::bind(name = "update")]
+    pub fn api_mesh_update(
+        &mut self,
+        handle: usize,
+        positions: *const f32,
+        vertex_count: u32,
+        normals: *const f32,
+        uvs: *const f32,
+        indices: *const c_void,
+        index_count: u32,
+        joint_indices: *const c_void,
+        joint_weights: *const f32,
+        lightmap_uvs: *const f32,
+        lightmap_styles: *const f32,
+        atlas_rects: *const f32,
+        packed_stride: u32,
+        vertex_bytes: *mut u8,
+        vertex_byte_len: u32,
+    ) -> i32 {
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
+        let desc = crate::mesh_upload::MeshCreateDesc {
+            positions,
+            vertex_count,
+            normals,
+            uvs,
+            indices,
+            index_count,
+            joint_indices,
+            joint_weights,
+            lightmap_uvs,
+            lightmap_styles,
+            atlas_rects,
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
+            allocator_id: 0,
+        };
+        let Some(mesh) = crate::mesh_upload::mesh_from_desc(&desc) else {
+            return 0;
+        };
+        if self.mesh_registry.replace(MeshHandle(handle), mesh) {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Packed buffer + caller AABB. No position array, no bounds scan on the host.
+    #[methoddb::bind(name = "update_packed")]
+    pub fn api_mesh_update_packed(
+        &mut self,
+        handle: usize,
+        bounds_min_x: f32,
+        bounds_min_y: f32,
+        bounds_min_z: f32,
+        bounds_max_x: f32,
+        bounds_max_y: f32,
+        bounds_max_z: f32,
+        packed_stride: u32,
+        vertex_bytes: *mut u8,
+        vertex_byte_len: u32,
+        indices: *const c_void,
+        index_count: u32,
+    ) -> i32 {
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
+        let desc = crate::mesh_upload::MeshPackedDesc {
+            bounds_min: [bounds_min_x, bounds_min_y, bounds_min_z],
+            bounds_max: [bounds_max_x, bounds_max_y, bounds_max_z],
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
+            indices: indices as *const u32,
+            index_count,
+            allocator_id: 0,
+        };
+        let Some(mesh) = crate::mesh_upload::mesh_from_packed(&desc) else {
+            return 0;
+        };
+        if self.mesh_registry.replace(MeshHandle(handle), mesh) {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Resize the mesh's vertex bytes and index storage. Returns 1 and writes pointers
+    /// (as usize) when the handle is live. Same allocation when sizes match.
+    #[methoddb::bind(name = "get_buffer")]
+    pub fn api_mesh_get_buffer(
+        &mut self,
+        handle: usize,
+        vertex_bytes: u32,
+        index_count: u32,
+        out_vertex_ptr: *mut u64,
+        out_index_ptr: *mut u64,
+    ) -> i32 {
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
+        let Some((verts, indices)) = self.mesh_registry.resize_buffers(
+            MeshHandle(handle),
+            vertex_bytes as usize,
+            index_count as usize,
+        ) else {
+            return 0;
+        };
+        if !out_vertex_ptr.is_null() {
+            unsafe { *out_vertex_ptr = verts as u64 };
+        }
+        if !out_index_ptr.is_null() {
+            unsafe { *out_index_ptr = indices as u64 };
+        }
+        1
+    }
+
+    /// CPU buffer changed. Renderer re-uploads on the next extract. No GPU work here.
+    #[methoddb::bind(name = "mark_dirty")]
+    pub fn api_mesh_mark_dirty(&mut self, handle: usize) -> i32 {
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
+        if self.mesh_registry.mark_dirty(MeshHandle(handle)) {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Like [`api_mesh_update_packed`] but inserts a new handle. `allocator_id` 0 = default slab.
+    #[methoddb::bind(name = "create_packed")]
+    pub fn api_mesh_create_packed(
+        &mut self,
+        bounds_min_x: f32,
+        bounds_min_y: f32,
+        bounds_min_z: f32,
+        bounds_max_x: f32,
+        bounds_max_y: f32,
+        bounds_max_z: f32,
+        packed_stride: u32,
+        vertex_bytes: *mut u8,
+        vertex_byte_len: u32,
+        indices: *const c_void,
+        index_count: u32,
+        allocator_id: u32,
+    ) -> usize {
+        let desc = crate::mesh_upload::MeshPackedDesc {
+            bounds_min: [bounds_min_x, bounds_min_y, bounds_min_z],
+            bounds_max: [bounds_max_x, bounds_max_y, bounds_max_z],
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
+            indices: indices as *const u32,
+            index_count,
+            allocator_id,
+        };
+        match crate::mesh_upload::mesh_from_packed(&desc) {
+            Some(mesh) => self.mesh_registry.insert(mesh).0,
+            None => 0,
+        }
+    }
+
     /// Register a custom (game-supplied) mesh allocator. The engine wraps
     /// the FFI vtable + opaque ctx in a `ForeignMeshAllocator`, pushes it
     /// onto the client renderer's allocator table, and returns a stable

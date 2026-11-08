@@ -3,6 +3,7 @@ mod cull;
 mod draw_list;
 mod cvars;
 pub mod upload_log;
+pub mod bind_log;
 mod occlusion;
 mod frustum;
 mod octree;
@@ -13,6 +14,7 @@ pub mod debug_draw;
 pub mod font;
 pub mod frame;
 pub mod gpu;
+pub mod host_ui;
 pub mod material_allocator;
 pub mod material_store;
 pub mod mesh_alloc_debug;
@@ -28,10 +30,39 @@ mod shader_fallback;
 pub mod snapshot;
 pub mod text_util;
 pub mod tracy_lifecycle;
+pub mod puffin_lifecycle;
 pub mod gamelib_profile;
 pub mod ui_pass;
 
 pub use tracy_lifecycle::{tracy_active, tracy_ensure_started, tracy_shutdown};
+pub use puffin_lifecycle::{puffin_active, puffin_begin_frame, puffin_ensure_started};
+
+/// Whether host-side instrumentation is active (Tracy or Puffin).
+pub fn profile_active() -> bool {
+    #[cfg(feature = "tracy")]
+    {
+        return tracy_active();
+    }
+    #[cfg(feature = "puffin")]
+    {
+        return puffin_active();
+    }
+    false
+}
+
+pub fn profile_ensure_started() {
+    #[cfg(feature = "tracy")]
+    tracy_ensure_started();
+    #[cfg(feature = "puffin")]
+    puffin_ensure_started();
+}
+
+pub fn profile_begin_frame() {
+    #[cfg(feature = "tracy")]
+    gamelib_profile::frame_mark();
+    #[cfg(feature = "puffin")]
+    puffin_begin_frame();
+}
 
 pub use asset_inventory::{AssetEntry, AssetKind};
 pub use debug_draw::{DebugColor, DebugDraw, DebugPrimitive};
@@ -39,7 +70,7 @@ pub use font::{
     build_font_atlas, push_char, push_text, push_text_centered_shadow, push_text_shadow,
     text_width_f32, ATLAS_H, ATLAS_W, GLYPH_H, GLYPH_W,
 };
-pub use gpu::{FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, HOST_IMGUI_ENABLED};
+pub use gpu::{FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, HOST_UI_ENABLED};
 pub use material_allocator::{MaterialAllocator, MaterialGpuEntry, MATERIAL_WHITE_ID};
 pub use mesh_alloc_debug::{BufferView, MeshAllocReport, SideView};
 pub use mesh_allocator::{
@@ -57,7 +88,8 @@ pub use aabb::Aabb;
 pub use frustum::Frustum;
 pub use octree::PersistentOctree;
 pub use cull::{
-    scene_geometry_cull_serial, world_bounds, CullScratch, CullStats, DEFAULT_CELL_SIZE,
+    mesh_local_bounds, scene_geometry_cull_serial, world_bounds, CullScratch, CullStats,
+    DEFAULT_CELL_SIZE,
     GRID_MIN_DRAWS,
 };
 pub use snapshot::{

@@ -85,6 +85,8 @@ fn record_phase(state: &mut ProfilerState, name: &'static str, elapsed: Duration
 /// Mark start of a full host frame (wall-clock), including render.
 pub fn begin_frame() {
     FRAME_START.set(Some(Instant::now()));
+    #[cfg(any(feature = "tracy", feature = "puffin"))]
+    deerpunk_engine_renderer::profile_begin_frame();
 }
 
 /// Record one named phase duration for the current frame.
@@ -104,9 +106,21 @@ pub fn record_ms(name: &'static str, ms: f32) {
 pub fn ingest_render_profile(profile: &RenderFrameProfile) {
     with_profiler(|state| {
         state.last_render = Some(profile.clone());
-        // Phase timings come from host scopes (`frame.render`, `frame.extract`, …).
-        // `RenderFrameProfile` is detail for inspector `render` + `r_speeds` parity.
     });
+    // Sub-phase buckets (same frame as `frame.render`); inspector + Tracy message text.
+    record_ms("render.extract_ms", profile.extract_ms);
+    record_ms("render.prep_ms", profile.prep_ms);
+    record_ms("render.prep_ui_ms", profile.prep_ui_ms);
+    record_ms("render.prep_snapshot_ms", profile.prep_snapshot_ms);
+    record_ms("render.prep_cull_ms", profile.prep_cull_ms);
+    record_ms("render.prep_audio_ms", profile.prep_audio_ms);
+    record_ms("render.game_frame_ui_ms", profile.game_frame_ui_ms);
+    record_ms("render.surface_acquire_ms", profile.surface_acquire_ms);
+    record_ms("render.total_encode_ms", profile.total_encode_ms);
+    record_ms("render.after_host_ui_ms", profile.after_host_ui_ms);
+    record_ms("render.encoder_finish_ms", profile.encoder_finish_ms);
+    record_ms("render.queue_submit_ms", profile.queue_submit_ms);
+    record_ms("render.after_present_ms", profile.after_present_ms);
 }
 
 /// RAII timer for a named phase.
@@ -117,6 +131,8 @@ pub struct Scope {
 
 impl Scope {
     pub fn new(name: &'static str) -> Self {
+        #[cfg(any(feature = "tracy", feature = "puffin"))]
+        deerpunk_engine_renderer::gamelib_profile::zone_begin(name);
         Self {
             name,
             start: Instant::now(),
@@ -127,6 +143,8 @@ impl Scope {
 impl Drop for Scope {
     fn drop(&mut self) {
         record(self.name, self.start.elapsed());
+        #[cfg(any(feature = "tracy", feature = "puffin"))]
+        deerpunk_engine_renderer::gamelib_profile::zone_end();
     }
 }
 
@@ -222,7 +240,7 @@ fn build_snapshot(state: &ProfilerState) -> Value {
             "encode_ms": round_ms(p.total_encode_ms as f64),
             "game_frame_ui_ms": round_ms(p.game_frame_ui_ms as f64),
             "surface_acquire_ms": round_ms(p.surface_acquire_ms as f64),
-            "after_imgui_ms": round_ms(p.after_imgui_ms as f64),
+            "after_host_ui_ms": round_ms(p.after_host_ui_ms as f64),
             "encoder_finish_ms": round_ms(p.encoder_finish_ms as f64),
             "queue_submit_ms": round_ms(p.queue_submit_ms as f64),
             "after_submit_ms": round_ms(p.after_submit_ms as f64),

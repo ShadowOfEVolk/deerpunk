@@ -1,10 +1,8 @@
 //! Forward frame: [`crate::render_graph::RenderGraph::execute_on_encoder`] + pass dispatch.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use crate::frame::context::FrameCtx;
-use crate::frame::schedule::res;
 use crate::frame::scope::{self, Phase};
 use crate::gpu::Renderer;
 use crate::render_graph::NodeContext;
@@ -54,10 +52,9 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
 
     macro_rules! render_scope {
         ($label:literal) => {
-            #[cfg(feature = "tracy")]
-            if crate::tracy_active() {
-                profiling::scope!($label);
-            }
+            #[cfg(any(feature = "tracy", feature = "puffin"))]
+            let _render_profile =
+                crate::profile_active().then(|| crate::gamelib_profile::zone_scope($label));
         };
     }
 
@@ -68,7 +65,10 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
         }
         "sky" => {
             render_scope!("render/sky");
-            if ctx.snapshot.pass_mask & cam_features::SKY != 0 && ctx.snapshot.sky.is_some() {
+            if renderer.draws_sky()
+                && ctx.snapshot.pass_mask & cam_features::SKY != 0
+                && ctx.snapshot.sky.is_some()
+            {
                 renderer.pass_sky_and_clouds(ctx, nc.encoder);
             } else {
                 skipped = true;
@@ -81,7 +81,8 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
             // already clear (sky pass clears to the scene clear color itself).
             let clears_color = ctx.snapshot.color_load
                 == deerpunk_engine_common::components::ColorLoad::Clear;
-            let sky_cleared = ctx.snapshot.pass_mask & cam_features::SKY != 0
+            let sky_cleared = renderer.draws_sky()
+                && ctx.snapshot.pass_mask & cam_features::SKY != 0
                 && ctx.snapshot.sky.is_some();
             if clears_color && !sky_cleared {
                 renderer.pass_clear_hdr_no_sky(ctx, nc.encoder);
@@ -98,17 +99,6 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
             render_scope!("render/mesh");
             renderer.pass_mesh(ctx, nc.encoder);
         }
-        "terrain_splat" => {
-            render_scope!("render/terrain_splat");
-            if ctx.snapshot.pass_mask & cam_features::TERRAIN != 0
-                && !ctx.snapshot.terrain_splat_draws.is_empty()
-            {
-                renderer.pass_terrain_splat(ctx, nc.encoder);
-            } else {
-                skipped = true;
-                let _ = lap_ms(ctx.lap);
-            }
-        }
         "debug" => {
             render_scope!("render/debug");
             if ctx.snapshot.pass_mask & cam_features::DEBUG != 0 {
@@ -121,11 +111,6 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
         "hud" => {
             render_scope!("render/hud");
             renderer.pass_hud(ctx, nc.encoder, sprite_pipeline, hud_vp);
-        }
-        "luminance" => {
-            render_scope!("render/luminance");
-            skipped = true;
-            let _ = lap_ms(ctx.lap);
         }
         "tonemap_ui" => {
             render_scope!("render/tonemap_ui");
@@ -152,12 +137,6 @@ pub fn run_frame_graph(
     // Depth is owned by the per-camera depth pool, not the graph. Passes fetch their
     // depth view from `Renderer::ensure_depth(snapshot.depth.target, w, h)`.
 
-    let mut external: HashMap<crate::render_graph::ResId, wgpu::TextureView> = HashMap::new();
-    external.insert(res::HDR, ctx.hdr_view.clone());
-    if let Some(surface) = ctx.surface_view {
-        external.insert(res::SURFACE, surface.clone());
-    }
-
     // SAFETY: `user` lives for this call; graph nodes only run synchronously on this thread.
     let mut user = GraphFrameUserData {
         renderer: r as *mut Renderer,
@@ -171,14 +150,7 @@ pub fn run_frame_graph(
     let device = r.device.clone();
     let queue = r.queue.clone();
     r.forward_graph_mut()
-        .execute_on_encoder_in_order(
-            &device,
-            &queue,
-            encoder,
-            &external,
-            user_ptr,
-        )
-        .unwrap_or_else(|e| panic!("[render-graph] forward frame failed: {e}"));
+        .execute_registered(&device, &queue, encoder, user_ptr);
 }
 
 fn format_res_list(ids: &[&str]) -> String {

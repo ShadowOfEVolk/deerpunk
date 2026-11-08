@@ -6,6 +6,7 @@ use deerpunk_engine_common::world::ComponentDescriptor;
 use super::resources::read_str;
 
 pub(crate) fn register_component_desc(host: &mut crate::Host, desc: &ComponentRegisterDesc) -> u64 {
+    deerpunk_engine_common::install_property_layout_hook();
     let name = read_str(desc.name_ptr, desc.name_len);
     if name.is_empty() {
         log::error!("[server_world] component_register: empty component name");
@@ -61,6 +62,7 @@ pub(crate) fn register_client_component_desc(
     host: &crate::Host,
     desc: &ComponentRegisterDesc,
 ) -> u64 {
+    deerpunk_engine_common::install_property_layout_hook();
     let name = read_str(desc.name_ptr, desc.name_len);
     if name.is_empty() {
         log::error!("[client_world] component_register: empty component name");

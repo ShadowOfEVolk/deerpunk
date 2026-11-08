@@ -234,8 +234,8 @@ impl Host {
         resources.register_loader(Box::new(deerpunk_engine_common::resource::ShaderLoader {
             root: shader_root,
         }));
-        #[cfg(feature = "tracy")]
-        deerpunk_engine_renderer::tracy_ensure_started();
+        #[cfg(any(feature = "tracy", feature = "puffin"))]
+        deerpunk_engine_renderer::profile_ensure_started();
         #[cfg(any(feature = "client", feature = "full"))]
         let client_engine = Some(ClientEngine::new(&resources));
         let loopback = Arc::new(NetLoopback::new());
@@ -309,8 +309,8 @@ impl Host {
         resources.register_loader(Box::new(deerpunk_engine_common::resource::ShaderLoader {
             root: shader_root,
         }));
-        #[cfg(feature = "tracy")]
-        deerpunk_engine_renderer::tracy_ensure_started();
+        #[cfg(any(feature = "tracy", feature = "puffin"))]
+        deerpunk_engine_renderer::profile_ensure_started();
         Self {
             server_engine: Some(ServerEngine::new()),
             #[cfg(any(feature = "client", feature = "full"))]
@@ -1103,7 +1103,7 @@ impl Host {
         }
 
         // Console input before gamelib so open console eats keys for freecam/etc.
-        // ImGui draw runs later in [`Self::frame_ui`] (inside NewFrame).
+        // Nuklear draw runs later in [`Self::frame_ui`].
         #[cfg(any(feature = "client", feature = "full"))]
         {
             let _g = system_profiler::scope("host.console");
@@ -1157,6 +1157,7 @@ impl Host {
 
         #[cfg(any(feature = "client", feature = "full"))]
         {
+            let _g = system_profiler::scope("client.post_frame");
             if let Some(client) = self.client_engine.as_mut() {
                 if let Some(ref dll) = client.dll {
                     unsafe {
@@ -1168,10 +1169,13 @@ impl Host {
 
     }
 
-    /// ImGui overlays — call from renderer during `imgui_begin_frame` … `imgui_end_frame`.
+    /// Nuklear overlays — call from the renderer during `host_ui_begin_frame` … `host_ui_end_frame`.
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn frame_ui(&mut self) {
-        if !deerpunk_engine_renderer::HOST_IMGUI_ENABLED {
+        if let Some(client) = self.client_engine.as_ref() {
+            client.gamelib_ui_build_frame(0.0);
+        }
+        if !deerpunk_engine_renderer::HOST_UI_ENABLED {
             return;
         }
         let show_fps = self.cvar.get_usize_or("cl_showfps", 0) != 0
@@ -1467,6 +1471,10 @@ impl Host {
         let s = &p.speeds_hud;
         lines.push(format!("DIP count   {}", s.dip_count));
         lines.push(format!("Shader bind {}", s.shader_bind));
+        lines.push(format!(
+            "cmds  pass {}  bind {}  vb {}  ib {}  indirect {}",
+            s.render_passes, s.bind_groups, s.vertex_binds, s.index_binds, s.indirect_draws
+        ));
         lines.push(format!("Frame total tris {}", s.frame_total_tris));
         lines.push(format!("Visible world lights {}", s.visible_world_lights));
         lines.push(format!("Visible dyn lights {}", s.visible_dyn_lights));
@@ -1500,8 +1508,8 @@ impl Host {
                 p.surface_acquire_ms
             ));
             lines.push(format!(
-                "  tail: imgui {:.2}  finish {:.2}  submit {:.2}  present {:.2}",
-                p.after_imgui_ms, p.encoder_finish_ms, p.queue_submit_ms, p.after_present_ms
+                "  tail: nuklear {:.2}  finish {:.2}  submit {:.2}  present {:.2}",
+                p.after_host_ui_ms, p.encoder_finish_ms, p.queue_submit_ms, p.after_present_ms
             ));
         }
         if level >= 2 {
@@ -1524,10 +1532,7 @@ impl Host {
                 eg.skinned_draws,
             ));
             lines.push(format!(
-                "  extract cache: rebuild {} xform {} hit {} frustum_skip {}",
-                eg.extract_static_rebuild,
-                eg.extract_xform_only,
-                eg.extract_cache_hit,
+                "  extract frustum_skip {}",
                 eg.extract_frustum_skip,
             ));
             lines.push(format!(
@@ -1976,8 +1981,9 @@ impl Host {
             return;
         }
 
-        let world_ptr = self.client_engine.as_ref().unwrap().world.as_ptr();
-        deerpunk_engine_common::world::install_panic_hook(world_ptr);
+        deerpunk_engine_common::world::install_panic_hook(
+            &self.client_engine.as_ref().unwrap().world,
+        );
 
         self.client_engine.as_mut().unwrap().init_extractor();
 
@@ -2032,9 +2038,14 @@ impl Host {
                 client.set_render_pipeline(render_pipeline);
             }
             if render_pipeline >= 1 {
-                let _g = system_profiler::scope("frame.render_wait");
+                {
+                    let _g = system_profiler::scope("frame.render_wait");
+                    if let Some(client) = self.client_engine.as_mut() {
+                        client.pipelined_submit_wait();
+                    }
+                }
                 if let Some(client) = self.client_engine.as_mut() {
-                    client.pipelined_submit_wait();
+                    let _g = system_profiler::scope("frame.render_profile");
                     let profile = client.renderer().frame_profile();
                     deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
                     system_profiler::ingest_render_profile(profile);
@@ -2049,22 +2060,32 @@ impl Host {
                 deerpunk_engine_client::render_sync::apply_renderer_cvars(&self.cvar, client);
                 client.advance_time(dt);
             }
-            self.sync_server_sound_origins();
-            if let Some(ref dll) = self.client_engine.as_mut().unwrap().dll {
-                unsafe {
-                    dll.pre_render(dt);
+            {
+                let _g = system_profiler::scope("host.sound_origins");
+                self.sync_server_sound_origins();
+            }
+            {
+                let _g = system_profiler::scope("client.pre_render");
+                if let Some(ref dll) = self.client_engine.as_mut().unwrap().dll {
+                    unsafe {
+                        dll.pre_render(dt);
+                    }
                 }
             }
             if self.cvar.get_usize_or("cl_predict", 1) != 0 {
                 let smooth = self.cvar.get_f32_or("cl_smoothtime", 0.12);
                 let nosmooth = self.cvar.get_usize_or("cl_nosmooth", 0) != 0;
                 let view_smooth = self.cvar.get_f32_or("cl_viewsmooth", 18.0);
-                if let Some(client) = self.client_engine.as_mut() {
-                    client
-                        .local_sim
-                        .tick_display(dt, smooth, nosmooth, view_smooth);
+                {
+                    let _g = system_profiler::scope("client.local_sim");
+                    if let Some(client) = self.client_engine.as_mut() {
+                        client
+                            .local_sim
+                            .tick_display(dt, smooth, nosmooth, view_smooth);
+                    }
                 }
                 if let Some(ent) = self.local_client_entity() {
+                    let _g = system_profiler::scope("client.stamp_simorg");
                     self.client_engine
                         .as_mut()
                         .unwrap()
@@ -2074,13 +2095,18 @@ impl Host {
 
             let view_ent = self.client_engine.as_mut().unwrap().rep.view_entity();
             let early_cull = self.cvar.get_usize_or("cl_extract_early_cull", 1) != 0;
-            let draw_distance = self.cvar.get_f32_or("cl_draw_distance", 192.0);
+            let draw_world = self.cvar.get_usize_or("r_drawworld", 1) != 0;
             let scene = {
                 let _g = system_profiler::scope("frame.extract");
                 let extract_start = std::time::Instant::now();
                 let (client, registry) = self.split_client_registry();
                 let mut scene =
-                    client.extract_scene_view(registry, view_ent, early_cull, draw_distance);
+                    client.extract_scene_view(
+                        registry,
+                        view_ent,
+                        early_cull,
+                        draw_world,
+                    );
                 scene.cull = deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
                 let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;
                 self.client_engine
@@ -2112,6 +2138,8 @@ impl Host {
             let host_ptr = self as *mut Self as *mut std::ffi::c_void;
             let rendered = {
                 let _g = system_profiler::scope("frame.render");
+                let ui_fps = self.cvar.get_f32_or("r_ui_fps", 30.0) as i32;
+                self.client_engine.as_mut().unwrap().set_ui_fps(ui_fps);
                 self.client_engine.as_mut().unwrap().tick_inner(
                     Some(&scene),
                     Some(host_frame_ui_trampoline),
@@ -2122,21 +2150,25 @@ impl Host {
             };
             if render_pipeline == 0 {
                 if let Some(client) = self.client_engine.as_ref() {
+                    let _g = system_profiler::scope("frame.render_profile");
                     let profile = client.renderer().frame_profile();
                     deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
                     system_profiler::ingest_render_profile(profile);
                 }
+            }
+            {
+                let _g = system_profiler::scope("host.input_reset");
+                self.client_engine
+                    .as_mut()
+                    .unwrap()
+                    .input
+                    .reset_mouse_delta();
             }
             system_profiler::end_frame();
 
             if !rendered || self.cmd.quit_requested() {
                 break;
             }
-            self.client_engine
-                .as_mut()
-                .unwrap()
-                .input
-                .reset_mouse_delta();
         }
 
         self.shutdown();

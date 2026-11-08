@@ -55,7 +55,7 @@ pub struct CameraComponent {
     pub fov_y: f32,
     pub near: f32,
     pub far: f32,
-    /// Draw mask on [`RenderLayer`] must overlap this field (bitwise AND).
+    /// [`crate::components::Mesh3D::layer_mask`] must overlap this field (bitwise AND).
     pub layer_mask: u32,
     /// Sort key for multi-camera surface compose (lower first).
     pub order: u8,

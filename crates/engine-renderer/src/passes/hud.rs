@@ -14,6 +14,7 @@ impl Renderer {
     if !ctx.snapshot.hud.is_empty() {
         let gpu_hud = self.build_instances_from(&ctx.snapshot.hud);
         self.write_hud_buffers(&gpu_hud, hud_vp);
+        ctx.draw_acc.note_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hud pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -32,7 +33,7 @@ impl Renderer {
         });
         ctx.draw_acc.note_pipeline();
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &self.hud_globals_bg, &[]);
+        ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.hud_globals_bg, &[]);
         Self::draw_batched(
             &mut pass,
             &ctx.snapshot.hud,

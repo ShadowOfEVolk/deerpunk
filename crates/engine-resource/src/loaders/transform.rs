@@ -113,6 +113,30 @@ pub fn apply_mesh_transform(mesh: &mut Mesh, t: &MeshTransform) {
             *n = [r[0] / len, r[1] / len, r[2] / len];
         }
     }
+
+    // Positions moved. Refresh the invariant from the existing box corners, not a vertex scan.
+    if mesh.has_local_bounds() {
+        let (a, b) = (mesh.bounds_min, mesh.bounds_max);
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for x in [a[0], b[0]] {
+            for y in [a[1], b[1]] {
+                for z in [a[2], b[2]] {
+                    let scaled = [x * t.scale, y * t.scale, z * t.scale];
+                    let r = rotate(scaled);
+                    let p = [r[0] + t.translate[0], r[1] + t.translate[1], r[2] + t.translate[2]];
+                    for i in 0..3 {
+                        min[i] = min[i].min(p[i]);
+                        max[i] = max[i].max(p[i]);
+                    }
+                }
+            }
+        }
+        mesh.bounds_min = min;
+        mesh.bounds_max = max;
+    } else {
+        mesh.ensure_local_bounds();
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +189,7 @@ mod tests {
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
             content_id: 0,
+            gpu_revision: 1,
             allocator_id: 0,
             bounds_min: [0.0; 3],
             bounds_max: [0.0; 3],
@@ -194,6 +219,7 @@ mod tests {
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
             content_id: 0,
+            gpu_revision: 1,
             allocator_id: 0,
             bounds_min: [0.0; 3],
             bounds_max: [0.0; 3],

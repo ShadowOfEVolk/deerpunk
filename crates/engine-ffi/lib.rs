@@ -4,7 +4,7 @@
 
 mod component;
 mod init;
-mod imgui_host;
+mod nuklear_host;
 mod gamelib_ui;
 
 pub use component::{
@@ -12,7 +12,7 @@ pub use component::{
     no_prefab_apply,
 };
 pub use init::{ClientInitData, GamelibInitData, ResolverFn, ServerInitData, GAMELIB_API_VERSION};
-pub use imgui_host::{ImGuiDrawHost, ImGuiVec2, IMGUI_DRAW_HOST_VERSION};
+pub use nuklear_host::NuklearDrawHost;
 pub use gamelib_ui::{
     GamelibUiBuildArgs, GamelibUiBuildFn, GamelibUiRenderArgs, GamelibUiRenderFn,
     GAMELIB_SURFACE_BGRA8, GAMELIB_SURFACE_BGRA8_SRGB, GAMELIB_SURFACE_RGBA8,

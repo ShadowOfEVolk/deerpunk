@@ -21,6 +21,10 @@ pub struct DrawMaterial {
     pub asset_id: u64,
     /// GPU row in client `MaterialStore` (resolved from `asset_id` / `uri`).
     pub handle: MaterialHandle,
+    /// Crack overlay stage 0..9. Client-only. `block_break.wgsl` reads `material_data.y`.
+    pub crack_stage: u32,
+    /// Chunk pop-in spawn time as `f32` bits. Client-only. Non-zero wins over [`Self::crack_stage`].
+    pub reveal_spawn_bits: u32,
 }
 
 impl Default for DrawMaterial {
@@ -31,6 +35,8 @@ impl Default for DrawMaterial {
             _pad: 0,
             asset_id: 0,
             handle: MaterialHandle::NONE,
+            crack_stage: 0,
+            reveal_spawn_bits: 0,
         }
     }
 }
@@ -49,6 +55,8 @@ impl DrawMaterial {
             _pad: 0,
             asset_id: 0,
             handle,
+            crack_stage: 0,
+            reveal_spawn_bits: 0,
         }
     }
 
@@ -76,6 +84,25 @@ impl DrawMaterial {
 
     pub fn asset_id(&self) -> u64 {
         self.asset_id
+    }
+
+    /// Value copied into `MeshUniform.material_data.y`.
+    pub fn material_data_y(self) -> u32 {
+        if self.reveal_spawn_bits != 0 {
+            self.reveal_spawn_bits
+        } else {
+            self.crack_stage
+        }
+    }
+
+    pub fn set_crack_stage(&mut self, stage: u8) {
+        self.crack_stage = u32::from(stage.min(9));
+        self.reveal_spawn_bits = 0;
+    }
+
+    pub fn set_chunk_reveal(&mut self, spawn_time: f32) {
+        self.crack_stage = 0;
+        self.reveal_spawn_bits = spawn_time.to_bits();
     }
 
     pub fn uri_str(&self) -> &str {

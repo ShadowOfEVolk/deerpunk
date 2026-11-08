@@ -1,6 +1,8 @@
-//! Gamelib-owned Dear ImGui pass (separate context + wgpu rasterization in the client DLL).
+//! Gamelib debug widgets drawn through the host Nuklear context.
 
-pub const GAMELIB_UI_API_VERSION: u32 = 1;
+use crate::NuklearDrawHost;
+
+pub const GAMELIB_UI_API_VERSION: u32 = 2;
 
 /// Swapchain color format token (see engine-host `gamelib_ui_format_token`).
 pub const GAMELIB_SURFACE_BGRA8_SRGB: u32 = 1;
@@ -17,6 +19,7 @@ pub struct GamelibUiBuildArgs {
     pub surface_format: u32,
     pub width: f32,
     pub height: f32,
+    pub nk: NuklearDrawHost,
 }
 
 #[repr(C)]

@@ -1,4 +1,6 @@
-//! Bitmask: which camera passes may draw this entity (`draw.mask & camera.layer_mask != 0`).
+//! Bitmask: which camera passes may draw a mesh (`Mesh3D::layer_mask & camera.layer_mask != 0`).
+//!
+//! The mask lives on [`super::Mesh3D`] / [`super::SkinnedMesh3D`], not a separate component.
 //!
 //! The engine only provides the generic bitmask mechanism + a conventional default
 //! (bit 0). Games name their own layers (world, viewmodel, ui, …) and assign bits.

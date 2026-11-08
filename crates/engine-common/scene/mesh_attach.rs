@@ -23,7 +23,7 @@ pub fn release_skinned_at(world: &World, _meshes: &mut MeshRegistry, entity: Ent
 /// Attach `handle` to `entity` as a `Mesh3D`, preserving the prior URI.
 pub fn attach_mesh3d(
     world: &World,
-    _meshes: &mut MeshRegistry,
+    meshes: &mut MeshRegistry,
     entity: EntityId,
     comp: ComponentId,
     handle: MeshHandle,
@@ -33,6 +33,9 @@ pub fn attach_mesh3d(
         .map(|m| m.uri_str().to_owned())
         .unwrap_or_default();
     let mut m = Mesh3D::with_handle(handle);
+    if let Some(cpu) = meshes.get(handle) {
+        m = m.set_local_bounds(cpu.bounds_min, cpu.bounds_max);
+    }
     if !uri_owned.is_empty() {
         m.set_uri(&uri_owned);
     }

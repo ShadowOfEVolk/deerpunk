@@ -8,6 +8,7 @@ path = "lib.rs"
 
 [dependencies]
 deerpunk-engine-ffi = { path = "../engine-ffi" }
+deerpunk-engine-world = { path = "../engine-world" }
 deerpunk-engine-network = { path = "../engine-network" }
 deerpunk-engine-resource = { path = "../engine-resource" }
 log = { workspace = true }
@@ -26,7 +27,6 @@ rapier3d = { version = "0.35", features = ["dim3", "profiler"] }
 image = "0.25"
 rand = "0.8"
 socket2 = "0.5"
-flecs_ecs_sys = { git = "https://github.com/Indra-db/Flecs-Rust.git", default-features = false, features = ["flecs_meta_c", "flecs_alerts", "flecs_json"] }
 
 [build-dependencies]
 cc = "1"

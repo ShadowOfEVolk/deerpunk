@@ -26,12 +26,16 @@ pub struct Mesh {
     pub joint_weights: Vec<[f32; 4]>,
     /// Unique content id for GPU cache + refcount (`0` = invalid until assigned).
     pub content_id: u64,
+    /// Bumped by [`MeshRegistry::replace`](super::mesh_registry::MeshRegistry::replace).
+    /// The renderer re-uploads when this differs from the last GPU upload. Games do not touch GPU.
+    pub gpu_revision: u64,
     /// Which registered [`MeshAllocator`](deerpunk_engine_resource::mesh_allocator::MeshAllocator)
     /// owns this mesh's GPU region. `0` = default built-in slab allocator.
     /// Set via `v1:mesh:create_with` when a game wants a custom allocator
     /// (e.g. a region arena for streaming voxel chunks).
     pub allocator_id: u32,
-    /// Cached object-space AABB (`ensure_local_bounds` / registry insert).
+    /// Object-space AABB. Invariant after the mesh is built: set once at upload
+    /// (`mesh_from_desc` / packed desc / loader / primitive). Readers never recompute it.
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
 }
@@ -52,13 +56,15 @@ impl Mesh {
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
             content_id: allocate_mesh_content_id(),
+            gpu_revision: 1,
             allocator_id: 0,
             bounds_min: [f32::INFINITY, f32::INFINITY, f32::INFINITY],
             bounds_max: [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY],
         }
     }
 
-    /// Recompute [`bounds_min`] / [`bounds_max`] from [`positions`] (once per mesh build).
+    /// Fill [`bounds_min`] / [`bounds_max`] from [`positions`].
+    /// Only while building a mesh (upload, loader, primitive). Not for readers.
     pub fn ensure_local_bounds(&mut self) {
         if self.positions.is_empty() {
             self.bounds_min = [0.0, 0.0, 0.0];
@@ -100,18 +106,23 @@ impl Mesh {
 
     pub fn vertex_count(&self) -> usize {
         if self.packed_stride > 0 {
-            debug_assert_eq!(
-                self.vertex_bytes.len(),
-                self.positions.len() * self.packed_stride as usize
-            );
-            return self.positions.len();
+            let stride = self.packed_stride as usize;
+            if stride > 0 && self.vertex_bytes.len() % stride == 0 && !self.vertex_bytes.is_empty()
+            {
+                return self.vertex_bytes.len() / stride;
+            }
         }
         self.positions.len()
     }
 
     pub fn uses_prepacked_vertices(&self) -> bool {
+        let stride = self.packed_stride as usize;
         self.packed_stride > 0
-            && self.vertex_bytes.len() == self.positions.len() * self.packed_stride as usize
+            && stride > 0
+            && !self.vertex_bytes.is_empty()
+            && self.vertex_bytes.len() % stride == 0
+            && (self.positions.is_empty()
+                || self.vertex_bytes.len() == self.positions.len() * stride)
     }
 
     pub fn index_count(&self) -> usize {
@@ -161,6 +172,7 @@ impl Mesh {
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
             content_id: allocate_mesh_content_id(),
+            gpu_revision: 1,
             allocator_id: 0,
             bounds_min: [f32::INFINITY, f32::INFINITY, f32::INFINITY],
             bounds_max: [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY],

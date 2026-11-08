@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use glam::{Quat, Vec3};
 
 use deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD;
 use deerpunk_engine_common::components::{
     ColorLoad, DepthAttachment, DepthLoad, DepthTargetId,
 };
-use deerpunk_engine_common::resource::mesh::Mesh;
+use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 
 use crate::aabb::Aabb;
 use crate::cull::CullScratch;
@@ -24,7 +22,7 @@ fn test_scene_two_cameras() -> RenderScene {
 
     let mut geo = SceneGeometry::default();
     geo.mesh_draws.push(MeshDraw {
-        mesh: Arc::new(Mesh::empty()),
+        mesh: MeshHandle(1),
         model_mat: glam::Mat4::IDENTITY.to_cols_array_2d(),
         layer_mask: RENDER_LAYER_WORLD,
         batchable: false,
@@ -43,7 +41,7 @@ fn test_scene_two_cameras() -> RenderScene {
         uniform_aux: 0,
     });
     geo.mesh_draws.push(MeshDraw {
-        mesh: Arc::new(Mesh::empty()),
+        mesh: MeshHandle(1),
         model_mat: glam::Mat4::IDENTITY.to_cols_array_2d(),
         layer_mask: OVERLAY_LAYER,
         batchable: false,

@@ -1,4 +1,4 @@
-//! Client debug infobox (`cl_showfps` / `cl_showpos` / `net_show`) — ImGui overlay.
+//! Client debug infobox (`cl_showfps` / `cl_showpos` / `net_show`) — Nuklear overlay.
 
 use deerpunk_engine_common::components::TransformComponent;
 use deerpunk_engine_common::physics::CharacterController;
@@ -11,7 +11,7 @@ pub struct NetHudInfo {
     pub lines: Vec<String>,
 }
 
-/// Draw top-left HUD. Call only inside ImGui NewFrame.
+/// Draw top-left HUD. Call only inside the host UI frame.
 ///
 /// `view_yaw` / `view_pitch` — client view stamp (radians).
 pub fn tick(
@@ -74,7 +74,19 @@ pub fn tick(
         return;
     }
 
-    if !begin_overlay("##infobox", 8.0, 8.0) {
+    let lines = fps_lines.len() + pos_lines.len() + net_lines.len() + render_lines.len();
+    let mut seps = 0;
+    if !fps_lines.is_empty() && (!pos_lines.is_empty() || !net_lines.is_empty()) {
+        seps += 1;
+    }
+    if !pos_lines.is_empty() && (!net_lines.is_empty() || !render_lines.is_empty()) {
+        seps += 1;
+    }
+    if !net_lines.is_empty() && !render_lines.is_empty() {
+        seps += 1;
+    }
+    let h = lines as f32 * 14.0 + seps as f32 * 7.0 + 8.0;
+    if !begin_overlay("##infobox", 8.0, 8.0, h) {
         return;
     }
     for line in &fps_lines {
@@ -146,63 +158,18 @@ fn smoothed_fps() -> f32 {
     })
 }
 
-const INFOBOX_STYLE_VARS: i32 = 1;
-const INFOBOX_STYLE_COLORS: i32 = 1;
-
-fn begin_overlay(name: &str, x: f32, y: f32) -> bool {
-    let Ok(c_name) = std::ffi::CString::new(name) else {
-        return false;
-    };
-    unsafe {
-        imgui::sys::igSetNextWindowPos(
-            imgui::sys::ImVec2 { x, y },
-            imgui::sys::ImGuiCond_Always as i32,
-            imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
-        );
-        imgui::sys::igPushStyleVar_Vec2(
-            imgui::sys::ImGuiStyleVar_WindowPadding as i32,
-            imgui::sys::ImVec2 { x: 6.0, y: 4.0 },
-        );
-        imgui::sys::igPushStyleColor_Vec4(
-            imgui::sys::ImGuiCol_WindowBg as i32,
-            imgui::sys::ImVec4 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                w: 0.72,
-            },
-        );
-        let flags = imgui::sys::ImGuiWindowFlags_NoDecoration
-            | imgui::sys::ImGuiWindowFlags_NoInputs
-            | imgui::sys::ImGuiWindowFlags_NoNav
-            | imgui::sys::ImGuiWindowFlags_NoMove
-            | imgui::sys::ImGuiWindowFlags_NoSavedSettings
-            | imgui::sys::ImGuiWindowFlags_AlwaysAutoResize
-            | imgui::sys::ImGuiWindowFlags_NoFocusOnAppearing;
-        let mut open = true;
-        let began = imgui::sys::igBegin(c_name.as_ptr(), &mut open, flags as i32);
-        if !began {
-            imgui::sys::igPopStyleColor(INFOBOX_STYLE_COLORS);
-            imgui::sys::igPopStyleVar(INFOBOX_STYLE_VARS);
-        }
-        began
-    }
+fn begin_overlay(name: &str, x: f32, y: f32, h: f32) -> bool {
+    deerpunk_engine_renderer::host_ui::begin_overlay(name, x, y, 420.0, h)
 }
 
 fn end_window() {
-    unsafe {
-        imgui::sys::igEnd();
-        imgui::sys::igPopStyleColor(INFOBOX_STYLE_COLORS);
-        imgui::sys::igPopStyleVar(INFOBOX_STYLE_VARS);
-    }
+    deerpunk_engine_renderer::host_ui::end_window();
 }
 
 fn text(s: &str) {
-    if let Ok(c) = std::ffi::CString::new(s) {
-        unsafe { imgui::sys::igTextUnformatted(c.as_ptr(), std::ptr::null()) };
-    }
+    deerpunk_engine_renderer::host_ui::label(s);
 }
 
 fn separator() {
-    unsafe { imgui::sys::igSeparator() };
+    deerpunk_engine_renderer::host_ui::separator();
 }

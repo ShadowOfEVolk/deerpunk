@@ -9,8 +9,7 @@ type ClientPreRenderFn = unsafe extern "C" fn(f32);
 type ClientGamelibUiBuildFn = unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiBuildArgs) -> i32;
 type ClientGamelibUiRenderFn =
     unsafe extern "C" fn(*const deerpunk_engine_ffi::GamelibUiRenderArgs) -> i32;
-type ClientGamelibUiDrawDataFn = unsafe extern "C" fn() -> *const imgui::DrawData;
-type ClientGamelibUiImguiContextFn = unsafe extern "C" fn() -> *mut imgui::Context;
+type ClientGamelibUiDrawDataFn = unsafe extern "C" fn() -> *const std::ffi::c_void;
 type ClientShutdownFn = unsafe extern "C" fn();
 type ClientAudioWorldSceneFn = unsafe extern "C" fn(u64);
 type ClientSceneFlushedFn = unsafe extern "C" fn();
@@ -24,7 +23,6 @@ pub struct ClientDll {
     pre_render_fn: Option<ClientPreRenderFn>,
     gamelib_ui_build_fn: Option<ClientGamelibUiBuildFn>,
     gamelib_ui_draw_data_fn: Option<ClientGamelibUiDrawDataFn>,
-    gamelib_ui_imgui_context_fn: Option<ClientGamelibUiImguiContextFn>,
     gamelib_ui_render_fn: Option<ClientGamelibUiRenderFn>,
     audio_world_scene_fn: Option<ClientAudioWorldSceneFn>,
     scene_flushed_fn: Option<ClientSceneFlushedFn>,
@@ -57,11 +55,6 @@ impl ClientDll {
                 .ok()
                 .map(|s| *s)
         };
-        let gamelib_ui_imgui_context_fn = unsafe {
-            lib.get::<ClientGamelibUiImguiContextFn>(b"client_gamelib_ui_imgui_context")
-                .ok()
-                .map(|s| *s)
-        };
         let gamelib_ui_render_fn = unsafe {
             lib.get::<ClientGamelibUiRenderFn>(b"client_gamelib_ui_render")
                 .ok()
@@ -91,7 +84,6 @@ impl ClientDll {
             pre_render_fn,
             gamelib_ui_build_fn,
             gamelib_ui_draw_data_fn,
-            gamelib_ui_imgui_context_fn,
             gamelib_ui_render_fn,
             audio_world_scene_fn,
             scene_flushed_fn,

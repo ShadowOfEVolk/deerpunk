@@ -21,6 +21,8 @@ pub type AllocatorId = u32;
 struct Slot {
     allocator_id: AllocatorId,
     refs: u32,
+    /// [`Mesh::gpu_revision`] last written into `uploads`.
+    uploaded_revision: u64,
     /// `VertexLayoutSpec::layout_key()` → GPU sub-allocation.
     uploads: HashMap<u64, MeshHandle>,
 }
@@ -62,6 +64,7 @@ impl MeshGpuPool {
             Slot {
                 allocator_id,
                 refs: 1,
+                uploaded_revision: 0,
                 uploads: HashMap::new(),
             },
         );
@@ -133,19 +136,53 @@ impl MeshGpuPool {
             .unwrap_or(0)
     }
 
-    pub fn set_uploaded(&mut self, content_id: u64, layout_key: u64, handle: MeshHandle) {
+    pub fn set_uploaded(
+        &mut self,
+        content_id: u64,
+        layout_key: u64,
+        handle: MeshHandle,
+        revision: u64,
+    ) {
         let slot = self
             .slots
             .get_mut(&content_id)
             .expect("set_uploaded: content_id not retained");
         slot.uploads.insert(layout_key, handle);
+        slot.uploaded_revision = revision;
     }
 
-    pub fn needs_upload(&self, content_id: u64, layout_key: u64) -> bool {
-        self.slots
-            .get(&content_id)
-            .map(|s| !s.uploads.contains_key(&layout_key))
-            .unwrap_or(false)
+    /// Drop GPU sub-allocations when CPU [`Mesh::gpu_revision`] moved.
+    /// Returns `(allocator_id, handles)` for the renderer to `free`. Empty if unchanged.
+    pub fn take_stale_uploads(
+        &mut self,
+        content_id: u64,
+        revision: u64,
+    ) -> Option<(AllocatorId, Vec<MeshHandle>)> {
+        let slot = self.slots.get_mut(&content_id)?;
+        if slot.uploaded_revision == revision || slot.uploads.is_empty() {
+            return None;
+        }
+        let allocator_id = slot.allocator_id;
+        let handles: Vec<MeshHandle> = slot
+            .uploads
+            .drain()
+            .map(|(_, h)| h)
+            .filter(|h| h.is_valid())
+            .collect();
+        slot.uploaded_revision = 0;
+        if handles.is_empty() {
+            None
+        } else {
+            Some((allocator_id, handles))
+        }
+    }
+
+    /// Missing GPU region, or CPU [`Mesh::gpu_revision`] moved since the last upload.
+    pub fn needs_upload(&self, content_id: u64, layout_key: u64, revision: u64) -> bool {
+        match self.slots.get(&content_id) {
+            Some(s) => s.uploaded_revision != revision || !s.uploads.contains_key(&layout_key),
+            None => false,
+        }
     }
 
     /// All retained meshes with a valid GPU handle (for debug / `r_showalloc`).

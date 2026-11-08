@@ -17,7 +17,6 @@ RENAME = {
 FILE_SCOPE = {
     "world.rs": ["server"],
     "world_client.rs": ["client"],
-    "imgui.rs": ["client"],
     "input.rs": ["client"],
     "renderer.rs": ["client"],
     "ui.rs": ["client"],

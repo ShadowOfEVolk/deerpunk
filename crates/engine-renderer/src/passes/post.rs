@@ -42,11 +42,21 @@ impl Renderer {
         lap_ms(ctx.lap);
 
         // UI overlay (RmlUi geometry) on LDR surface
-        if let Some(ui) = self.pending_ui.take() {
+        if let Some(ui) = self.pending_ui.as_ref() {
+            let upload = std::mem::take(&mut self.ui_upload);
             let device = &self.device;
             let queue = &self.queue;
             let ui_pass = &mut self.ui_pass;
-            ui_pass.encode(device, queue, encoder, surface_view, ctx.surface_format, &ui, Some(ctx.prof));
+            ui_pass.encode(
+                device,
+                queue,
+                encoder,
+                surface_view,
+                ctx.surface_format,
+                ui,
+                upload,
+                Some(ctx.prof),
+            );
             lap_ms(ctx.lap);
         } else {
             lap_ms(ctx.lap);

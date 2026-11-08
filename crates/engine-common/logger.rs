@@ -239,8 +239,8 @@ fn level_from_str(s: &str) -> Option<Level> {
     }
 }
 
-/// ImGui `ImVec4` RGBA for log level (in-game console).
-pub fn level_imgui_color(level: Level) -> [f32; 4] {
+/// RGBA for a log level in the Nuklear console.
+pub fn level_ui_color(level: Level) -> [f32; 4] {
     match level {
         Level::Error => [1.0, 0.35, 0.35, 1.0],
         Level::Warn => [1.0, 0.85, 0.35, 1.0],
@@ -250,19 +250,19 @@ pub fn level_imgui_color(level: Level) -> [f32; 4] {
     }
 }
 
-pub fn console_timestamp_imgui_color() -> [f32; 4] {
+pub fn console_timestamp_ui_color() -> [f32; 4] {
     [0.55, 0.55, 0.55, 1.0]
 }
 
-pub fn console_scope_imgui_color() -> [f32; 4] {
+pub fn console_scope_ui_color() -> [f32; 4] {
     [0.45, 0.85, 0.95, 1.0]
 }
 
-pub fn console_message_imgui_color() -> [f32; 4] {
+pub fn console_message_ui_color() -> [f32; 4] {
     [0.92, 0.92, 0.92, 1.0]
 }
 
-pub fn console_legacy_imgui_color() -> [f32; 4] {
+pub fn console_legacy_ui_color() -> [f32; 4] {
     [0.75, 0.75, 0.75, 1.0]
 }
 

@@ -1,6 +1,6 @@
 //! Axis-aligned bounds (world / local mesh space).
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 /// Inclusive min / max corners. `is_valid()` is false when empty.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -44,19 +44,33 @@ impl Aabb {
         }
     }
 
-    /// Tight AABB from mesh vertex positions (object space).
-    pub fn from_positions(positions: &[[f32; 3]]) -> Self {
-        if positions.is_empty() {
+    /// World AABB of this box under translation, rotation, and per-axis scale.
+    ///
+    /// No rotation: `position + scale * min/max` (six multiplies). With rotation the
+    /// box stays axis-aligned: center and extents, absolute value of the 3×3.
+    pub fn transformed_trs(self, position: Vec3, rotation: Quat, scale: Vec3) -> Self {
+        if !self.is_valid() {
             return Self::EMPTY;
         }
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        for p in positions {
-            let v = Vec3::from(*p);
-            min = min.min(v);
-            max = max.max(v);
+        let scaled_min = self.min * scale;
+        let scaled_max = self.max * scale;
+        let min = scaled_min.min(scaled_max);
+        let max = scaled_min.max(scaled_max);
+        if rotation == Quat::IDENTITY {
+            return Self {
+                min: position + min,
+                max: position + max,
+            };
         }
-        Self { min, max }
+        let center = (min + max) * 0.5;
+        let ext = (max - min) * 0.5;
+        let m = glam::Mat3::from_quat(rotation);
+        let world_center = m * center + position;
+        let world_ext = m.x_axis.abs() * ext.x + m.y_axis.abs() * ext.y + m.z_axis.abs() * ext.z;
+        Self {
+            min: world_center - world_ext,
+            max: world_center + world_ext,
+        }
     }
 
     /// Transform eight corners by `model` and merge.
@@ -115,5 +129,31 @@ impl Aabb {
             && self.max.x >= other.max.x
             && self.max.y >= other.max.y
             && self.max.z >= other.max.z
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_rotation_is_scale_from_corner() {
+        let local = Aabb::from_min_max(Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0));
+        let world = local.transformed_trs(
+            Vec3::new(32.0, 0.0, 8.0),
+            Quat::IDENTITY,
+            Vec3::new(2.0, 1.0, 0.5),
+        );
+        assert_eq!(world.min, Vec3::new(32.0, 0.0, 8.0));
+        assert_eq!(world.max, Vec3::new(64.0, 16.0, 16.0));
+    }
+
+    #[test]
+    fn yaw_90_swaps_extents() {
+        let local = Aabb::from_min_max(Vec3::new(-1.0, -2.0, 0.0), Vec3::new(1.0, 2.0, 4.0));
+        let world = local.transformed_trs(Vec3::ZERO, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), Vec3::ONE);
+        let corners = local.transform(glam::Mat4::from_quat(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)));
+        assert!((world.min - corners.min).length() < 1e-4);
+        assert!((world.max - corners.max).length() < 1e-4);
     }
 }

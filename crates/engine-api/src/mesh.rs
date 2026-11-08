@@ -59,10 +59,70 @@ type MeshCreateWithFn = extern "C" fn(
 type MeshRegisterAllocatorFn =
     unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize, *mut u8) -> u32;
 
+/// `v1:mesh:update` — same payload as `create`, first arg is existing handle. Returns 1 on success.
+type MeshUpdateFn = extern "C" fn(
+    *mut u8,
+    usize,
+    *const f32,
+    u32,
+    *const f32,
+    *const f32,
+    *const c_void,
+    u32,
+    *const c_void,
+    *const f32,
+    *const f32,
+    *const f32,
+    *const f32,
+    u32,
+    *mut u8,
+    u32,
+) -> i32;
+
+type MeshPackedUpdateFn = extern "C" fn(
+    *mut u8,
+    usize,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    u32,
+    *mut u8,
+    u32,
+    *const c_void,
+    u32,
+) -> i32;
+
+type MeshPackedCreateFn = extern "C" fn(
+    *mut u8,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    u32,
+    *mut u8,
+    u32,
+    *const c_void,
+    u32,
+    u32,
+) -> usize;
+
+type MeshGetBufferFn = extern "C" fn(*mut u8, usize, u32, u32, *mut u64, *mut u64) -> i32;
+type MeshMarkDirtyFn = extern "C" fn(*mut u8, usize) -> i32;
+
 pub struct MeshApi {
     ctx: *mut u8,
     create_fn: Option<MeshCreateFn>,
     create_with_fn: Option<MeshCreateWithFn>,
+    update_fn: Option<MeshUpdateFn>,
+    update_packed_fn: Option<MeshPackedUpdateFn>,
+    create_packed_fn: Option<MeshPackedCreateFn>,
+    get_buffer_fn: Option<MeshGetBufferFn>,
+    mark_dirty_fn: Option<MeshMarkDirtyFn>,
     register_allocator_fn: Option<MeshRegisterAllocatorFn>,
     release_fn: Option<extern "C" fn(*mut u8, usize)>,
     content_id_fn: Option<extern "C" fn(*mut u8, usize) -> u64>,
@@ -77,6 +137,15 @@ impl MeshApi {
             ctx,
             create_fn: resolve(r, "v1:mesh:create").map(|p| unsafe { std::mem::transmute(p) }),
             create_with_fn: resolve(r, "v1:mesh:create_with")
+                .map(|p| unsafe { std::mem::transmute(p) }),
+            update_fn: resolve(r, "v1:mesh:update").map(|p| unsafe { std::mem::transmute(p) }),
+            update_packed_fn: resolve(r, "v1:mesh:update_packed")
+                .map(|p| unsafe { std::mem::transmute(p) }),
+            create_packed_fn: resolve(r, "v1:mesh:create_packed")
+                .map(|p| unsafe { std::mem::transmute(p) }),
+            get_buffer_fn: resolve(r, "v1:mesh:get_buffer")
+                .map(|p| unsafe { std::mem::transmute(p) }),
+            mark_dirty_fn: resolve(r, "v1:mesh:mark_dirty")
                 .map(|p| unsafe { std::mem::transmute(p) }),
             register_allocator_fn: resolve(r, "v1:mesh:register_allocator")
                 .map(|p| unsafe { std::mem::transmute(p) }),
@@ -382,6 +451,179 @@ impl MeshApi {
             vertex_byte_len,
             allocator_id,
         ))
+    }
+
+    /// Replace CPU geometry for `handle`. Same handle and content id; bumps `gpu_revision`.
+    /// Returns false if the host has no `v1:mesh:update` or the handle is stale.
+    /// Does not upload to the GPU — the renderer does that when revision changes.
+    pub fn update_from_mesh(&self, handle: MeshHandle, mesh: &Mesh) -> bool {
+        if !handle.is_valid() || mesh.positions.is_empty() {
+            return false;
+        }
+        if mesh.packed_stride > 0 && !mesh.uses_prepacked_vertices() {
+            return false;
+        }
+        let Some(f) = self.update_fn else {
+            return false;
+        };
+        let vc = mesh.positions.len() as u32;
+        let positions: Vec<f32> = mesh.positions.iter().flat_map(|p| p.iter().copied()).collect();
+        let normals: Vec<f32> = if mesh.normals.len() == mesh.positions.len() {
+            mesh.normals.iter().flat_map(|n| n.iter().copied()).collect()
+        } else {
+            Vec::new()
+        };
+        let uvs: Vec<f32> = if mesh.uvs.len() == mesh.positions.len() {
+            mesh.uvs.iter().flat_map(|u| u.iter().copied()).collect()
+        } else {
+            Vec::new()
+        };
+        let joint_indices: Vec<u8> = mesh.joint_indices.iter().flat_map(|j| j.iter().copied()).collect();
+        let joint_weights: Vec<f32> = mesh.joint_weights.iter().flat_map(|w| w.iter().copied()).collect();
+        let lightmap_uvs: Vec<f32> = if mesh.lightmap_uvs.len() == mesh.positions.len() {
+            mesh.lightmap_uvs.iter().flat_map(|u| u.iter().copied()).collect()
+        } else {
+            Vec::new()
+        };
+        let lightmap_styles: Vec<f32> = if mesh.lightmap_styles.len() == mesh.positions.len() {
+            mesh.lightmap_styles.iter().flat_map(|s| s.iter().copied()).collect()
+        } else {
+            Vec::new()
+        };
+        let atlas_rects: Vec<f32> = if mesh.atlas_rects.len() == mesh.positions.len() {
+            mesh.atlas_rects.iter().flat_map(|r| r.iter().copied()).collect()
+        } else {
+            Vec::new()
+        };
+        let (packed_stride, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
+        f(
+            self.ctx,
+            handle.0,
+            positions.as_ptr(),
+            vc,
+            if normals.is_empty() { std::ptr::null() } else { normals.as_ptr() },
+            if uvs.is_empty() { std::ptr::null() } else { uvs.as_ptr() },
+            if mesh.indices.is_empty() {
+                std::ptr::null()
+            } else {
+                mesh.indices.as_ptr() as *const c_void
+            },
+            mesh.indices.len() as u32,
+            if joint_indices.is_empty() {
+                std::ptr::null()
+            } else {
+                joint_indices.as_ptr() as *const c_void
+            },
+            if joint_weights.is_empty() { std::ptr::null() } else { joint_weights.as_ptr() },
+            if lightmap_uvs.is_empty() { std::ptr::null() } else { lightmap_uvs.as_ptr() },
+            if lightmap_styles.is_empty() { std::ptr::null() } else { lightmap_styles.as_ptr() },
+            if atlas_rects.is_empty() { std::ptr::null() } else { atlas_rects.as_ptr() },
+            packed_stride,
+            vertex_bytes,
+            vertex_byte_len,
+        ) != 0
+    }
+
+    /// Packed vertices + caller AABB. Host copies `vertex_bytes`/`indices` only.
+    pub fn update_packed(&self, handle: MeshHandle, mesh: &Mesh) -> bool {
+        if !handle.is_valid() || !mesh.uses_prepacked_vertices() || !mesh.has_local_bounds() {
+            return false;
+        }
+        let Some(f) = self.update_packed_fn else {
+            return false;
+        };
+        let indices = if mesh.indices.is_empty() {
+            std::ptr::null()
+        } else {
+            mesh.indices.as_ptr() as *const c_void
+        };
+        f(
+            self.ctx,
+            handle.0,
+            mesh.bounds_min[0],
+            mesh.bounds_min[1],
+            mesh.bounds_min[2],
+            mesh.bounds_max[0],
+            mesh.bounds_max[1],
+            mesh.bounds_max[2],
+            mesh.packed_stride,
+            mesh.vertex_bytes.as_ptr() as *mut u8,
+            mesh.vertex_bytes.len() as u32,
+            indices,
+            mesh.indices.len() as u32,
+        ) != 0
+    }
+
+    pub fn create_packed(&self, mesh: &Mesh, allocator_id: u32) -> MeshHandle {
+        if !mesh.uses_prepacked_vertices() || !mesh.has_local_bounds() {
+            return MeshHandle::INVALID;
+        }
+        let Some(f) = self.create_packed_fn else {
+            return MeshHandle::INVALID;
+        };
+        let indices = if mesh.indices.is_empty() {
+            std::ptr::null()
+        } else {
+            mesh.indices.as_ptr() as *const c_void
+        };
+        MeshHandle(f(
+            self.ctx,
+            mesh.bounds_min[0],
+            mesh.bounds_min[1],
+            mesh.bounds_min[2],
+            mesh.bounds_max[0],
+            mesh.bounds_max[1],
+            mesh.bounds_max[2],
+            mesh.packed_stride,
+            mesh.vertex_bytes.as_ptr() as *mut u8,
+            mesh.vertex_bytes.len() as u32,
+            indices,
+            mesh.indices.len() as u32,
+            allocator_id,
+        ))
+    }
+
+    /// Resize the existing vertex/index storage and copy `mesh` into it, then `mark_dirty`.
+    /// No new `Mesh` allocation. Returns false if the host has no `get_buffer`.
+    pub fn write_packed_dirty(&self, handle: MeshHandle, mesh: &Mesh) -> bool {
+        if !handle.is_valid() || !mesh.uses_prepacked_vertices() {
+            return false;
+        }
+        let Some(get) = self.get_buffer_fn else {
+            return false;
+        };
+        let Some(mark) = self.mark_dirty_fn else {
+            return false;
+        };
+        let mut vert_ptr = 0u64;
+        let mut index_ptr = 0u64;
+        if get(
+            self.ctx,
+            handle.0,
+            mesh.vertex_bytes.len() as u32,
+            mesh.indices.len() as u32,
+            &mut vert_ptr,
+            &mut index_ptr,
+        ) == 0
+            || vert_ptr == 0
+        {
+            return false;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                mesh.vertex_bytes.as_ptr(),
+                vert_ptr as *mut u8,
+                mesh.vertex_bytes.len(),
+            );
+            if !mesh.indices.is_empty() && index_ptr != 0 {
+                std::ptr::copy_nonoverlapping(
+                    mesh.indices.as_ptr(),
+                    index_ptr as *mut u32,
+                    mesh.indices.len(),
+                );
+            }
+        }
+        mark(self.ctx, handle.0) != 0
     }
 
     pub fn content_id(&self, handle: MeshHandle) -> u64 {

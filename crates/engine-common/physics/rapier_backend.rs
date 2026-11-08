@@ -1,9 +1,7 @@
 //! Rapier implementation of [`super::backend::PhysicsBackend`].
 
 use std::collections::HashMap;
-use std::ffi::{c_void, CString};
-
-use flecs_ecs_sys as sys;
+use std::ffi::c_void;
 use glam::Quat;
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::parry::query::{ShapeCastOptions, ShapeCastStatus};
@@ -108,14 +106,9 @@ pub struct RapierPhysicsBackend {
     /// Rapier body; `cast_ray`/`cast_capsule` query these directly.
     voxel_entities: HashMap<u64, Vec<ShapeHandle>>,
     /// Flecs world + component ids for observers (ecs_get_id fallback).
-    flecs: *mut sys::ecs_world_t,
     transform_id: u64,
     collider_id: u64,
     char_id: u64,
-    _expr_collider_set: Option<CString>,
-    _expr_collider_rm: Option<CString>,
-    _expr_char_set: Option<CString>,
-    _expr_char_rm: Option<CString>,
     /// Server ECS world (for Flecs sync systems invoked from prepare/writeback).
     pub(crate) world_view: *const crate::world::World,
     sys_sync_in: u64,
@@ -139,14 +132,9 @@ impl RapierPhysicsBackend {
             voxel_shapes: Arena::new(),
             voxel_entities: HashMap::new(),
             characters: HashMap::new(),
-            flecs: std::ptr::null_mut(),
             transform_id: 0,
             collider_id: 0,
             char_id: 0,
-            _expr_collider_set: None,
-            _expr_collider_rm: None,
-            _expr_char_set: None,
-            _expr_char_rm: None,
             world_view: std::ptr::null(),
             sys_sync_in: 0,
             sys_writeback_characters: 0,
@@ -942,67 +930,61 @@ impl PhysicsBackend for RapierPhysicsBackend {
         if self.attached {
             return;
         }
-        self.flecs = world.as_ptr();
         self.world_view = world as *const World;
         self.collider_id = world.component_init::<Collider>();
         self.char_id = world.component_init::<CharacterController>();
         self.transform_id = world.component_init::<TransformComponent>();
 
-        // Single-component queries — Transform fetched via ecs_get_id (field 1 was often null).
-        let expr_set = CString::new("Collider").unwrap();
-        let expr_remove = CString::new("Collider").unwrap();
-        let expr_char_set = CString::new("CharacterController").unwrap();
-        let expr_char_rm = CString::new("CharacterController").unwrap();
-
         let self_ptr = self as *mut RapierPhysicsBackend as *mut c_void;
-
-        unsafe {
-            let mut desc: sys::ecs_observer_desc_t = std::mem::zeroed();
-            desc.query.expr = expr_set.as_ptr();
-            desc.events[0] = sys::EcsOnSet;
-            desc.callback = Some(observer_collider_set);
-            desc.ctx = self_ptr;
-            if sys::ecs_observer_init(world.as_ptr(), &desc) == 0 {
-                log::error!("[physics] OnSet Collider observer failed");
-            }
-
-            let mut desc_rm: sys::ecs_observer_desc_t = std::mem::zeroed();
-            desc_rm.query.expr = expr_remove.as_ptr();
-            desc_rm.events[0] = sys::EcsOnRemove;
-            desc_rm.callback = Some(observer_collider_remove);
-            desc_rm.ctx = self_ptr;
-            if sys::ecs_observer_init(world.as_ptr(), &desc_rm) == 0 {
-                log::error!("[physics] OnRemove Collider observer failed");
-            }
-
-            // OnAdd only — writeback must not recreate the kinematic capsule every tick.
-            let mut desc_c: sys::ecs_observer_desc_t = std::mem::zeroed();
-            desc_c.query.expr = expr_char_set.as_ptr();
-            desc_c.events[0] = sys::EcsOnAdd;
-            desc_c.callback = Some(observer_character_set);
-            desc_c.ctx = self_ptr;
-            if sys::ecs_observer_init(world.as_ptr(), &desc_c) == 0 {
-                log::error!("[physics] OnAdd CharacterController observer failed");
-            }
-
-            let mut desc_crm: sys::ecs_observer_desc_t = std::mem::zeroed();
-            desc_crm.query.expr = expr_char_rm.as_ptr();
-            desc_crm.events[0] = sys::EcsOnRemove;
-            desc_crm.callback = Some(observer_character_remove);
-            desc_crm.ctx = self_ptr;
-            if sys::ecs_observer_init(world.as_ptr(), &desc_crm) == 0 {
-                log::error!("[physics] OnRemove CharacterController observer failed");
-            }
+        let on_collider_set = observer_collider_set as crate::world::EcsCallback;
+        let on_collider_rm = observer_collider_remove as crate::world::EcsCallback;
+        let on_char_set = observer_character_set as crate::world::EcsCallback;
+        let on_char_rm = observer_character_remove as crate::world::EcsCallback;
+        if world
+            .register_observer("Collider", &[crate::world::WatchEvent::OnSet], self_ptr, on_collider_set)
+            .is_err()
+        {
+            log::error!("[physics] OnSet Collider observer failed");
+        }
+        if world
+            .register_observer(
+                "Collider",
+                &[crate::world::WatchEvent::OnRemove],
+                self_ptr,
+                on_collider_rm,
+            )
+            .is_err()
+        {
+            log::error!("[physics] OnRemove Collider observer failed");
+        }
+        // OnAdd only — writeback must not recreate the kinematic capsule every tick.
+        if world
+            .register_observer(
+                "CharacterController",
+                &[crate::world::WatchEvent::OnAdd],
+                self_ptr,
+                on_char_set,
+            )
+            .is_err()
+        {
+            log::error!("[physics] OnAdd CharacterController observer failed");
+        }
+        if world
+            .register_observer(
+                "CharacterController",
+                &[crate::world::WatchEvent::OnRemove],
+                self_ptr,
+                on_char_rm,
+            )
+            .is_err()
+        {
+            log::error!("[physics] OnRemove CharacterController observer failed");
         }
 
-        self._expr_collider_set = Some(expr_set);
-        self._expr_collider_rm = Some(expr_remove);
-        self._expr_char_set = Some(expr_char_set);
-        self._expr_char_rm = Some(expr_char_rm);
         self.attached = true;
         super::ecs_sync::register_sync_systems(self, world);
         log::info!(
-            "[physics] Collider/CharacterController observers + PhysicsSyncIn/Writeback Flecs systems; prepare→step→writeback"
+            "[physics] Collider/CharacterController observers + PhysicsSyncIn/Writeback systems; prepare→step→writeback"
         );
     }
 
@@ -1011,106 +993,98 @@ impl PhysicsBackend for RapierPhysicsBackend {
     }
 }
 
-unsafe extern "C-unwind" fn observer_collider_set(it: *mut sys::ecs_iter_t) {
-    unsafe {
-        if it.is_null() {
-            return;
-        }
-        let it_ref = &*it;
-        if it_ref.ctx.is_null() || it_ref.count <= 0 {
-            return;
-        }
-        let backend = &mut *(it_ref.ctx as *mut RapierPhysicsBackend);
-        let colliders =
-            sys::ecs_field_w_size(it, std::mem::size_of::<Collider>(), 0) as *const Collider;
-        if colliders.is_null() || backend.flecs.is_null() {
-            return;
-        }
-        for i in 0..it_ref.count as isize {
-            let e = *it_ref.entities.add(i as usize);
-            let c = &*colliders.add(i as usize);
-            let t_ptr = sys::ecs_get_id(backend.flecs, e, backend.transform_id)
-                as *const TransformComponent;
-            if t_ptr.is_null() {
-                log::warn!("[physics] Collider OnSet entity={e:#x}: no Transform");
-                continue;
-            }
-            let t = &*t_ptr;
-            let rot = t.rotation.to_array();
-            backend.upsert_body(
-                e,
-                t.position.to_array(),
-                [rot[0], rot[1], rot[2], rot[3]],
-                c,
-            );
-        }
+extern "C-unwind" fn observer_collider_set(
+    entities: *const crate::world::EntityId,
+    count: u32,
+    _dt: f32,
+    ctx: *mut c_void,
+) {
+    if entities.is_null() || ctx.is_null() || count == 0 {
+        return;
+    }
+    let backend = unsafe { &mut *(ctx as *mut RapierPhysicsBackend) };
+    if backend.world_view.is_null() {
+        return;
+    }
+    let world = unsafe { &*backend.world_view };
+    for i in 0..count as usize {
+        let e = unsafe { *entities.add(i) };
+        let Some(c) = world.get::<Collider>(e, backend.collider_id) else {
+            continue;
+        };
+        let Some(t) = world.get::<TransformComponent>(e, backend.transform_id) else {
+            log::warn!("[physics] Collider OnSet entity={e:#x}: no Transform");
+            continue;
+        };
+        let rot = t.rotation.to_array();
+        backend.upsert_body(
+            e,
+            t.position.to_array(),
+            [rot[0], rot[1], rot[2], rot[3]],
+            &c,
+        );
     }
 }
 
-unsafe extern "C-unwind" fn observer_collider_remove(it: *mut sys::ecs_iter_t) {
-    unsafe {
-        if it.is_null() {
-            return;
-        }
-        let it_ref = &*it;
-        if it_ref.ctx.is_null() || it_ref.count <= 0 {
-            return;
-        }
-        let backend = &mut *(it_ref.ctx as *mut RapierPhysicsBackend);
-        for i in 0..it_ref.count as isize {
-            let e = *it_ref.entities.add(i as usize);
-            backend.remove_body(e);
-        }
+extern "C-unwind" fn observer_collider_remove(
+    entities: *const crate::world::EntityId,
+    count: u32,
+    _dt: f32,
+    ctx: *mut c_void,
+) {
+    if entities.is_null() || ctx.is_null() || count == 0 {
+        return;
+    }
+    let backend = unsafe { &mut *(ctx as *mut RapierPhysicsBackend) };
+    for i in 0..count as usize {
+        let e = unsafe { *entities.add(i) };
+        backend.remove_body(e);
     }
 }
 
-unsafe extern "C-unwind" fn observer_character_set(it: *mut sys::ecs_iter_t) {
-    unsafe {
-        if it.is_null() {
-            return;
-        }
-        let it_ref = &*it;
-        if it_ref.ctx.is_null() || it_ref.count <= 0 {
-            return;
-        }
-        let backend = &mut *(it_ref.ctx as *mut RapierPhysicsBackend);
-        let chars = sys::ecs_field_w_size(it, std::mem::size_of::<CharacterController>(), 0)
-            as *const CharacterController;
-        if chars.is_null() || backend.flecs.is_null() {
-            return;
-        }
-        for i in 0..it_ref.count as isize {
-            let e = *it_ref.entities.add(i as usize);
-            let c = &*chars.add(i as usize);
-            let t_ptr = sys::ecs_get_id(backend.flecs, e, backend.transform_id)
-                as *const TransformComponent;
-            if t_ptr.is_null() {
-                log::warn!("[physics] CharacterController OnAdd entity={e:#x}: no Transform");
-                continue;
-            }
-            let t = &*t_ptr;
-            backend.upsert_character(e, t.position.to_array(), c);
-            log::info!(
-                "[physics] CharacterController OnAdd entity={e:#x} feet={:?}",
-                t.position
-            );
-        }
+extern "C-unwind" fn observer_character_set(
+    entities: *const crate::world::EntityId,
+    count: u32,
+    _dt: f32,
+    ctx: *mut c_void,
+) {
+    if entities.is_null() || ctx.is_null() || count == 0 {
+        return;
+    }
+    let backend = unsafe { &mut *(ctx as *mut RapierPhysicsBackend) };
+    if backend.world_view.is_null() {
+        return;
+    }
+    let world = unsafe { &*backend.world_view };
+    for i in 0..count as usize {
+        let e = unsafe { *entities.add(i) };
+        let Some(c) = world.get::<CharacterController>(e, backend.char_id) else {
+            continue;
+        };
+        let Some(t) = world.get::<TransformComponent>(e, backend.transform_id) else {
+            log::warn!("[physics] CharacterController OnAdd entity={e:#x}: no Transform");
+            continue;
+        };
+        backend.upsert_character(e, t.position.to_array(), &c);
+        log::info!(
+            "[physics] CharacterController OnAdd entity={e:#x} feet={:?}",
+            t.position
+        );
     }
 }
 
-unsafe extern "C-unwind" fn observer_character_remove(it: *mut sys::ecs_iter_t) {
-    unsafe {
-        if it.is_null() {
-            return;
-        }
-        let it_ref = &*it;
-        if it_ref.ctx.is_null() || it_ref.count <= 0 {
-            return;
-        }
-        let backend = &mut *(it_ref.ctx as *mut RapierPhysicsBackend);
-        for i in 0..it_ref.count as isize {
-            let e = *it_ref.entities.add(i as usize);
-            backend.remove_character(e);
-        }
+extern "C-unwind" fn observer_character_remove(
+    entities: *const crate::world::EntityId,
+    count: u32,
+    _dt: f32,
+    ctx: *mut c_void,
+) {
+    if entities.is_null() || ctx.is_null() || count == 0 {
+        return;
+    }
+    let backend = unsafe { &mut *(ctx as *mut RapierPhysicsBackend) };
+    for i in 0..count as usize {
+        let e = unsafe { *entities.add(i) };
+        backend.remove_character(e);
     }
 }

@@ -407,11 +407,12 @@ void rmlui_document_dispatch_event(rmlui_handle_t doc, const char* event_type)
     d->DispatchEvent(Rml::String(event_type), params, true, true);
 }
 
-void rmlui_context_update(rmlui_handle_t ctx)
+int rmlui_context_update(rmlui_handle_t ctx)
 {
-    if (ctx) {
-        ((Rml::Context*)ctx)->Update();
+    if (!ctx) {
+        return 0;
     }
+    return ((Rml::Context*)ctx)->Update() ? 1 : 0;
 }
 
 void rmlui_context_render(rmlui_handle_t ctx)

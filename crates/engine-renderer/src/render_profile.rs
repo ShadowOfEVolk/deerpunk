@@ -36,12 +36,6 @@ pub struct SceneExtractGpuStats {
     pub cull_serial_ms: f32,
     /// `fill_bone_palettes` + `fill_procedural_sky`, ms.
     pub post_ms: f32,
-    /// Per-entity draw cache: full static rebuild (mesh/material change).
-    pub extract_static_rebuild: u32,
-    /// Cache hit: only transform / bounds updated.
-    pub extract_xform_only: u32,
-    /// Cache hit: unchanged entity, reused as-is.
-    pub extract_cache_hit: u32,
     /// Skipped before push (early frustum in extract).
     pub extract_frustum_skip: u32,
     /// [`sync_world_transforms`] before extract, ms.
@@ -84,6 +78,14 @@ pub struct MeshEncodeStats {
 pub struct FrameSpeedsHud {
     pub dip_count: u32,
     pub shader_bind: u32,
+    /// `begin_render_pass` recorded into this frame's encoder.
+    pub render_passes: u32,
+    /// `set_bind_group` calls.
+    pub bind_groups: u32,
+    pub vertex_binds: u32,
+    pub index_binds: u32,
+    /// `multi_draw_indexed_indirect` calls (each is one encoded draw).
+    pub indirect_draws: u32,
     pub frame_total_tris: u32,
     pub visible_world_lights: u32,
     pub visible_dyn_lights: u32,
@@ -99,11 +101,36 @@ pub struct FrameDrawAccum {
     pub dip_count: u32,
     pub shader_bind: u32,
     pub index_count: u64,
+    pub render_passes: u32,
+    pub bind_groups: u32,
+    pub vertex_binds: u32,
+    pub index_binds: u32,
+    pub indirect_draws: u32,
 }
 
 impl FrameDrawAccum {
     pub fn note_pipeline(&mut self) {
         self.shader_bind += 1;
+    }
+
+    pub fn note_pass(&mut self) {
+        self.render_passes += 1;
+    }
+
+    pub fn note_bind(&mut self) {
+        self.bind_groups += 1;
+    }
+
+    pub fn note_vertex_buffer(&mut self) {
+        self.vertex_binds += 1;
+    }
+
+    pub fn note_index_buffer(&mut self) {
+        self.index_binds += 1;
+    }
+
+    pub fn note_indirect(&mut self) {
+        self.indirect_draws += 1;
     }
 
     pub fn note_draw_indexed(&mut self, indices: u32) {
@@ -145,12 +172,12 @@ pub struct RenderFrameProfile {
     pub prep_cull_gather_ms: f32,
     /// [`ClientEngine::audio_tick`] inside snap bucket, ms.
     pub prep_audio_ms: f32,
-    /// Host `frame_ui` + ImGui NewFrame callback (inside present path), ms.
+    /// Host `frame_ui` inside the present path, ms.
     pub game_frame_ui_ms: f32,
     /// `get_current_texture` (swapchain acquire; may block), ms.
     pub surface_acquire_ms: f32,
-    /// CPU: ImGui render pass encoding after `encode_frame`, ms.
-    pub after_imgui_ms: f32,
+    /// CPU: Nuklear render pass encoding after `encode_frame`, ms.
+    pub after_host_ui_ms: f32,
     /// CPU: `CommandEncoder::finish` (assemble/validate the full frame CB), ms.
     pub encoder_finish_ms: f32,
     /// CPU/driver: `queue.submit` only (may block if GPU queue is full), ms.
@@ -159,7 +186,7 @@ pub struct RenderFrameProfile {
     pub after_submit_ms: f32,
     /// Wall: `queue.present` (often waits for GPU + swapchain), ms.
     pub after_present_ms: f32,
-    /// `after_imgui` + `after_submit` + `after_present` (tail of the frame).
+    /// Host UI + submit + present (tail of the frame).
     pub after_encode_ms: f32,
     /// Material uploads during the last scene extract (see [`SceneExtractGpuStats`]).
     pub extract_gpu: SceneExtractGpuStats,

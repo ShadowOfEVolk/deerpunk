@@ -72,8 +72,9 @@ impl Renderer {
             let p = self.build_sky_pipeline(hdr_fmt);
             self.sky_pipelines.insert(hdr_fmt, p);
         }
-        let pipeline = self.sky_pipelines.get(&hdr_fmt).unwrap();
+        let pipeline = self.sky_pipelines.get(&hdr_fmt).unwrap().clone();
 
+        ctx.draw_acc.note_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sky pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -96,8 +97,8 @@ impl Renderer {
             multiview_mask: None,
         });
         ctx.draw_acc.note_pipeline();
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.sky_globals_bgs[sky_slot], &[]);
+        pass.set_pipeline(&pipeline);
+        ctx.draw_acc.note_bind(); pass.set_bind_group(0, &self.sky_globals_bgs[sky_slot], &[]);
         pass.draw(0..3, 0..1);
         ctx.draw_acc.note_draw_verts(3);
         let _ = lap_ms(ctx.lap);
@@ -131,12 +132,18 @@ impl Renderer {
             bytemuck::bytes_of(&cloud_uniform),
         );
 
+        if !self.draws_clouds() {
+            let _ = lap_ms(ctx.lap);
+            return;
+        }
+
         if !self.cloud_pipelines.contains_key(&hdr_fmt) {
             let p = self.build_cloud_pipeline(hdr_fmt);
             self.cloud_pipelines.insert(hdr_fmt, p);
         }
-        let pipeline = self.cloud_pipelines.get(&hdr_fmt).unwrap();
+        let pipeline = self.cloud_pipelines.get(&hdr_fmt).unwrap().clone();
 
+        ctx.draw_acc.note_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("cloud pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -154,7 +161,8 @@ impl Renderer {
             multiview_mask: None,
         });
         ctx.draw_acc.note_pipeline();
-        pass.set_pipeline(pipeline);
+        pass.set_pipeline(&pipeline);
+        ctx.draw_acc.note_bind();
         pass.set_bind_group(0, &self.cloud_bg, &[]);
         pass.draw(0..3, 0..1);
         ctx.draw_acc.note_draw_verts(3);
@@ -166,12 +174,9 @@ impl Renderer {
         ctx: &mut FrameCtx<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        if ctx.snapshot.sky.is_some() {
-            lap_ms(ctx.lap);
-            return;
-        }
         let snapshot = ctx.snapshot;
         let view = ctx.hdr_view;
+        ctx.draw_acc.note_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear hdr"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

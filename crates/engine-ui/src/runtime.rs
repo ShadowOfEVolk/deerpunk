@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
@@ -74,10 +76,12 @@ fn with_geom<R>(f: impl FnOnce(&mut UiGeometryBuilder) -> R) -> Option<R> {
 /// Loaded RML document handle (Panorama-style: document = UI unit).
 pub struct UiDocument {
     handle: ffi::rmlui_handle_t,
+    /// Last value written per field. Unchanged writes skip RmlUi (no dirty).
+    written: RefCell<HashMap<String, DataModelValue>>,
 }
 
 /// Typed value for [`UiDocument::data_model_set`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DataModelValue {
     Bool(bool),
     Number(f64),
@@ -110,48 +114,81 @@ impl UiDocument {
         if self.handle.is_null() || field.is_empty() {
             return false;
         }
-        let field = match CString::new(field) {
+        if self.already_written(field, &DataModelValue::Bool(value)) {
+            return true;
+        }
+        let field_c = match CString::new(field) {
             Ok(c) => c,
             Err(_) => return false,
         };
-        unsafe {
-            ffi::rmlui_document_data_model_set_bool(self.handle, field.as_ptr(), value as c_int)
+        let ok = unsafe {
+            ffi::rmlui_document_data_model_set_bool(self.handle, field_c.as_ptr(), value as c_int)
                 != 0
+        };
+        if ok {
+            self.remember(field, DataModelValue::Bool(value));
         }
+        ok
     }
 
     pub fn data_model_set_number(&self, field: &str, value: f64) -> bool {
         if self.handle.is_null() || field.is_empty() {
             return false;
         }
-        let field = match CString::new(field) {
+        if self.already_written(field, &DataModelValue::Number(value)) {
+            return true;
+        }
+        let field_c = match CString::new(field) {
             Ok(c) => c,
             Err(_) => return false,
         };
-        unsafe {
-            ffi::rmlui_document_data_model_set_number(self.handle, field.as_ptr(), value) != 0
+        let ok = unsafe {
+            ffi::rmlui_document_data_model_set_number(self.handle, field_c.as_ptr(), value) != 0
+        };
+        if ok {
+            self.remember(field, DataModelValue::Number(value));
         }
+        ok
     }
 
     pub fn data_model_set_string(&self, field: &str, value: &str) -> bool {
         if self.handle.is_null() || field.is_empty() {
             return false;
         }
-        let field = match CString::new(field) {
+        if matches!(self.written.borrow().get(field), Some(DataModelValue::String(prev)) if prev == value)
+        {
+            return true;
+        }
+        let field_c = match CString::new(field) {
             Ok(c) => c,
             Err(_) => return false,
         };
-        let value = match CString::new(value) {
+        let value_c = match CString::new(value) {
             Ok(c) => c,
             Err(_) => return false,
         };
-        unsafe {
+        let ok = unsafe {
             ffi::rmlui_document_data_model_set_string(
                 self.handle,
-                field.as_ptr(),
-                value.as_ptr(),
+                field_c.as_ptr(),
+                value_c.as_ptr(),
             ) != 0
+        };
+        if ok {
+            self.remember(field, DataModelValue::String(value.to_string()));
         }
+        ok
+    }
+
+    fn already_written(&self, field: &str, value: &DataModelValue) -> bool {
+        self.written
+            .borrow()
+            .get(field)
+            .is_some_and(|prev| prev == value)
+    }
+
+    fn remember(&self, field: &str, value: DataModelValue) {
+        self.written.borrow_mut().insert(field.to_string(), value);
     }
 }
 
@@ -264,7 +301,10 @@ impl UiRuntime {
             log::error!(target: "ui", "failed to load document: {relative}");
             return None;
         }
-        Some(UiDocument { handle })
+        Some(UiDocument {
+            handle,
+            written: RefCell::new(HashMap::new()),
+        })
     }
 
     pub fn resize(&self, w: u32, h: u32) {
@@ -331,9 +371,12 @@ impl UiRuntime {
         if !self.is_ready() {
             return None;
         }
+        let dirty = unsafe { ffi::rmlui_context_update(self.ctx) } != 0;
+        if !dirty {
+            return None;
+        }
         with_geom(|g| g.begin_frame());
         unsafe {
-            ffi::rmlui_context_update(self.ctx);
             ffi::rmlui_context_render(self.ctx);
         }
         with_geom(|g| g.take_frame())

@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[1] / "crates" / "host" / "engine_api"
 FILE_SCOPE = {
     "world.rs": ["server"],
     "world_client.rs": ["client"],
-    "imgui.rs": ["client"],
     "input.rs": ["client"],
     "renderer.rs": ["client"],
     "ui.rs": ["client"],

@@ -40,9 +40,19 @@ impl From<UiVertex> for GpuUiVertex {
     }
 }
 
+struct HudTarget {
+    _tex: wgpu::Texture,
+    view: wgpu::TextureView,
+    bg: wgpu::BindGroup,
+    size: (u32, u32),
+}
+
 pub struct UiPass {
-    pipeline: Option<wgpu::RenderPipeline>,
-    pipeline_format: Option<wgpu::TextureFormat>,
+    /// Geometry pass writes the HUD into [`Self::hud`] (`Rgba8UnormSrgb`).
+    geom_pipeline: Option<wgpu::RenderPipeline>,
+    /// Fullscreen blit of that texture onto the LDR surface.
+    composite_pipeline: Option<wgpu::RenderPipeline>,
+    composite_format: Option<wgpu::TextureFormat>,
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     globals_layout: wgpu::BindGroupLayout,
@@ -57,6 +67,8 @@ pub struct UiPass {
     textures: HashMap<u32, (wgpu::Texture, wgpu::BindGroup)>,
     shader: String,
     gpu_vert_scratch: Vec<GpuUiVertex>,
+    hud: Option<HudTarget>,
+    blit_vbo: wgpu::Buffer,
 }
 
 impl UiPass {
@@ -139,9 +151,16 @@ impl UiPass {
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let blit_vbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui hud blit"),
+            size: (std::mem::size_of::<GpuUiVertex>() * 6) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
-            pipeline: None,
-            pipeline_format: None,
+            geom_pipeline: None,
+            composite_pipeline: None,
+            composite_format: None,
             globals_buf,
             globals_bg,
             globals_layout,
@@ -156,13 +175,12 @@ impl UiPass {
             textures: HashMap::new(),
             shader: shader_source,
             gpu_vert_scratch: Vec::new(),
+            hud: None,
+            blit_vbo,
         }
     }
 
-    fn ensure_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
-        if self.pipeline_format == Some(format) && self.pipeline.is_some() {
-            return;
-        }
+    fn make_pipeline(&self, device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ui shader"),
             source: wgpu::ShaderSource::Wgsl(self.shader.clone().into()),
@@ -203,8 +221,21 @@ impl UiPass {
             multiview_mask: None,
             cache: None,
         });
-        self.pipeline = Some(pipeline);
-        self.pipeline_format = Some(format);
+        pipeline
+    }
+
+    fn ensure_geom_pipeline(&mut self, device: &wgpu::Device) {
+        if self.geom_pipeline.is_none() {
+            self.geom_pipeline = Some(self.make_pipeline(device, UI_TEX_FORMAT));
+        }
+    }
+
+    fn ensure_composite_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        if self.composite_format == Some(format) && self.composite_pipeline.is_some() {
+            return;
+        }
+        self.composite_pipeline = Some(self.make_pipeline(device, format));
+        self.composite_format = Some(format);
     }
 
     fn ensure_buffer(
@@ -340,54 +371,188 @@ impl UiPass {
         target: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         frame: &UiFrame,
+        upload: bool,
         mut prof: Option<&mut RenderFrameProfile>,
     ) {
-        if frame.is_empty() {
+        if frame.is_empty() && self.hud.is_none() {
             return;
         }
         let mut lap = std::time::Instant::now();
-        self.ensure_pipeline(device, format);
-        self.sync_textures(device, queue, frame);
+        let w = frame.screen[0].max(1);
+        let h = frame.screen[1].max(1);
+        if upload && !frame.is_empty() {
+            self.ensure_geom_pipeline(device);
+            self.sync_textures(device, queue, frame);
+            self.ensure_hud(device, w, h);
+            self.gpu_vert_scratch.clear();
+            self.gpu_vert_scratch.reserve(frame.vertices.len());
+            for v in &frame.vertices {
+                self.gpu_vert_scratch.push(GpuUiVertex::from(*v));
+            }
+            let v_bytes = bytemuck::cast_slice(&self.gpu_vert_scratch);
+            let i_bytes = bytemuck::cast_slice(&frame.indices);
+            Self::ensure_buffer(
+                device,
+                &mut self.vbo,
+                &mut self.vbo_cap,
+                v_bytes.len() as u64,
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                "ui vbo",
+            );
+            Self::ensure_buffer(
+                device,
+                &mut self.ibo,
+                &mut self.ibo_cap,
+                i_bytes.len() as u64,
+                wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                "ui ibo",
+            );
+            queue.write_buffer(&self.vbo, 0, v_bytes);
+            queue.write_buffer(&self.ibo, 0, i_bytes);
+            queue.write_buffer(
+                &self.globals_buf,
+                0,
+                bytemuck::bytes_of(&UiGlobals {
+                    screen: [w as f32, h as f32],
+                    _pad: [0.0, 0.0],
+                }),
+            );
+            let view = self.hud.as_ref().unwrap().view.clone();
+            let geom = self.geom_pipeline.as_ref().unwrap();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui hud"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(geom);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_vertex_buffer(0, self.vbo.slice(..));
+            pass.set_index_buffer(self.ibo.slice(..), wgpu::IndexFormat::Uint32);
+            for batch in &frame.batches {
+                if batch.index_count == 0 {
+                    continue;
+                }
+                let Some((_, bg)) = self.textures.get(&batch.texture_id) else {
+                    continue;
+                };
+                if let Some([x, y, sw, sh]) = batch.scissor {
+                    pass.set_scissor_rect(
+                        x.max(0) as u32,
+                        y.max(0) as u32,
+                        sw.max(0) as u32,
+                        sh.max(0) as u32,
+                    );
+                } else {
+                    pass.set_scissor_rect(0, 0, w, h);
+                }
+                pass.set_bind_group(1, bg, &[]);
+                pass.draw_indexed(
+                    batch.index_start..batch.index_start + batch.index_count,
+                    0,
+                    0..1,
+                );
+            }
+            drop(pass);
+            self.write_blit(queue, w, h);
+        }
         if let Some(p) = prof.as_mut() {
-                lap_ms(&mut lap);
+            lap_ms(&mut lap);
         }
-
-        self.gpu_vert_scratch.clear();
-        self.gpu_vert_scratch.reserve(frame.vertices.len());
-        for v in &frame.vertices {
-            self.gpu_vert_scratch.push(GpuUiVertex::from(*v));
+        self.blit(device, encoder, target, format, w, h);
+        if let Some(p) = prof.as_mut() {
+            lap_ms(&mut lap);
         }
-        let gpu_verts = &self.gpu_vert_scratch;
-        let v_bytes = bytemuck::cast_slice(&gpu_verts);
-        let i_bytes = bytemuck::cast_slice(&frame.indices);
-        Self::ensure_buffer(
-            device,
-            &mut self.vbo,
-            &mut self.vbo_cap,
-            v_bytes.len() as u64,
-            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            "ui vbo",
-        );
-        Self::ensure_buffer(
-            device,
-            &mut self.ibo,
-            &mut self.ibo_cap,
-            i_bytes.len() as u64,
-            wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            "ui ibo",
-        );
-        queue.write_buffer(&self.vbo, 0, v_bytes);
-        queue.write_buffer(&self.ibo, 0, i_bytes);
-        queue.write_buffer(&self.globals_buf,
-            0,
-            bytemuck::bytes_of(&UiGlobals {
-                screen: [frame.screen[0] as f32, frame.screen[1] as f32],
-                _pad: [0.0, 0.0],
-            }),
-        );
+    }
 
+    fn ensure_hud(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        if self.hud.as_ref().is_some_and(|t| t.size == (w, h)) {
+            return;
+        }
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui hud"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: UI_TEX_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui hud bg"),
+            layout: &self.tex_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler_linear),
+                },
+            ],
+        });
+        self.hud = Some(HudTarget {
+            _tex: tex,
+            view,
+            bg,
+            size: (w, h),
+        });
+    }
+
+    fn write_blit(&self, queue: &wgpu::Queue, w: u32, h: u32) {
+        let wf = w as f32;
+        let hf = h as f32;
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let v = |x, y, u, vv| GpuUiVertex {
+            pos: [x, y],
+            uv: [u, vv],
+            color: white,
+        };
+        let verts = [
+            v(0.0, 0.0, 0.0, 0.0),
+            v(wf, 0.0, 1.0, 0.0),
+            v(wf, hf, 1.0, 1.0),
+            v(0.0, 0.0, 0.0, 0.0),
+            v(wf, hf, 1.0, 1.0),
+            v(0.0, hf, 0.0, 1.0),
+        ];
+        queue.write_buffer(&self.blit_vbo, 0, bytemuck::cast_slice(&verts));
+    }
+
+    fn blit(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        w: u32,
+        h: u32,
+    ) {
+        if self.hud.is_none() {
+            return;
+        }
+        self.ensure_composite_pipeline(device, format);
+        let pipeline = self.composite_pipeline.as_ref().unwrap();
+        let hud = self.hud.as_ref().unwrap();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("ui pass"),
+            label: Some("ui hud blit"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -402,37 +567,11 @@ impl UiPass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(self.pipeline.as_ref().unwrap());
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.globals_bg, &[]);
-        pass.set_vertex_buffer(0, self.vbo.slice(..));
-        pass.set_index_buffer(self.ibo.slice(..), wgpu::IndexFormat::Uint32);
-
-        for batch in &frame.batches {
-            if batch.index_count == 0 {
-                continue;
-            }
-            let Some((_, bg)) = self.textures.get(&batch.texture_id) else {
-                continue;
-            };
-            if let Some([x, y, w, h]) = batch.scissor {
-                pass.set_scissor_rect(
-                    x.max(0) as u32,
-                    y.max(0) as u32,
-                    w.max(0) as u32,
-                    h.max(0) as u32,
-                );
-            } else {
-                pass.set_scissor_rect(0, 0, frame.screen[0].max(1), frame.screen[1].max(1));
-            }
-            pass.set_bind_group(1, bg, &[]);
-            pass.draw_indexed(
-                batch.index_start..batch.index_start + batch.index_count,
-                0,
-                0..1,
-            );
-        }
-        if let Some(p) = prof.as_mut() {
-                lap_ms(&mut lap);
-        }
+        pass.set_bind_group(1, &hud.bg, &[]);
+        pass.set_vertex_buffer(0, self.blit_vbo.slice(..));
+        pass.set_scissor_rect(0, 0, w, h);
+        pass.draw(0..6, 0..1);
     }
 }
