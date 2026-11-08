@@ -15,10 +15,10 @@ pub struct Mesh {
     pub atlas_rects: Vec<[f32; 4]>,
     /// Atlas tile index for compact `light_tile` packing (parallel to [`positions`]; empty → 0).
     pub atlas_tile: Vec<u16>,
-    /// Pre-packed interleaved vertices (`packed_stride` bytes per vert). Upload skips SoA packer.
+    /// Pre-packed interleaved vertices (`vertex_size` bytes per vert). Upload skips SoA packer.
     pub vertex_bytes: Vec<u8>,
     /// Non-zero → [`vertex_bytes`] is authoritative for GPU upload (must match material `#@vertex` stride).
-    pub packed_stride: u32,
+    pub vertex_size: u32,
     pub indices: Vec<u32>,
     /// Skinning joint indices (4 per vertex). Empty → static mesh.
     pub joint_indices: Vec<[u8; 4]>,
@@ -51,7 +51,7 @@ impl Mesh {
             atlas_rects: Vec::new(),
             atlas_tile: Vec::new(),
             vertex_bytes: Vec::new(),
-            packed_stride: 0,
+            vertex_size: 0,
             indices: Vec::new(),
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),
@@ -105,19 +105,16 @@ impl Mesh {
     }
 
     pub fn vertex_count(&self) -> usize {
-        if self.packed_stride > 0 {
-            let stride = self.packed_stride as usize;
-            if stride > 0 && self.vertex_bytes.len() % stride == 0 && !self.vertex_bytes.is_empty()
-            {
-                return self.vertex_bytes.len() / stride;
-            }
+        let stride = self.vertex_size as usize;
+        if stride == 0 || self.vertex_bytes.len() % stride != 0 {
+            return 0;
         }
-        self.positions.len()
+        self.vertex_bytes.len() / stride
     }
 
     pub fn uses_prepacked_vertices(&self) -> bool {
-        let stride = self.packed_stride as usize;
-        self.packed_stride > 0
+        let stride = self.vertex_size as usize;
+        self.vertex_size > 0
             && stride > 0
             && !self.vertex_bytes.is_empty()
             && self.vertex_bytes.len() % stride == 0
@@ -167,7 +164,7 @@ impl Mesh {
             atlas_rects: Vec::new(),
             atlas_tile: Vec::new(),
             vertex_bytes: Vec::new(),
-            packed_stride: 0,
+            vertex_size: 0,
             indices: i,
             joint_indices: Vec::new(),
             joint_weights: Vec::new(),

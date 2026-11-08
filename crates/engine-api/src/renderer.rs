@@ -6,22 +6,13 @@ pub struct RendererApiResolved {
     ctx: *mut u8,
     load_texture_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> u32,
     upload_texture_raw_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, u32, u32) -> u32,
-    upload_lightmap_uri_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> u32,
-    upload_lightmap_raw_fn: unsafe extern "C" fn(
-        *mut u8,
-        *const u8, usize,
-        *const u8, usize,
-        *const u8, usize,
-        *const u8, usize,
-        u32,
-        u32,
-    ) -> u32,
     set_scene_lighting_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> i32,
     set_scene_fog_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
     set_sky_palette_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
     set_procedural_sky_fn: unsafe extern "C" fn(*mut u8, i32) -> i32,
     set_gamelib_sky_fn: unsafe extern "C" fn(*mut u8, *const u8, usize) -> i32,
     load_shader_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> u32,
+    shader_vertex_size_fn: unsafe extern "C" fn(*mut u8, u32) -> u32,
     reload_shaders_fn: unsafe extern "C" fn(*mut u8) -> i32,
 }
 
@@ -34,12 +25,6 @@ impl RendererApiResolved {
             },
             upload_texture_raw_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_texture_raw"))
-            },
-            upload_lightmap_uri_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_lightmap_uri"))
-            },
-            upload_lightmap_raw_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_lightmap_raw"))
             },
             set_scene_lighting_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_scene_lighting"))
@@ -59,6 +44,9 @@ impl RendererApiResolved {
             load_shader_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:load_shader"))
             },
+            shader_vertex_size_fn: unsafe {
+                std::mem::transmute(resolve_fn(resolver, "v1:renderer:shader_vertex_size"))
+            },
             reload_shaders_fn: unsafe {
                 std::mem::transmute(resolve_fn(resolver, "v1:renderer:reload_shaders"))
             },
@@ -74,38 +62,6 @@ impl RendererApiResolved {
     pub fn upload_texture_raw(&self, pixels: &[u8], w: u32, h: u32) -> u32 {
         unsafe {
             (self.upload_texture_raw_fn)(self.ctx, pixels.as_ptr(), pixels.len(), w, h)
-        }
-    }
-
-    /// Load `file://…#lightmap:…` via ResourceManager and upload. Returns GPU lightmap id.
-    pub fn upload_lightmap_uri(&self, uri: &str) -> u32 {
-        let bytes = uri.as_bytes();
-        unsafe {
-            (self.upload_lightmap_uri_fn)(self.ctx, bytes.as_ptr(), bytes.len())
-        }
-    }
-
-    /// Upload a 4-layer lightmap atlas (RGBA8 each). Returns lightmap id (0 = failed).
-    pub fn upload_lightmap_raw(
-        &self,
-        layers: [&[u8]; 4],
-        w: u32,
-        h: u32,
-    ) -> u32 {
-        unsafe {
-            (self.upload_lightmap_raw_fn)(
-                self.ctx,
-                layers[0].as_ptr(),
-                layers[0].len(),
-                layers[1].as_ptr(),
-                layers[1].len(),
-                layers[2].as_ptr(),
-                layers[2].len(),
-                layers[3].as_ptr(),
-                layers[3].len(),
-                w,
-                h,
-            )
         }
     }
 
@@ -169,6 +125,11 @@ impl RendererApiResolved {
     ///
     /// `path` — `file://` URI cache key (e.g. `"file://shaders/mesh.wgsl"`).
     /// `defines` — comma-joined preprocessor defines (e.g. `"ALPHA_MASK"` or `""`).
+    /// `#@vertex` stride of a shader loaded by [`load_shader`]. `0` if the id is unknown.
+    pub fn shader_vertex_size(&self, shader_id: u32) -> u32 {
+        unsafe { (self.shader_vertex_size_fn)(self.ctx, shader_id) }
+    }
+
     pub fn load_shader(&self, path: &str, defines: &str) -> u32 {
         let p = path.as_bytes();
         let d = defines.as_bytes();

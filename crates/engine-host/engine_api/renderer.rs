@@ -18,52 +18,6 @@ impl crate::Host {
         ce.renderer_mut().upload_texture(pixels, w, h).0
     }
 
-    /// Load a lightmap atlas via [`ResourceManager`] and upload to the GPU.
-    /// URI example: `file://maps/foo.bsp#lightmap:world` (gamelib BSP loader).
-    #[methoddb::bind(name = "upload_lightmap_uri")]
-    pub fn api_renderer_upload_lightmap_uri(&mut self, uri: &str) -> u32 {
-        use deerpunk_engine_common::lightmap_atlas::LightmapAtlasLayers;
-        let handle = self.resources.load::<LightmapAtlasLayers>(uri);
-        let atlas = match handle.try_get() {
-            Some(a) => a,
-            None => {
-                log::error!("[renderer] upload_lightmap_uri '{uri}': not loaded");
-                return 0;
-            }
-        };
-        let Some(ce) = self.client_engine.as_mut() else {
-            return 0;
-        };
-        ce.renderer_mut().upload_lightmap_layers(
-            atlas.width,
-            atlas.height,
-            [
-                &atlas.layers[0].pixels,
-                &atlas.layers[1].pixels,
-                &atlas.layers[2].pixels,
-                &atlas.layers[3].pixels,
-            ],
-        )
-    }
-
-    /// Upload a 4-layer lightmap atlas (RGBA8 each). Returns lightmap id (0 = failed).
-    #[methoddb::bind(name = "upload_lightmap_raw")]
-    pub fn api_renderer_upload_lightmap_raw(
-        &mut self,
-        layer0: &[u8],
-        layer1: &[u8],
-        layer2: &[u8],
-        layer3: &[u8],
-        w: u32,
-        h: u32,
-    ) -> u32 {
-        let Some(ce) = self.client_engine.as_mut() else {
-            return 0;
-        };
-        ce.renderer_mut()
-            .upload_lightmap_layers(w, h, [layer0, layer1, layer2, layer3])
-    }
-
     /// Set scene-level lighting (sun direction + ambient color).
     /// sun_dir_bytes = 16 bytes (4×f32: x, y, z, intensity; intensity 0 = sun off).
     /// ambient_bytes = 16 bytes (4×f32: r, g, b, _).
@@ -215,6 +169,18 @@ impl crate::Host {
             }
         }
     }
+
+    /// Stride of the `#@vertex` layout parsed when `shader_id` was loaded. `0` if unknown.
+    #[methoddb::bind(name = "shader_vertex_size")]
+    pub fn api_renderer_shader_vertex_size(&mut self, shader_id: u32) -> u32 {
+        let Some(ce) = self.client_engine.as_ref() else {
+            return 0;
+        };
+        ce.shader_registry
+            .get(shader_id)
+            .map(|def| def.mesh_vertex_layout().stride)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(not(any(feature = "client", feature = "full")))]
@@ -222,24 +188,6 @@ impl crate::Host {
 impl crate::Host {
     #[methoddb::bind(name = "upload_texture_raw")]
     pub fn api_renderer_upload_texture_raw(&mut self, _pixels: &[u8], _w: u32, _h: u32) -> u32 {
-        0
-    }
-
-    #[methoddb::bind(name = "upload_lightmap_uri")]
-    pub fn api_renderer_upload_lightmap_uri(&mut self, _uri: &str) -> u32 {
-        0
-    }
-
-    #[methoddb::bind(name = "upload_lightmap_raw")]
-    pub fn api_renderer_upload_lightmap_raw(
-        &mut self,
-        _l0: &[u8],
-        _l1: &[u8],
-        _l2: &[u8],
-        _l3: &[u8],
-        _w: u32,
-        _h: u32,
-    ) -> u32 {
         0
     }
 
@@ -274,6 +222,11 @@ impl crate::Host {
 
     #[methoddb::bind(name = "load_shader")]
     pub fn api_renderer_load_shader(&mut self, _path: &str, _defines: &str) -> u32 {
+        0
+    }
+
+    #[methoddb::bind(name = "shader_vertex_size")]
+    pub fn api_renderer_shader_vertex_size(&mut self, _shader_id: u32) -> u32 {
         0
     }
 

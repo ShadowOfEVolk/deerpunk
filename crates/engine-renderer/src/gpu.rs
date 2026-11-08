@@ -24,7 +24,7 @@ use crate::asset_inventory::{AssetEntry, AssetKind, ASSET_ID_MATERIAL, ASSET_ID_
 use crate::bone_gpu::{GpuBoneBlock, GPU_BONE_BLOCK_SIZE};
 use crate::font::{build_font_atlas, ATLAS_H, ATLAS_W};
 use crate::frame::context::FrameCtx;
-use crate::mesh_allocator::{MESH_INDEX_SIZE, MESH_VERTEX_SIZE, SKINNED_MESH_VERTEX_SIZE};
+use crate::mesh_allocator::{MESH_INDEX_SIZE, SKINNED_MESH_VERTEX_SIZE};
 use crate::mesh_vertex_pack::{self, pack_mesh_vertices};
 use crate::render_profile::{FrameDrawAccum, FrameSpeedsHud, RenderFrameProfile};
 use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
@@ -264,12 +264,6 @@ struct SkinnedMeshVertex {
 
 const _: () = assert!(size_of::<SkinnedMeshVertex>() == SKINNED_MESH_VERTEX_SIZE as usize);
 
-pub struct GpuMesh {
-    pub vertex_buf: wgpu::Buffer,
-    pub index_buf: wgpu::Buffer,
-    pub index_count: u32,
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 /// Per-draw object data. Camera matrix lives in [`MeshViewUniform`] (one upload per pass).
@@ -475,27 +469,13 @@ pub struct Renderer {
     mesh_pipeline_layout: wgpu::PipelineLayout,
     mesh_white_bg: wgpu::BindGroup,
     mesh_user_bgs: HashMap<u32, wgpu::BindGroup>,
-    /// 2D albedo + lightmap array (BSP world atlas path).
-    tex_array_bg_layout: wgpu::BindGroupLayout,
-    /// Layout when group 1 = 2D albedo + `texture_2d_array` (shader reflection).
-    mesh_lm_surface_pipeline_layout: wgpu::PipelineLayout,
     /// Per-shader opaque mesh pipelines (`ShaderId` from registry).
     /// `(shader_id, format, skinned_bind_group_layout)` — static draws use `false`, skinned draws `true`.
     shader_mesh_pipelines:
         HashMap<(ShaderId, wgpu::TextureFormat, bool, bool), wgpu::RenderPipeline>,
-    /// Key: (albedo_tex_slot, lightmap_gpu) — id 0 = white fallback.
-    mesh_lm_surface_bgs: HashMap<(u32, u32), wgpu::BindGroup>,
     repeat_sampler: wgpu::Sampler,
-    lightmap_white_tex: wgpu::Texture,
-    lightmap_white_view: wgpu::TextureView,
-    lightmap_textures: HashMap<u32, wgpu::Texture>,
-    lightmap_views: HashMap<u32, wgpu::TextureView>,
-    clamp_sampler: wgpu::Sampler,
-    next_lightmap_slot: u32,
-    /// `r_fullbright` — LM forced to white in mesh_brush shader.
+    /// `r_fullbright` — mesh lighting forced off in the shader.
     fullbright: bool,
-    /// `r_lightmap` — debug: output LM only.
-    lightmap_only: bool,
     wireframe: bool,
     lights_bg_layout: wgpu::BindGroupLayout,
     lights_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
@@ -1142,56 +1122,6 @@ impl Renderer {
                 immediate_size: 0,
             });
 
-        // Group 1: 2D albedo atlas + lightmap array (device limit = 4 bind groups).
-        let tex_array_bg_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("albedo+lightmap bg layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let mesh_lm_surface_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("mesh lm-surface pipeline layout"),
-                bind_group_layouts: &[
-                    Some(&mesh_globals_bg_layout),
-                    Some(&tex_array_bg_layout),
-                    Some(&material_bg_layout),
-                    Some(&lights_bg_layout),
-                ],
-                immediate_size: 0,
-            });
         // Nearest texels (pixel atlases / voxels); mip chain still used for LOD (linear between mips).
         let repeat_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("repeat nearest + mip linear"),
@@ -1203,63 +1133,6 @@ impl Renderer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("clamp linear lightmap"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        // 1×1×4 white lightmap array fallback (4 style layers)
-        let lm_white_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("lightmap white array"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 4,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: TEX_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for z in 0..4u32 {
-            queue.write_texture(wgpu::TexelCopyTextureInfo {
-                    texture: &lm_white_tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &[255u8, 255, 255, 255],
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4),
-                    rows_per_image: Some(1),
-                },
-                wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        let lightmap_white_view = lm_white_tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("lightmap white array view"),
-            format: None,
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: None,
-            base_array_layer: 0,
-            array_layer_count: Some(4),
-            usage: None,
-        });
-
         // Terrain splat bind group layout: globals(0) + [layer0, layer1, layer2, layer3, splat_map, sampler](1)
         let terrain_splat_bg_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1905,19 +1778,9 @@ impl Renderer {
             mesh_pipeline_layout,
             mesh_white_bg,
             mesh_user_bgs: HashMap::new(),
-            tex_array_bg_layout,
-            mesh_lm_surface_pipeline_layout,
             shader_mesh_pipelines: HashMap::new(),
-            mesh_lm_surface_bgs: HashMap::new(),
             repeat_sampler,
-            lightmap_white_tex: lm_white_tex,
-            lightmap_white_view,
-            lightmap_textures: HashMap::new(),
-            lightmap_views: HashMap::new(),
-            clamp_sampler,
-            next_lightmap_slot: 1,
             fullbright: false,
-            lightmap_only: false,
             wireframe: false,
             lights_bg_layout,
             lights_bufs,
@@ -4243,7 +4106,6 @@ impl Renderer {
         &self,
         wgsl: &str,
         format: wgpu::TextureFormat,
-        lm_surface: bool,
         vertex_layout: &VertexLayoutSpec,
         skinned_vertex: bool,
         transparent: bool,
@@ -4270,8 +4132,6 @@ impl Renderer {
         };
         let layout = if skinned_vertex {
             &self.skinned_mesh_pipeline_layout
-        } else if lm_surface {
-            &self.mesh_lm_surface_pipeline_layout
         } else {
             &self.mesh_pipeline_layout
         };
@@ -4347,11 +4207,9 @@ impl Renderer {
                 .get(shader_id)
                 .expect("MeshDraw shader_id not in ShaderRegistry");
             let skinned = skinned_layout && def.uses_skinned_mesh_vertex();
-            let lm_surface = !skinned && def.group1_uses_lightmap_array();
             let p = self.build_shader_mesh_pipeline(
                 &def.wgsl,
                 format,
-                lm_surface,
                 def.mesh_vertex_layout(),
                 skinned,
                 transparent,
@@ -4452,52 +4310,6 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             })
-    }
-
-    pub fn upload_mesh(&self, mesh: &deerpunk_engine_common::resource::mesh::Mesh) -> GpuMesh {
-        let mut vertices = Vec::with_capacity(mesh.vertex_count());
-        for i in 0..mesh.vertex_count() {
-            vertices.push(MeshVertex {
-                position: mesh.positions[i],
-                normal: mesh
-                    .normals
-                    .get(i)
-                    .copied()
-                    .unwrap_or(deerpunk_engine_common::coord::UP),
-                uv: mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]),
-                atlas_rect: mesh
-                    .atlas_rects
-                    .get(i)
-                    .copied()
-                    .unwrap_or([0.0, 0.0, 1.0, 1.0]),
-                lm_uv: mesh.lightmap_uvs.get(i).copied().unwrap_or([0.0, 0.0]),
-                lm_styles: mesh
-                    .lightmap_styles
-                    .get(i)
-                    .copied()
-                    .unwrap_or([1.0, 1.0, 1.0, 1.0]),
-                _pad: [0.0, 0.0],
-            });
-        }
-        let vertex_buf = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("mesh vertices"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        let index_buf = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("mesh indices"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-        GpuMesh {
-            vertex_buf,
-            index_buf,
-            index_count: mesh.indices.len() as u32,
-        }
     }
 
     /// Increment owners. `allocator_id` selects which registered allocator owns the
@@ -4871,11 +4683,10 @@ impl Renderer {
     ) {
         let verts = handle.vert_count;
         let indices = handle.idx_count;
-        let stride = handle.stride.max(MESH_VERTEX_SIZE);
+        let stride = handle.stride;
         let mesh_id = ASSET_ID_MESH | self.next_mesh_asset_id as u64;
         self.next_mesh_asset_id = self.next_mesh_asset_id.wrapping_add(1);
         let size = verts as u64 * stride as u64 + indices as u64 * MESH_INDEX_SIZE as u64;
-        crate::upload_log::mesh(content_id, verts, indices, size);
         self.asset_meta.insert(
             mesh_id,
             AssetEntry {
@@ -4892,79 +4703,7 @@ impl Renderer {
         );
     }
 
-    /// Upload a single-layer lightmap as a 4-layer array (same pixels on all layers).
-    pub fn upload_lightmap(&mut self, pixels: &[u8], w: u32, h: u32) -> u32 {
-        self.upload_lightmap_layers(w, h, [pixels, pixels, pixels, pixels])
-    }
-
-    /// Upload a 4-layer lightmap atlas (RGBA8 each). Returns id for [`MeshDraw::lightmap`].
-    pub fn upload_lightmap_layers(&mut self, w: u32, h: u32, layers: [&[u8]; 4]) -> u32 {
-        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("lightmap atlas array"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 4,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: TEX_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let expected = (w as usize) * (h as usize) * 4;
-        crate::upload_log::texture("lightmap_array", w, h, expected * 4);
-        for (z, pixels) in layers.iter().enumerate() {
-            let bytes = if pixels.len() >= expected {
-                &pixels[..expected]
-            } else {
-                continue;
-            };
-            self.queue.write_texture(wgpu::TexelCopyTextureInfo {
-                    texture: &tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: z as u32,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                bytes,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * w),
-                    rows_per_image: Some(h),
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        let view = tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("lightmap atlas array view"),
-            format: None,
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: None,
-            base_array_layer: 0,
-            array_layer_count: Some(4),
-            usage: None,
-        });
-        let slot = self.next_lightmap_slot;
-        self.next_lightmap_slot += 1;
-        self.lightmap_textures.insert(slot, tex);
-        self.lightmap_views.insert(slot, view);
-        // Invalidate any BG cached earlier with the white fallback for this id.
-        self.mesh_lm_surface_bgs.retain(|(_, lm), _| *lm != slot);
-        slot
-    }
-
-    /// HL-style `r_fullbright` — albedo only, lightmap ignored in mesh_brush shader.
+    /// `r_fullbright` — mesh shader skips lighting when the uniform flag is set.
     pub fn set_fullbright(&mut self, on: bool) {
         self.fullbright = on;
     }
@@ -5005,68 +4744,6 @@ impl Renderer {
     /// `r_mesh_batch_mdi` — use `multi_draw_indexed_indirect` for batch groups (shader must use `instance_index` slot).
     pub fn set_mesh_batch_mdi(&mut self, on: bool) {
         self.mesh_batch_mdi = on;
-    }
-
-    /// Debug: show lightmap contribution only.
-    pub fn set_lightmap_only(&mut self, on: bool) {
-        self.lightmap_only = on;
-    }
-
-    /// Bind group for 2D albedo + lightmap array (lm_id `0` = white fallback).
-    fn ensure_albedo_lightmap_bg(&mut self, albedo_slot: u32, lm_id: u32) -> wgpu::BindGroup {
-        let key = (albedo_slot, lm_id);
-        let albedo_ready =
-            albedo_slot == MeshTexture::WHITE.0 || self.texture_views.contains_key(&albedo_slot);
-        let lm_ready = lm_id == 0 || self.lightmap_views.contains_key(&lm_id);
-        if self.mesh_lm_surface_bgs.contains_key(&key) {
-            if albedo_ready && lm_ready {
-                return self.mesh_lm_surface_bgs.get(&key).unwrap().clone();
-            }
-            self.mesh_lm_surface_bgs.remove(&key);
-        }
-        let albedo_view = if albedo_slot == MeshTexture::WHITE.0 {
-            &self.white_tex_view
-        } else {
-            self.texture_views
-                .get(&albedo_slot)
-                .unwrap_or(&self.white_tex_view)
-        };
-        let lm_view = if lm_id == 0 {
-            &self.lightmap_white_view
-        } else {
-            self.lightmap_views
-                .get(&lm_id)
-                .unwrap_or(&self.lightmap_white_view)
-        };
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mesh albedo+lightmap bg"),
-            layout: &self.tex_array_bg_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(albedo_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.clamp_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(lm_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.clamp_sampler),
-                },
-            ],
-        });
-        self.mesh_lm_surface_bgs.insert(key, bg);
-        self.mesh_lm_surface_bgs.get(&key).unwrap().clone()
-    }
-
-    fn invalidate_mesh_lm_surface_bgs_for_albedo(&mut self, slot: u32) {
-        self.mesh_lm_surface_bgs
-            .retain(|(albedo, _), _| *albedo != slot);
     }
 
     fn mesh_has_bsp_surface_data(mesh: &deerpunk_engine_common::resource::mesh::Mesh) -> bool {
@@ -5164,7 +4841,6 @@ impl Renderer {
         self.mesh_user_bgs.insert(slot, bg);
 
         self.texture_views.insert(slot, view);
-        self.invalidate_mesh_lm_surface_bgs_for_albedo(slot);
         let asset_id = slot as u64;
         self.asset_meta.insert(
             asset_id,

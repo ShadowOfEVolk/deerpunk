@@ -1,7 +1,6 @@
 //! Gamelib-registered loaders (`v1:resources:register`).
 
 use deerpunk_engine_api::dynamic_load::DynamicLoad;
-use deerpunk_engine_common::lightmap_atlas::LightmapAtlasLayers;
 use deerpunk_engine_common::material::MaterialAsset;
 use deerpunk_engine_common::resource::loader::{LoadedAsset, Loader};
 use deerpunk_engine_common::resource::mesh::Mesh;
@@ -167,14 +166,6 @@ fn unpack_dynamic_payload(
                 data: Box::new(mat),
                 size: 0,
                 type_name: "material",
-            })
-        }
-        "lightmap-atlas" => {
-            let lm = unsafe { *Box::from_raw(payload as *mut LightmapAtlasLayers) };
-            Ok(LoadedAsset {
-                data: Box::new(lm),
-                size: 0,
-                type_name: "lightmap-atlas",
             })
         }
         "bsp" => Ok(LoadedAsset {

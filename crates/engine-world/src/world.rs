@@ -872,8 +872,6 @@ fn is_game_component_token(token: &str) -> bool {
             | "TerrainCollider"
             | "TerrainRenderer"
             | "PendingAlbedoAtlas"
-            | "PendingLightmap"
-            | "LightmapId"
             | "MeshRenderer"
             | "NetReplicatedComponent"
             | "NetworkEntity"

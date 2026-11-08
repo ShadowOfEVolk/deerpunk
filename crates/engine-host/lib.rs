@@ -668,8 +668,6 @@ impl Host {
             w.component_init::<Terrain>();
             w.component_init::<TerrainSplatMaterial>();
             w.component_init::<Worldspawn>();
-            w.component_init::<PendingLightmap>();
-            w.component_init::<LightmapId>();
             w.component_init::<MapKv>();
             w.component_init::<Collider>();
         };

@@ -156,12 +156,12 @@ impl MeshApi {
     }
 
     fn mesh_packed_ffi(mesh: &Mesh) -> (u32, *mut u8, u32) {
-        if mesh.packed_stride == 0 {
+        if mesh.vertex_size == 0 {
             return (0, std::ptr::null_mut(), 0);
         }
         debug_assert!(mesh.uses_prepacked_vertices());
         (
-            mesh.packed_stride,
+            mesh.vertex_size,
             mesh.vertex_bytes.as_ptr() as *mut u8,
             mesh.vertex_bytes.len() as u32,
         )
@@ -179,7 +179,7 @@ impl MeshApi {
         lightmap_uvs: &[f32],
         lightmap_styles: &[f32],
         atlas_rects: &[f32],
-        packed_stride: u32,
+        vertex_size: u32,
         vertex_bytes: *mut u8,
         vertex_byte_len: u32,
     ) -> MeshHandle {
@@ -231,20 +231,17 @@ impl MeshApi {
             } else {
                 atlas_rects.as_ptr()
             },
-            packed_stride,
+            vertex_size,
             vertex_bytes,
             vertex_byte_len,
         ))
     }
 
     pub fn create_from_mesh(&self, mesh: &Mesh) -> MeshHandle {
-        if mesh.positions.is_empty() {
+        if mesh.vertex_size == 0 || !mesh.uses_prepacked_vertices() {
             return MeshHandle::INVALID;
         }
-        if mesh.packed_stride > 0 && !mesh.uses_prepacked_vertices() {
-            return MeshHandle::INVALID;
-        }
-        let vc = mesh.positions.len() as u32;
+        let vc = mesh.vertex_count() as u32;
         let positions: Vec<f32> = mesh
             .positions
             .iter()
@@ -293,7 +290,7 @@ impl MeshApi {
         } else {
             Vec::new()
         };
-        let (packed_stride, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
+        let (vertex_size, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
         self.create(
             &positions,
             vc,
@@ -305,7 +302,7 @@ impl MeshApi {
             &lightmap_uvs,
             &lightmap_styles,
             &atlas_rects,
-            packed_stride,
+            vertex_size,
             vertex_bytes,
             vertex_byte_len,
         )
@@ -356,16 +353,13 @@ impl MeshApi {
     /// with a registered custom allocator (`allocator_id`) so the renderer
     /// routes uploads/frees through it instead of the built-in slab.
     pub fn create_from_mesh_with(&self, mesh: &Mesh, allocator_id: u32) -> MeshHandle {
-        if mesh.positions.is_empty() {
-            return MeshHandle::INVALID;
-        }
-        if mesh.packed_stride > 0 && !mesh.uses_prepacked_vertices() {
+        if mesh.vertex_size == 0 || !mesh.uses_prepacked_vertices() {
             return MeshHandle::INVALID;
         }
         let Some(f) = self.create_with_fn else {
             return MeshHandle::INVALID;
         };
-        let vc = mesh.positions.len() as u32;
+        let vc = mesh.vertex_count() as u32;
         let positions: Vec<f32> = mesh
             .positions
             .iter()
@@ -400,7 +394,7 @@ impl MeshApi {
         } else {
             Vec::new()
         };
-        let (packed_stride, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
+        let (vertex_size, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
         MeshHandle(f(
             self.ctx,
             positions.as_ptr(),
@@ -446,7 +440,7 @@ impl MeshApi {
             } else {
                 atlas_rects.as_ptr()
             },
-            packed_stride,
+            vertex_size,
             vertex_bytes,
             vertex_byte_len,
             allocator_id,
@@ -457,16 +451,13 @@ impl MeshApi {
     /// Returns false if the host has no `v1:mesh:update` or the handle is stale.
     /// Does not upload to the GPU — the renderer does that when revision changes.
     pub fn update_from_mesh(&self, handle: MeshHandle, mesh: &Mesh) -> bool {
-        if !handle.is_valid() || mesh.positions.is_empty() {
-            return false;
-        }
-        if mesh.packed_stride > 0 && !mesh.uses_prepacked_vertices() {
+        if !handle.is_valid() || mesh.vertex_size == 0 || !mesh.uses_prepacked_vertices() {
             return false;
         }
         let Some(f) = self.update_fn else {
             return false;
         };
-        let vc = mesh.positions.len() as u32;
+        let vc = mesh.vertex_count() as u32;
         let positions: Vec<f32> = mesh.positions.iter().flat_map(|p| p.iter().copied()).collect();
         let normals: Vec<f32> = if mesh.normals.len() == mesh.positions.len() {
             mesh.normals.iter().flat_map(|n| n.iter().copied()).collect()
@@ -495,7 +486,7 @@ impl MeshApi {
         } else {
             Vec::new()
         };
-        let (packed_stride, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
+        let (vertex_size, vertex_bytes, vertex_byte_len) = Self::mesh_packed_ffi(mesh);
         f(
             self.ctx,
             handle.0,
@@ -518,7 +509,7 @@ impl MeshApi {
             if lightmap_uvs.is_empty() { std::ptr::null() } else { lightmap_uvs.as_ptr() },
             if lightmap_styles.is_empty() { std::ptr::null() } else { lightmap_styles.as_ptr() },
             if atlas_rects.is_empty() { std::ptr::null() } else { atlas_rects.as_ptr() },
-            packed_stride,
+            vertex_size,
             vertex_bytes,
             vertex_byte_len,
         ) != 0
@@ -546,7 +537,7 @@ impl MeshApi {
             mesh.bounds_max[0],
             mesh.bounds_max[1],
             mesh.bounds_max[2],
-            mesh.packed_stride,
+            mesh.vertex_size,
             mesh.vertex_bytes.as_ptr() as *mut u8,
             mesh.vertex_bytes.len() as u32,
             indices,
@@ -574,7 +565,7 @@ impl MeshApi {
             mesh.bounds_max[0],
             mesh.bounds_max[1],
             mesh.bounds_max[2],
-            mesh.packed_stride,
+            mesh.vertex_size,
             mesh.vertex_bytes.as_ptr() as *mut u8,
             mesh.vertex_bytes.len() as u32,
             indices,

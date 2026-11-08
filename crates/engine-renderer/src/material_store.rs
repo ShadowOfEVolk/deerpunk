@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 
-use deerpunk_engine_common::lightmap_atlas::LightmapAtlasLayers;
 use deerpunk_engine_common::material::{
     MaterialAsset, MaterialHandle, PropertyValueSer, RenderPass, ShaderId, ShaderMeta,
 };
@@ -45,8 +44,6 @@ pub struct MaterialEntry {
     pub metallic: f32,
     pub roughness: f32,
     pub emission: [f32; 4],
-    /// GPU lightmap atlas id (`upload_lightmap_layers`), from `_Lightmap` URI at load.
-    pub lightmap_id: u32,
     /// From shader `#@shader pass=...` (opaque vs transparent queue, etc.).
     pub render_pass: RenderPass,
 }
@@ -66,7 +63,6 @@ impl MaterialEntry {
             metallic: 0.0,
             roughness: 0.5,
             emission: [0.0; 4],
-            lightmap_id: 0,
             render_pass: RenderPass::MeshOpaque,
         }
     }
@@ -153,8 +149,7 @@ impl MaterialStore {
         if let Some(&h) = self.by_path.get(debug_path) {
             return Ok(h);
         }
-        let mut asset = asset.clone();
-        asset.normalize_lightmap_texture_props();
+        let asset = asset.clone();
         let hash = material_asset_hash(&asset);
         if let Some(&h) = self.by_hash.get(&hash) {
             self.by_path.insert(debug_path.to_string(), h);
@@ -328,57 +323,6 @@ impl MaterialStore {
         self.entries.len()
     }
 
-    /// Upload `_Lightmap` BSP URIs (`#lightmap:…`) after [`create_from_asset`].
-    pub fn attach_lightmaps_from_asset(
-        &mut self,
-        handle: MaterialHandle,
-        asset: &MaterialAsset,
-        resources: &deerpunk_engine_common::resource::ResourceManager,
-        renderer: &mut crate::gpu::Renderer,
-    ) {
-        let Some(entry) = self.entries.get_mut(handle.0 as usize - 1) else {
-            return;
-        };
-        for (name, value) in &asset.properties {
-            let PropertyValueSer::Texture(uri) = value else {
-                continue;
-            };
-            if !uri.contains("#lightmap:") {
-                continue;
-            }
-            if name != "_Lightmap" && entry.lightmap_id != 0 {
-                continue;
-            }
-            if let Ok(id) = upload_lightmap_uri(resources, renderer, uri) {
-                entry.lightmap_id = id;
-            }
-        }
-    }
-}
-
-/// Load `file://…#lightmap:…` and upload to the GPU lightmap pool.
-pub fn upload_lightmap_uri(
-    resources: &deerpunk_engine_common::resource::ResourceManager,
-    renderer: &mut crate::gpu::Renderer,
-    uri: &str,
-) -> Result<u32, String> {
-    if !uri.contains("#lightmap:") {
-        return Ok(0);
-    }
-    let handle = resources.load::<LightmapAtlasLayers>(uri);
-    let atlas = handle
-        .try_get()
-        .ok_or_else(|| format!("lightmap resource not loaded: '{uri}'"))?;
-    Ok(renderer.upload_lightmap_layers(
-        atlas.width,
-        atlas.height,
-        [
-            &atlas.layers[0].pixels,
-            &atlas.layers[1].pixels,
-            &atlas.layers[2].pixels,
-            &atlas.layers[3].pixels,
-        ],
-    ))
 }
 
 /// Load WGSL via [`ResourceManager`] (cached by URI), compile via [`ShaderRegistry`] (cached by path+defines).

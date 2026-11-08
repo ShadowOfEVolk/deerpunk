@@ -21,7 +21,6 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
     let r = client.renderer_mut();
     r.set_fullbright(cvar.get_bool_or("r_fullbright", false));
     r.set_vsync(cvar.get_bool_or("r_vsync", true));
-    r.set_lightmap_only(cvar.get_bool_or("r_lightmap", false));
     let e = cvar.get_f32_or("r_exposure", 1.0);
     r.set_exposure_override(if e < 0.0 { None } else { Some(e) });
     r.set_tonemap_mode(cvar.get_f32_or("r_tonemap", -1.0));

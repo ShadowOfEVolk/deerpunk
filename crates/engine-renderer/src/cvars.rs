@@ -23,19 +23,13 @@ deerpunk_engine_common::cvar_def!(
 deerpunk_engine_common::cvar_def!(
     "r_fullbright",
     "0",
-    "Ignore lightmaps (1=albedo only, HL-style fullbright).",
+    "Skip mesh lighting (1=albedo only).",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
     "r_vsync",
     "1",
     "Vertical sync (1=FIFO/vsync on, 0=uncapped when GPU supports Immediate).",
-    RENDERINFO
-);
-deerpunk_engine_common::cvar_def!(
-    "r_lightmap",
-    "0",
-    "Debug: draw lightmap only (1=on).",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(

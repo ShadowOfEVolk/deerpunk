@@ -26,7 +26,7 @@ pub struct MeshAllocHandle {
     pub vert_count: u32,
     pub idx_offset: u32,
     pub idx_count: u32,
-    /// Bytes per vertex (`MESH_VERTEX_SIZE` or `SKINNED_MESH_VERTEX_SIZE`).
+    /// Bytes per vertex of the buffer this handle refers to.
     pub stride: u32,
 }
 

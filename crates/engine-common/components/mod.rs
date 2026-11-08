@@ -17,7 +17,6 @@ pub mod camera;
 pub mod parent;
 pub mod render_layer;
 pub mod pending_albedo_atlas;
-pub mod pending_lightmap;
 pub mod ui_document;
 pub mod map_kv;
 pub mod mesh_draw_hidden;
@@ -55,7 +54,6 @@ pub use render_layer::{
     RENDER_LAYER_DEFAULT_DRAW, RENDER_LAYER_WORLD, RENDER_LAYER_WORLD_CAMERA,
 };
 pub use pending_albedo_atlas::PendingAlbedoAtlas;
-pub use pending_lightmap::{LightmapId, PendingLightmap};
 pub use ui_document::UiDocumentComponent;
 pub use worldspawn::Worldspawn;
 

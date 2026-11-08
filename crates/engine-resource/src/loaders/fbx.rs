@@ -129,7 +129,7 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
             atlas_rects: Vec::new(),
             atlas_tile: Vec::new(),
             vertex_bytes: Vec::new(),
-            packed_stride: 0,
+            vertex_size: 0,
         indices,
         joint_indices: Vec::new(),
         joint_weights: Vec::new(),

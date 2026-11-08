@@ -176,10 +176,10 @@ impl RenderExtractor {
         );
         gpu_stats.resolve_ms += t0.elapsed().as_secs_f32() * 1000.0;
 
-        let (shader_id, lightmap_gpu) = material_store
+        let shader_id = material_store
             .get(dm_handle)
-            .map(|e| (e.shader, e.lightmap_id))
-            .unwrap_or((0, 0));
+            .map(|e| e.shader)
+            .unwrap_or(0);
 
         if shader_id == 0 {
             panic!(
@@ -199,7 +199,7 @@ impl RenderExtractor {
             sun_dir: [0.0, 0.0, 1.0, 0.0],
             ambient: [0.0; 4],
             shader_id,
-            lightmap_gpu,
+            lightmap_gpu: 0,
             first_index: 0,
             index_count: 0,
             world_bounds: deerpunk_engine_renderer::Aabb::default(),

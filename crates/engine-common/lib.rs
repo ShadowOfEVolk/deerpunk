@@ -2,7 +2,6 @@ pub mod console_cmd;
 pub mod cvar_def;
 pub mod cvar;
 pub mod atlas;
-pub mod lightmap_atlas;
 pub mod bsp_entities;
 pub mod components;
 pub mod input;
@@ -35,8 +34,8 @@ pub mod transform_hierarchy;
 pub mod ui_draw;
 
 pub use components::{
-    CameraComponent, LightmapId, MapKv, MeshRenderer, MeshTexture,
-    NetReplicatedComponent, NetworkEntity, PendingAlbedoAtlas, PendingLightmap,
+    CameraComponent, MapKv, MeshRenderer, MeshTexture,
+    NetReplicatedComponent, NetworkEntity, PendingAlbedoAtlas,
     PointLight,
     SimpleEntity, Terrain, TerrainCollider, TerrainNeedRebuild, TerrainRenderer,
     TerrainSplatMaterial, TransformComponent, UiDocumentComponent, Worldspawn,
@@ -44,7 +43,6 @@ pub use components::{
 };
 pub use network::replication::{NetworkComponent, NetworkField};
 
-pub use lightmap_atlas::{LightmapAtlasLayers, LM_STYLE_SLOTS};
 pub use transform::Transform;
 pub mod util;
 

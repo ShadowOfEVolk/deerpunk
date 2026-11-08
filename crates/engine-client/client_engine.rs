@@ -1474,10 +1474,6 @@ impl ClientEngine {
             &mut self.renderer,
             shader_registry,
         )?;
-        if let Ok(asset) = deerpunk_engine_common::material::MaterialAsset::from_json(source) {
-            self.material_store
-                .attach_lightmaps_from_asset(handle, &asset, resources, &mut self.renderer);
-        }
         Ok(handle)
     }
 
@@ -1496,8 +1492,6 @@ impl ClientEngine {
             &mut self.renderer,
             shader_registry,
         )?;
-        self.material_store
-            .attach_lightmaps_from_asset(handle, asset, resources, &mut self.renderer);
         Ok(handle)
     }
 

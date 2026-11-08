@@ -14,15 +14,6 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn mesh(content_id: u64, verts: u32, indices: u32, bytes: u64) {
-    if !enabled() {
-        return;
-    }
-    log::info!(
-        "[gpu upload] mesh content={content_id} verts={verts} indices={indices} bytes={bytes}"
-    );
-}
-
 pub fn material(path_or_handle: &str, gpu_row: u32) {
     if !enabled() {
         return;
