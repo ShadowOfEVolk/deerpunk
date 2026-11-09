@@ -1885,14 +1885,7 @@ impl Renderer {
                 grow_attempts <= 8,
                 "mesh pool growth failed (vert_count={vert_count} idx_count={idx_count})"
             );
-            let vert_cap = crate::mesh_allocator::slab_size_class(
-                vert_count,
-                crate::mesh_allocator::MIN_SLAB_VERT_CAP,
-            );
-            let idx_cap = crate::mesh_allocator::slab_size_class(
-                idx_count,
-                crate::mesh_allocator::MIN_SLAB_IDX_CAP,
-            );
+            let (vert_cap, idx_cap) = self.mesh_pool.slab_grow_caps(vert_count, idx_count, stride);
             let buffer_id = self
                 .mesh_pool
                 .add(&self.gpu.device, vert_cap, idx_cap, stride);

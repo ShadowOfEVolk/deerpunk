@@ -1462,63 +1462,51 @@ impl Host {
         let Some(client) = self.client_engine.as_ref() else {
             return Vec::new();
         };
-        let p = client.renderer().frame_profile();
+        let renderer = client.renderer();
+        let p = renderer.frame_profile();
         let registry = &client.shader_registry;
         let mut lines = Vec::new();
+
+        // GPU + VRAM.
+        lines.push(renderer.adapter_label());
+        let budget_mb = self.cvar.get_f32_or("r_vram_budget_mb", 1024.0);
+        lines.push(renderer.vram_progress_line((budget_mb as u64).max(1) * 1024 * 1024));
+
         let s = &p.speeds_hud;
-        lines.push(format!("DIP count   {}", s.dip_count));
-        lines.push(format!("Shader bind {}", s.shader_bind));
         lines.push(format!(
-            "cmds  pass {}  bind {}  vb {}  ib {}  indirect {}",
+            "dip {}  shaders {}  tris {}",
+            s.dip_count, s.shader_bind, s.frame_total_tris
+        ));
+        lines.push(format!(
+            "cmds pass {} bind {} vb {} ib {} indirect {}",
             s.render_passes, s.bind_groups, s.vertex_binds, s.index_binds, s.indirect_draws
         ));
-        lines.push(format!("Frame total tris {}", s.frame_total_tris));
-        lines.push(format!("Visible world lights {}", s.visible_world_lights));
-        lines.push(format!("Visible dyn lights {}", s.visible_dyn_lights));
-        lines.push(format!("Visible sun lights {}", s.visible_sun_lights));
-        lines.push(format!("Visible instances {}", s.visible_instances));
-        lines.push(format!("Visible occluders {}", s.visible_occluders));
-        lines.push(format!("Occluded objects {}", s.occluded_objects));
+        lines.push(format!(
+            "vis inst {}  occl {}/{}  lights w{} d{} s{}",
+            s.visible_instances,
+            s.occluded_objects,
+            s.visible_occluders,
+            s.visible_world_lights,
+            s.visible_dyn_lights,
+            s.visible_sun_lights
+        ));
 
-        let listed_encode = p.graph_nodes_cpu_ms();
-        let encode_gap = (p.total_encode_ms - listed_encode).max(0.0);
         if level >= 2 {
+            lines.push(renderer.vram_breakdown_line());
             lines.push(format!(
-                "render: {:.2} ms (extract {:.2} + encode {:.2})",
+                "render {:.2} ms (extract {:.2} + encode {:.2})",
                 p.extract_ms + p.total_encode_ms,
                 p.extract_ms,
                 p.total_encode_ms
             ));
-        }
-        if level >= 2 {
-            lines.push(format!(
-                "  graph listed {:.2} + other {:.2} | finish {:.2} queue_submit {:.2}",
-                listed_encode, encode_gap, p.encoder_finish_ms, p.queue_submit_ms
-            ));
-            lines.push(format!(
-                "  tick_inner: prep {:.2} (ui {:.2} cull {:.2} audio {:.2})  game_ui {:.2}  acquire {:.2}",
-                p.prep_ms,
-                p.prep_ui_ms,
-                p.prep_cull_ms,
-                p.prep_audio_ms,
-                p.game_frame_ui_ms,
-                p.surface_acquire_ms
-            ));
-            lines.push(format!(
-                "  tail: nuklear {:.2}  finish {:.2}  submit {:.2}  present {:.2}",
-                p.after_host_ui_ms, p.encoder_finish_ms, p.queue_submit_ms, p.after_present_ms
-            ));
-        }
-        if level >= 2 {
-            let specs = client.renderer().forward_graph_describe();
             lines.extend(deerpunk_engine_renderer::frame::format_graph_speeds_lines(
-                p, &specs,
+                p,
             ));
         }
         if level >= 3 {
             let eg = &p.extract_gpu;
             lines.push(format!(
-                "  extract: sync {:.2} ms skip {} | body {:.2} serial {:.2} post {:.2} ms | mat {:.2} ms draws {}+{}",
+                "extract sync {:.2} (skip {}) body {:.2} cull {:.2} post {:.2} mat {:.2} draws {}+{}",
                 eg.sync_world_ms,
                 eg.sync_world_unchanged,
                 eg.extractor_ms,
@@ -1529,41 +1517,27 @@ impl Host {
                 eg.skinned_draws,
             ));
             lines.push(format!(
-                "  extract frustum_skip {}",
-                eg.extract_frustum_skip,
-            ));
-            lines.push(format!(
-                "  {}x{}  mesh {} tris~{}  spr {} hud {} terr {} lights {}",
+                "{}x{}  mesh {} idx~{}  spr {} hud {}  lights {}",
                 p.width,
                 p.height,
                 p.mesh_draws,
                 p.mesh_index_count,
                 p.sprite_instances,
                 p.hud_instances,
-                p.terrain_draws,
                 p.point_lights
             ));
             lines.push(format!(
-                "  cull: frustum {:.2} assemble {:.2} gather {:.2} ms (wall {:.2})",
-                p.prep_cull_frustum_ms,
-                p.prep_cull_assemble_ms,
-                p.prep_cull_gather_ms,
-                p.prep_cull_ms,
+                "cull frustum {:.2} assemble {:.2} gather {:.2} ms",
+                p.prep_cull_frustum_ms, p.prep_cull_assemble_ms, p.prep_cull_gather_ms,
             ));
             lines.push(format!(
-                "  mesh uploads {}  cache hits {}",
-                p.mesh_gpu_uploads, p.mesh_gpu_cached
+                "uploads {} (cached {})  finish {:.2} submit {:.2} present {:.2}",
+                p.mesh_gpu_uploads,
+                p.mesh_gpu_cached,
+                p.encoder_finish_ms,
+                p.queue_submit_ms,
+                p.after_present_ms
             ));
-            let m = &p.mesh_stats;
-            if m.uniforms_ms > 0.0 || m.mesh_for_draw_ms > 0.0 || m.draw_encode_ms > 0.0 {
-                lines.push(format!(
-                    "  mesh node: uni {:.2} encode {:.2} after {:.2} ms",
-                    m.uniforms_ms, m.mesh_for_draw_ms, m.draw_encode_ms,
-                ));
-            }
-            if p.debug_verts > 0 {
-                lines.push(format!("  debug verts {}", p.debug_verts));
-            }
         }
         if level >= 4 {
             let m = &p.mesh_stats;
@@ -2226,4 +2200,3 @@ impl Default for Host {
         Self::new()
     }
 }
-

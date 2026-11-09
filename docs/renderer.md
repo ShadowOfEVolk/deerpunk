@@ -298,7 +298,8 @@ Shaders load from **`gamedir/shaders/`**; reload via **`v1:renderer:reload_shade
 
 | Cvar | Effect |
 |------|--------|
-| `r_speeds` | Frame breakdown (extract, prep, graph nodes, mesh stats) |
+| `r_speeds` | Render HUD: 1=GPU+draw stats (adapter, VRAM bar, DIPs, vis), 2=+render-graph ASCII chain + CPU encode, 3=+extract/cull detail, 4=+shader diag |
+| `r_vram_budget_mb` | Total video memory assumed for the `r_speeds` VRAM bar (MB, default 1024) |
 | `r_showfps` | FPS overlay |
 | `r_fullbright` / `r_lightmap` | Lighting debug modes |
 | `r_exposure`, `r_tonemap`, `r_bloom`, `r_grain` | Post FX |

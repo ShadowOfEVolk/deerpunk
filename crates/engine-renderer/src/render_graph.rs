@@ -33,21 +33,6 @@ impl ForwardPass {
             ForwardPass::TonemapUi => "tonemap_ui",
         }
     }
-
-    /// Static `(reads, writes)` target names. Display metadata for `r_speeds`
-    /// only — execution takes its views from `FrameCtx` directly.
-    pub fn io(self) -> (&'static [&'static str], &'static [&'static str]) {
-        match self {
-            ForwardPass::UploadPrep => (&[], &[]),
-            ForwardPass::Sky => (&[], &["hdr_color"]),
-            ForwardPass::ClearHdr => (&[], &["hdr_color"]),
-            ForwardPass::Sprites3d => (&["hdr_color"], &["hdr_color"]),
-            ForwardPass::Mesh => (&["hdr_color"], &["hdr_color"]),
-            ForwardPass::Debug => (&["hdr_color"], &["hdr_color"]),
-            ForwardPass::Hud => (&["hdr_color"], &["hdr_color"]),
-            ForwardPass::TonemapUi => (&["hdr_color"], &["surface"]),
-        }
-    }
 }
 
 /// The forward frame (HDR → … → surface), in execution order. Static: every
@@ -63,14 +48,3 @@ pub const FORWARD_PASSES: [ForwardPass; 8] = [
     ForwardPass::Hud,
     ForwardPass::TonemapUi,
 ];
-
-/// Static pass structure for `r_speeds` / inspector: `name -> (reads, writes)`.
-pub fn describe_nodes() -> Vec<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
-    FORWARD_PASSES
-        .iter()
-        .map(|p| {
-            let (reads, writes) = p.io();
-            (p.name(), reads.to_vec(), writes.to_vec())
-        })
-        .collect()
-}

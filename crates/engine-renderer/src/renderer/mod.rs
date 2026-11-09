@@ -400,6 +400,51 @@ impl SharedTexturePair {
     }
 }
 
+/// Engine-known GPU memory usage buckets (`r_speeds`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VramUsage {
+    /// Mesh buffer pool (vertex + index slabs).
+    pub meshes: u64,
+    /// Uploaded textures (atlas, sprites, map).
+    pub textures: u64,
+    /// Material SSBO.
+    pub materials: u64,
+    /// HDR color, luminance, and depth targets.
+    pub targets: u64,
+}
+
+impl VramUsage {
+    pub fn total(&self) -> u64 {
+        self.meshes + self.textures + self.materials + self.targets
+    }
+}
+
+/// Approximate VRAM bytes of one uncompressed texture; unknown formats count
+/// as 4 bytes/texel.
+fn texture_bytes(tex: &wgpu::Texture) -> u64 {
+    let bpp = match tex.format() {
+        wgpu::TextureFormat::R8Unorm | wgpu::TextureFormat::R8Snorm => 1,
+        wgpu::TextureFormat::Rg8Unorm | wgpu::TextureFormat::Rg8Snorm => 2,
+        wgpu::TextureFormat::Rgba16Float => 8,
+        _ => 4,
+    };
+    let s = tex.size();
+    (s.width as u64) * (s.height as u64) * (s.depth_or_array_layers as u64) * bpp
+}
+
+/// Compact byte count for HUD lines: `512K`, `318M`, `1.2G`.
+fn fmt_bytes(bytes: u64) -> String {
+    const K: f64 = 1024.0;
+    let b = bytes as f64;
+    if bytes < 1024 * 1024 {
+        format!("{:.0}K", b / K)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.0}M", b / (K * K))
+    } else {
+        format!("{:.1}G", b / (K * K * K))
+    }
+}
+
 /// GPU-бэкенд рендерера.
 pub struct Renderer {
     pub gpu: crate::gpu::Gpu,
@@ -1521,11 +1566,86 @@ impl Renderer {
         self.depth_pool.get(&target).unwrap().view.clone()
     }
 
-    /// Forward graph topology for `r_speeds` (node order = GPU queue order).
-    pub fn forward_graph_describe(
-        &self,
-    ) -> Vec<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
-        crate::render_graph::describe_nodes()
+    /// Adapter name + backend for `r_speeds` (e.g. `Apple M2 Pro [metal]`).
+    pub fn adapter_label(&self) -> String {
+        let info = self.gpu.adapter.get_info();
+        let backend = match info.backend {
+            wgpu::Backend::Vulkan => "vulkan",
+            wgpu::Backend::Metal => "metal",
+            wgpu::Backend::Dx12 => "dx12",
+            wgpu::Backend::Gl => "gl",
+            wgpu::Backend::BrowserWebGpu => "webgpu",
+            _ => "noop",
+        };
+        format!("{} [{}]", info.name, backend)
+    }
+
+    /// Engine-known GPU memory usage (`r_speeds`). Approximate: everything the
+    /// renderer allocated itself (swapchain is owned by the window system).
+    pub fn vram_usage(&self) -> VramUsage {
+        let meshes = self.mesh_pool.total_bytes();
+        let mut textures: u64 = self
+            .asset_meta
+            .values()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    crate::asset_inventory::AssetKind::Texture2d
+                        | crate::asset_inventory::AssetKind::TextureArray
+                )
+            })
+            .map(|e| e.size)
+            .sum();
+        textures += texture_bytes(&self.sprite_texture);
+        if let Some((tex, _, _)) = &self.map_texture {
+            textures += texture_bytes(tex);
+        }
+        let materials = self.material_allocator.buffer_bytes();
+        let mut targets = 0u64;
+        if let Some(tex) = &self.hdr.texture {
+            targets += texture_bytes(tex);
+        }
+        if let Some(tex) = &self.hdr.lum_texture {
+            targets += texture_bytes(tex);
+        }
+        for d in self.depth_pool.values() {
+            targets += texture_bytes(&d.texture);
+        }
+        VramUsage {
+            meshes,
+            textures,
+            materials,
+            targets,
+        }
+    }
+
+    /// One-line VRAM bar for `r_speeds` (e.g. `vram 318M [####...] 31% of 1G`).
+    pub fn vram_progress_line(&self, budget_bytes: u64) -> String {
+        let used = self.vram_usage().total();
+        let budget = budget_bytes.max(1);
+        let frac = (used as f64 / budget as f64).clamp(0.0, 1.0);
+        const W: usize = 20;
+        let filled = (frac * W as f64).round() as usize;
+        format!(
+            "vram {:>6} [{}{}] {:>3.0}% of {}",
+            fmt_bytes(used),
+            "#".repeat(filled),
+            ".".repeat(W - filled),
+            frac * 100.0,
+            fmt_bytes(budget)
+        )
+    }
+
+    /// Bucket breakdown line for `r_speeds` 2+.
+    pub fn vram_breakdown_line(&self) -> String {
+        let v = self.vram_usage();
+        format!(
+            "vram mesh {}  tex {}  mat {}  targets {}",
+            fmt_bytes(v.meshes),
+            fmt_bytes(v.textures),
+            fmt_bytes(v.materials),
+            fmt_bytes(v.targets)
+        )
     }
 
     /// Set scene-level directional + ambient lighting.

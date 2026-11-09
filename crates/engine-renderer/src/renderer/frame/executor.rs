@@ -130,43 +130,159 @@ pub fn run_frame_graph(
     }
 }
 
-fn format_res_list(ids: &[&str]) -> String {
-    if ids.is_empty() {
-        "—".to_string()
-    } else {
-        ids.join("+")
-    }
-}
-
-/// Lines for `r_speeds` render-graph section (pass queue + I/O + ms).
+/// ASCII render-graph block for `r_speeds`: a file-tree listing of the frame's
+/// passes with CPU ms.
+///
+/// `frame -> cam -> post`: camera passes run per camera in order, `hud` +
+/// `tonemap_ui` run once per target after all cameras. Group rows show the
+/// phase total. Passes that only ran while masked out (skipped) show `skip`
+/// instead of a time. Multiple cameras sum and mark `xN`.
 pub fn format_graph_speeds_lines(
     profile: &crate::render_profile::RenderFrameProfile,
-    node_specs: &[(&'static str, Vec<&'static str>, Vec<&'static str>)],
 ) -> Vec<String> {
+    use crate::render_graph::ForwardPass;
+
+    const CAM: [ForwardPass; 6] = [
+        ForwardPass::UploadPrep,
+        ForwardPass::Sky,
+        ForwardPass::ClearHdr,
+        ForwardPass::Sprites3d,
+        ForwardPass::Mesh,
+        ForwardPass::Debug,
+    ];
+    const POST: [ForwardPass; 2] = [ForwardPass::Hud, ForwardPass::TonemapUi];
+
+    // Aggregate this frame's timings by pass name (sum ms, runs, any real run).
+    let mut acc: std::collections::HashMap<&str, (f32, u32, bool)> =
+        std::collections::HashMap::new();
+    for node in &profile.graph_nodes {
+        let e = acc.entry(node.name.as_str()).or_insert((0.0, 0, false));
+        e.0 += node.ms;
+        e.1 += 1;
+        e.2 |= !node.skipped;
+    }
+
+    let cell = |name: &str| -> String {
+        match acc.get(name) {
+            Some(&(_, runs, true)) if runs > 1 => {
+                let ms = acc[name].0;
+                format!("{ms:.2}x{runs}")
+            }
+            Some(&(ms, _, true)) => format!("{ms:.2}"),
+            _ => "skip".to_string(),
+        }
+    };
+    let rows = |passes: &[ForwardPass]| -> (Vec<(&'static str, String)>, f32) {
+        let rows = passes.iter().map(|p| (p.name(), cell(p.name()))).collect();
+        let total = passes
+            .iter()
+            .map(|p| acc.get(p.name()).map_or(0.0, |e| e.0))
+            .sum();
+        (rows, total)
+    };
+    let (cam_rows, cam_total) = rows(&CAM);
+    let (post_rows, post_total) = rows(&POST);
+
+    // Uniform columns: widest pass name and widest ms cell.
+    let name_w = CAM
+        .iter()
+        .chain(POST.iter())
+        .map(|p| p.name().len())
+        .max()
+        .unwrap_or(0);
+    let ms_w = cam_rows
+        .iter()
+        .chain(post_rows.iter())
+        .map(|(_, c)| c.len())
+        .chain([
+            format!("{cam_total:.2}").len(),
+            format!("{post_total:.2}").len(),
+        ])
+        .max()
+        .unwrap_or(0);
+
+    let branch = |last: bool| if last { "`-- " } else { "|-- " };
+    let row =
+        |prefix: &str, name: &str, cell: &str| format!("{prefix}{name:<name_w$}  {cell:>ms_w$}");
+
     let mut lines = Vec::new();
+    let listed = profile.graph_nodes_cpu_ms();
+    let other = (profile.total_encode_ms - listed).max(0.0);
+    lines.push(format!(
+        "graph {:.2} ms (+{:.2} outside passes)",
+        listed, other
+    ));
     if profile.graph_nodes.is_empty() {
         return lines;
     }
-    let listed = profile.graph_nodes_cpu_ms();
-    lines.push(format!(
-        "render graph  {:.2} ms listed  ({:.2} ms encode wall)",
-        listed, profile.total_encode_ms
-    ));
-    for (i, node) in profile.graph_nodes.iter().enumerate() {
-        let io = node_specs
-            .iter()
-            .find(|(n, _, _)| *n == node.name.as_str())
-            .map(|(_, ins, outs)| format!("{} → {}", format_res_list(ins), format_res_list(outs)))
-            .unwrap_or_else(|| "— → —".into());
-        let skip = if node.skipped { " skip" } else { "" };
-        lines.push(format!(
-            "  {:02} {:<14} {:>6.2} ms  {}{}",
-            i + 1,
-            node.name,
-            node.ms,
-            io,
-            skip
-        ));
+    lines.push("frame".to_string());
+    lines.push(row(branch(false), "cam", &format!("{cam_total:.2}")));
+    for (i, (name, cell)) in cam_rows.iter().enumerate() {
+        let last = i + 1 == cam_rows.len();
+        lines.push(row(&format!("|   {}", branch(last)), name, cell));
+    }
+    lines.push(row(branch(true), "post", &format!("{post_total:.2}")));
+    for (i, (name, cell)) in post_rows.iter().enumerate() {
+        let last = i + 1 == post_rows.len();
+        lines.push(row(&format!("    {}", branch(last)), name, cell));
     }
     lines
+}
+
+#[cfg(test)]
+mod speeds_tests {
+    use super::*;
+    use crate::render_profile::{GraphNodeTiming, RenderFrameProfile};
+
+    fn node(name: &str, ms: f32, skipped: bool) -> GraphNodeTiming {
+        GraphNodeTiming {
+            name: name.to_string(),
+            ms,
+            skipped,
+        }
+    }
+
+    #[test]
+    fn graph_speeds_tree_and_aggregation() {
+        let mut p = RenderFrameProfile::default();
+        p.graph_nodes = vec![
+            node("upload_prep", 0.1, false),
+            node("sky", 0.0, true),
+            node("mesh", 1.5, false),
+            node("mesh", 1.5, false),
+            node("hud", 0.2, false),
+            node("tonemap_ui", 0.3, false),
+        ];
+        p.total_encode_ms = 4.0;
+        let lines = format_graph_speeds_lines(&p);
+        assert_eq!(lines.len(), 12, "{lines:?}");
+        assert!(lines[0].starts_with("graph 3.60 ms"), "{})", lines[0]);
+        assert_eq!(lines[1], "frame");
+        assert!(lines[2].starts_with("|-- cam"), "{}", lines[2]);
+        assert!(lines[2].contains("3.10"), "{}", lines[2]);
+        let tree = lines.join("\n");
+        assert!(tree.contains("`-- post"), "{tree}");
+        assert!(tree.contains("|   `-- debug"), "{tree}");
+        assert!(tree.contains("    `-- tonemap_ui"), "{tree}");
+        // Passes in execution order, one per line.
+        let order: Vec<usize> = [
+            "upload_prep",
+            "sky",
+            "clear_hdr",
+            "sprites_3d",
+            "mesh",
+            "debug",
+            "hud",
+            "tonemap_ui",
+        ]
+        .iter()
+        .map(|n| tree.find(n).unwrap())
+        .collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "passes out of order:\n{tree}"
+        );
+        assert!(tree.contains("3.00x2"), "{tree}");
+        assert!(tree.contains("skip"), "{tree}");
+    }
 }

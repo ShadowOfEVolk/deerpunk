@@ -24,6 +24,11 @@ pub const MESH_INDEX_SIZE: u32 = 4;
 pub const MIN_SLAB_VERT_CAP: u32 = 4096;
 /// Smallest slab the pool creates (indices) — keeps tiny meshes cheap.
 pub const MIN_SLAB_IDX_CAP: u32 = 8192;
+/// Largest slab the pool creates (vertices) — 1M verts = 20 MB at the compact
+/// voxel stride, 80 MB at the studio stride.
+pub const MAX_SLAB_VERT_CAP: u32 = 1 << 20;
+/// Largest slab the pool creates (indices) — 2M indices = 8 MB.
+pub const MAX_SLAB_IDX_CAP: u32 = 1 << 21;
 
 /// Size class for new slabs: `request` plus 25% headroom, rounded up to a
 /// power of two, never below `min_cap`. Meshes larger than any class get a
@@ -32,6 +37,30 @@ pub fn slab_size_class(request: u32, min_cap: u32) -> u32 {
     let want = request.saturating_add(request / 4).max(min_cap);
     // Above the last u32 power of two the request becomes its own class.
     want.checked_next_power_of_two().unwrap_or(want)
+}
+
+/// Caps for a new slab given the largest existing pair of the same stride:
+/// at least the request's size class, at least double the current largest
+/// (geometric growth, so repeated streaming growth lands in few buffers —
+/// MDI batch runs split per buffer), capped by [`MAX_SLAB_VERT_CAP`] /
+/// [`MAX_SLAB_IDX_CAP`].
+pub fn slab_grow_caps_from(
+    largest_vert: u32,
+    largest_idx: u32,
+    request_verts: u32,
+    request_idx: u32,
+) -> (u32, u32) {
+    let v_class = slab_size_class(request_verts, MIN_SLAB_VERT_CAP);
+    let i_class = slab_size_class(request_idx, MIN_SLAB_IDX_CAP);
+    // The ceiling only limits geometric growth; a request larger than the
+    // ceiling still gets a slab of its own class so it can never fail to fit.
+    let vert = v_class
+        .max(largest_vert.saturating_mul(2))
+        .min(MAX_SLAB_VERT_CAP.max(v_class));
+    let idx = i_class
+        .max(largest_idx.saturating_mul(2))
+        .min(MAX_SLAB_IDX_CAP.max(i_class));
+    (vert, idx)
 }
 
 /// One GPU buffer pair (VB + IB) with a fixed vertex stride.
@@ -155,6 +184,31 @@ impl MeshBufferPool {
     pub fn index_byte_range(&self, handle: MeshHandle) -> std::ops::Range<u64> {
         let start = (handle.idx_offset * MESH_INDEX_SIZE) as u64;
         start..start + (handle.idx_count * MESH_INDEX_SIZE) as u64
+    }
+
+    /// Total GPU bytes allocated across all buffer pairs (VB + IB).
+    pub fn total_bytes(&self) -> u64 {
+        self.buffers
+            .iter()
+            .map(|b| {
+                b.vert_cap as u64 * b.stride as u64 + b.idx_cap as u64 * MESH_INDEX_SIZE as u64
+            })
+            .sum()
+    }
+
+    /// Caps for a new pair, growing geometrically (see [`slab_grow_caps_from`]):
+    /// at least double the largest existing pair of the same stride. Doubling
+    /// keeps streaming allocators (voxel chunks) in a handful of buffers — MDI
+    /// batch runs split per buffer — while one-off small meshes get small pairs.
+    pub fn slab_grow_caps(&self, request_verts: u32, request_idx: u32, stride: u32) -> (u32, u32) {
+        let (mut vert, mut idx) = (0u32, 0u32);
+        for b in &self.buffers {
+            if b.stride == stride {
+                vert = vert.max(b.vert_cap);
+                idx = idx.max(b.idx_cap);
+            }
+        }
+        slab_grow_caps_from(vert, idx, request_verts, request_idx)
     }
 }
 
@@ -331,6 +385,30 @@ mod tests {
         let mut a = SlabMeshAllocator::new();
         a.add_buffer(1, cap, cap * 2, 80);
         a
+    }
+
+    #[test]
+    fn grow_caps_double_largest_and_cap_out() {
+        // Empty pool: just the request's size class.
+        assert_eq!(slab_grow_caps_from(0, 0, 3_000, 6_000), (4096, 8192));
+        // Existing 4k pair: growth doubles it instead of minting another tiny slab.
+        assert_eq!(slab_grow_caps_from(4096, 8192, 3_000, 6_000), (8192, 16384));
+        // Ladder continues geometrically...
+        assert_eq!(
+            slab_grow_caps_from(262_144, 524_288, 3_000, 6_000),
+            (524_288, 1_048_576)
+        );
+        // ...but never past the hard caps.
+        assert_eq!(
+            slab_grow_caps_from(1 << 20, 1 << 21, 3_000, 6_000),
+            (MAX_SLAB_VERT_CAP, MAX_SLAB_IDX_CAP)
+        );
+        // An oversized one-off mesh still gets a class of its own.
+        let (big_v, _) = slab_grow_caps_from(4096, 8192, 300_000, 600_000);
+        assert_eq!(big_v, 524_288);
+        // A mesh larger than the ceiling still gets a slab that fits it.
+        let (huge_v, _) = slab_grow_caps_from(1 << 20, 1 << 21, 2_000_000, 4_000_000);
+        assert!(huge_v >= 2_000_000);
     }
 
     #[test]

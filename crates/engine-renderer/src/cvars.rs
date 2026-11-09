@@ -11,13 +11,19 @@ deerpunk_engine_common::cvar_def!(
 deerpunk_engine_common::cvar_def!(
     "r_speeds",
     "0",
-    "Render HUD (0=off, 1=GoldSrc speeds block, 2=+CPU encode, 3=+draw counts, 4=+shader diag).",
+    "Render HUD (0=off, 1=GPU+draw stats, 2=+render graph+CPU encode, 3=+extract/cull detail, 4=+shader diag).",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(
     "r_showalloc",
     "0",
     "Nuklear mesh GPU pool bars (0=off, 1=all allocators, N>1=only allocator id N-1).",
+    RENDERINFO
+);
+deerpunk_engine_common::cvar_def!(
+    "r_vram_budget_mb",
+    "1024",
+    "Total video memory assumed for the r_speeds VRAM bar, in MB.",
     RENDERINFO
 );
 deerpunk_engine_common::cvar_def!(

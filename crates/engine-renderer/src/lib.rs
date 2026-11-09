@@ -99,7 +99,8 @@ pub use render_profile::{
     RenderFrameProfile, SceneExtractGpuStats,
 };
 pub use renderer::{
-    FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, HOST_UI_ENABLED,
+    FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, VramUsage,
+    HOST_UI_ENABLED,
 };
 pub use snapshot::{
     cam_features, rgba_u8, rgba_u8_4, CameraDefinition, CameraRenderSnapshot, CullOptions,

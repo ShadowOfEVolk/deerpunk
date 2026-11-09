@@ -126,4 +126,9 @@ impl MaterialAllocator {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Backing SSBO size in bytes (`r_speeds` VRAM accounting).
+    pub fn buffer_bytes(&self) -> u64 {
+        self.gpu_buf.size()
+    }
 }
