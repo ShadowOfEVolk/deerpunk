@@ -32,6 +32,7 @@ const DSP_NUM_BUFFERS: i32 = 4;
 /// Built banks directory relative to gamedir.
 const BANKS_SUBDIR: &str = "sound";
 /// Native FMOD runtime DLLs (loaded from `{gamedir}/cl_dlls`).
+#[cfg(windows)]
 const FMOD_DLLS: [&str; 2] = ["fmod.dll", "fmodstudio.dll"];
 /// Master Studio bus path (volume control).
 const MASTER_BUS: &str = "bus:/";
@@ -212,11 +213,6 @@ impl FmodBackend {
                 steam_audio_bridge::IPL_SPATIALIZE_APPLY_TRANSMISSION,
             )
             || Self::dsp_uses_sim_defined_bool(dsp, IPL_SPATIALIZE_APPLY_REFLECTIONS)
-            || Self::dsp_uses_sim_defined_bool(dsp, IPL_SPATIALIZE_APPLY_PATHING)
-    }
-
-    fn spatializer_uses_indirect(dsp: &Dsp) -> bool {
-        Self::dsp_uses_sim_defined_bool(dsp, IPL_SPATIALIZE_APPLY_REFLECTIONS)
             || Self::dsp_uses_sim_defined_bool(dsp, IPL_SPATIALIZE_APPLY_PATHING)
     }
 

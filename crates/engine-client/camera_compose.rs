@@ -1,7 +1,7 @@
 //! CPU-side camera stack: cull, gather, compose packing.
 
 use deerpunk_engine_renderer::snapshot::{
-    cam_features, CameraRenderSnapshot, RenderScene, RenderSnapshot, SkyDraw,
+    cam_features, CameraRenderSnapshot, RenderScene, RenderSnapshot,
 };
 
 /// Build one surface [`RenderSnapshot`] from a culled [`CameraRenderSnapshot`].
@@ -88,6 +88,7 @@ mod tests {
             lightmap_gpu: 0,
             first_index: 0,
             index_count: 0,
+            face: 0,
             world_bounds: chunk,
             entity_id: 1,
             skip_vis: false,
@@ -108,6 +109,7 @@ mod tests {
             lightmap_gpu: 0,
             first_index: 0,
             index_count: 0,
+            face: 0,
             world_bounds: hand,
             entity_id: 2,
             skip_vis: false,

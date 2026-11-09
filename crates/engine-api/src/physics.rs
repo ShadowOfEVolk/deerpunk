@@ -119,18 +119,18 @@ impl PhysicsApiResolved {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            create_shape_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:create_shape")) },
+            create_shape_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:create_shape")) },
             destroy_shape_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:physics:destroy_shape"))
+                crate::fn_from_erased(resolve(r, "v1:physics:destroy_shape"))
             },
-            create_parts_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:create_parts")) },
+            create_parts_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:create_parts")) },
             destroy_parts_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:physics:destroy_parts"))
+                crate::fn_from_erased(resolve(r, "v1:physics:destroy_parts"))
             },
-            cast_capsule_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:cast_capsule")) },
-            trace_line_fn: unsafe { std::mem::transmute(resolve(r, "v1:physics:trace_line")) },
+            cast_capsule_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:cast_capsule")) },
+            trace_line_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:trace_line")) },
             set_body_linvel_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:physics:set_body_linvel"))
+                crate::fn_from_erased(resolve(r, "v1:physics:set_body_linvel"))
             },
         }
     }

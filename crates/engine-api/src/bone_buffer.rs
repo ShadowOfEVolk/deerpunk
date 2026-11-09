@@ -1,4 +1,3 @@
-use std::ffi::c_void;
 
 use crate::Resolver;
 
@@ -26,10 +25,10 @@ impl BoneBufferApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            alloc_fn: resolve(r, "v1:bone_buffer:alloc").map(|p| unsafe { std::mem::transmute(p) }),
-            free_fn: resolve(r, "v1:bone_buffer:free").map(|p| unsafe { std::mem::transmute(p) }),
+            alloc_fn: resolve(r, "v1:bone_buffer:alloc").map(|p| unsafe { crate::fn_from_erased(p) }),
+            free_fn: resolve(r, "v1:bone_buffer:free").map(|p| unsafe { crate::fn_from_erased(p) }),
             write_fn: resolve(r, "v1:bone_buffer:write")
-                .map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
         }
     }
 

@@ -15,9 +15,9 @@ use serde_json::Value;
 
 pub fn apply_component(
     world: &World,
-    meshes: &mut MeshRegistry,
-    gamedir: &Path,
-    resources: &ResourceManager,
+    _meshes: &mut MeshRegistry,
+    _gamedir: &Path,
+    _resources: &ResourceManager,
     entity: EntityId,
     name: &str,
     value: &Value,

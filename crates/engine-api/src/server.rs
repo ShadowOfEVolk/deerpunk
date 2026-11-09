@@ -13,7 +13,7 @@ impl ServerApi {
         Self {
             ctx,
             sim_time_secs_fn: unsafe {
-                std::mem::transmute(resolve("v1:server:sim_time_secs"))
+                crate::fn_from_erased(resolve("v1:server:sim_time_secs"))
             },
         }
     }

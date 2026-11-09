@@ -35,10 +35,6 @@ impl<'a> MeshDrawListView<'a> {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     pub fn get(&self, i: usize) -> &MeshDraw {
         if let Some(geo) = self.geo {
             let idx = self.indices[i] as usize;
@@ -78,10 +74,6 @@ impl<'a> SkinnedDrawListView<'a> {
         } else {
             self.owned.len()
         }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     pub fn get(&self, i: usize) -> &SkinnedMeshDraw {

@@ -85,106 +85,6 @@ pub fn mat4_mul_vec4(m: &[[f32; 4]; 4], v: [f32; 4]) -> [f32; 4] {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn inverse_recovers_identity() {
-        let m = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ];
-        let inv = mat4_inverse(m);
-        let prod = mat4_mul(&m, &inv);
-        for col in 0..4 {
-            for row in 0..4 {
-                let expected = if col == row { 1.0 } else { 0.0 };
-                assert!(
-                    (prod[col][row] - expected).abs() < 1e-5,
-                    "prod[{col}][{row}] = {}",
-                    prod[col][row]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn inverse_of_scale() {
-        let m = [
-            [2.0, 0.0, 0.0, 0.0],
-            [0.0, 3.0, 0.0, 0.0],
-            [0.0, 0.0, 4.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ];
-        let inv = mat4_inverse(m);
-        let prod = mat4_mul(&m, &inv);
-        for col in 0..4 {
-            for row in 0..4 {
-                let expected = if col == row { 1.0 } else { 0.0 };
-                assert!(
-                    (prod[col][row] - expected).abs() < 1e-5,
-                    "prod[{col}][{row}] = {}",
-                    prod[col][row]
-                );
-            }
-        }
-    }
-
-    /// Ground points in front of the camera must project to clip-space w > 0.
-    #[test]
-    fn view_proj_ground_in_front() {
-        let vp = build_view_proj(64.0, 64.0, 20.0, 0.0, 0.0);
-        // Point 10 m ahead on the ground (yaw=0 → +Y is forward)
-        let p = [64.0, 74.0, 0.0, 1.0];
-        let clip = mat4_mul_vec4(&vp, p);
-        let w = clip[3];
-        assert!(w > 0.0, "w must be positive, got {w}");
-        let ndc_z = clip[2] / w;
-        assert!(
-            ndc_z >= 0.0 && ndc_z <= 1.0,
-            "ground ndc_z must be in [0,1], got {ndc_z}"
-        );
-    }
-
-    #[test]
-    fn mesh_clip_matches_world_view_proj() {
-        let eye = glam::Vec3::new(100.0, 200.0, 50.0);
-        let rot = glam::Quat::from_rotation_z(-0.4);
-        let view = super::view_matrix_z_up_rh(eye, rot);
-        let proj = super::perspective_rh_wgpu(75.0_f32.to_radians(), 16.0 / 9.0, 0.05, 2048.0);
-        let local = glam::Vec3::new(8.0, 4.0, 2.0);
-        let model = glam::Mat4::from_translation(glam::Vec3::new(512.0, 128.0, 0.0));
-        let world = model * glam::Vec4::from((local, 1.0));
-        let clip_world = proj * view * world;
-        let clip_rel = super::view_proj_world_mesh_clip(proj, rot)
-            * glam::Vec4::from(((world.truncate() - eye), 1.0));
-        assert!(
-            (clip_world - clip_rel).length() < 1e-3,
-            "camera-relative clip mismatch"
-        );
-    }
-
-    #[test]
-    fn z_up_view_steep_pitch_projects_valid_depth() {
-        let eye = glam::Vec3::new(100.0, 200.0, 80.0);
-        let rot = glam::Quat::from_rotation_x(-1.55);
-        let view = super::view_matrix_z_up_rh(eye, rot);
-        let proj = super::perspective_rh_wgpu(75.0_f32.to_radians(), 16.0 / 9.0, 0.05, 2048.0);
-        let vp = proj * view;
-        let ground = glam::Vec4::new(100.0, 200.0, 0.0, 1.0);
-        let clip = vp * ground;
-        assert!(clip.w > 0.0, "w must be positive");
-        let ndc_z = clip.z / clip.w;
-        assert!(
-            ndc_z >= 0.0 && ndc_z <= 1.0,
-            "steep pitch ndc_z in [0,1], got {ndc_z}"
-        );
-    }
-}
-
 /// Умножение матрицы4x4 на вектор (column-major).
 /// Алгоритм — cofactor (glm::inverse), column-major `m[col][row]`.
 pub fn mat4_inverse(m: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
@@ -316,4 +216,104 @@ pub fn view_matrix_z_up_rh(eye: glam::Vec3, rotation: glam::Quat) -> glam::Mat4 
         up_ref = glam::Vec3::Y;
     }
     glam::Mat4::look_to_rh(eye, forward, up_ref)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inverse_recovers_identity() {
+        let m = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let inv = mat4_inverse(m);
+        let prod = mat4_mul(&m, &inv);
+        for col in 0..4 {
+            for row in 0..4 {
+                let expected = if col == row { 1.0 } else { 0.0 };
+                assert!(
+                    (prod[col][row] - expected).abs() < 1e-5,
+                    "prod[{col}][{row}] = {}",
+                    prod[col][row]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_of_scale() {
+        let m = [
+            [2.0, 0.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let inv = mat4_inverse(m);
+        let prod = mat4_mul(&m, &inv);
+        for col in 0..4 {
+            for row in 0..4 {
+                let expected = if col == row { 1.0 } else { 0.0 };
+                assert!(
+                    (prod[col][row] - expected).abs() < 1e-5,
+                    "prod[{col}][{row}] = {}",
+                    prod[col][row]
+                );
+            }
+        }
+    }
+
+    /// Ground points in front of the camera must project to clip-space w > 0.
+    #[test]
+    fn view_proj_ground_in_front() {
+        let vp = build_view_proj(64.0, 64.0, 20.0, 0.0, 0.0);
+        // Point 10 m ahead on the ground (yaw=0 → +Y is forward)
+        let p = [64.0, 74.0, 0.0, 1.0];
+        let clip = mat4_mul_vec4(&vp, p);
+        let w = clip[3];
+        assert!(w > 0.0, "w must be positive, got {w}");
+        let ndc_z = clip[2] / w;
+        assert!(
+            (0.0..=1.0).contains(&ndc_z),
+            "ground ndc_z must be in [0,1], got {ndc_z}"
+        );
+    }
+
+    #[test]
+    fn mesh_clip_matches_world_view_proj() {
+        let eye = glam::Vec3::new(100.0, 200.0, 50.0);
+        let rot = glam::Quat::from_rotation_z(-0.4);
+        let view = super::view_matrix_z_up_rh(eye, rot);
+        let proj = super::perspective_rh_wgpu(75.0_f32.to_radians(), 16.0 / 9.0, 0.05, 2048.0);
+        let local = glam::Vec3::new(8.0, 4.0, 2.0);
+        let model = glam::Mat4::from_translation(glam::Vec3::new(512.0, 128.0, 0.0));
+        let world = model * glam::Vec4::from((local, 1.0));
+        let clip_world = proj * view * world;
+        let clip_rel = super::view_proj_world_mesh_clip(proj, rot)
+            * glam::Vec4::from(((world.truncate() - eye), 1.0));
+        assert!(
+            (clip_world - clip_rel).length() < 1e-3,
+            "camera-relative clip mismatch"
+        );
+    }
+
+    #[test]
+    fn z_up_view_steep_pitch_projects_valid_depth() {
+        let eye = glam::Vec3::new(100.0, 200.0, 80.0);
+        let rot = glam::Quat::from_rotation_x(-1.55);
+        let view = super::view_matrix_z_up_rh(eye, rot);
+        let proj = super::perspective_rh_wgpu(75.0_f32.to_radians(), 16.0 / 9.0, 0.05, 2048.0);
+        let vp = proj * view;
+        let ground = glam::Vec4::new(100.0, 200.0, 0.0, 1.0);
+        let clip = vp * ground;
+        assert!(clip.w > 0.0, "w must be positive");
+        let ndc_z = clip.z / clip.w;
+        assert!(
+            (0.0..=1.0).contains(&ndc_z),
+            "steep pitch ndc_z in [0,1], got {ndc_z}"
+        );
+    }
 }

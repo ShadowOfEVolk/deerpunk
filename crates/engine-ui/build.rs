@@ -19,9 +19,18 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let rmlui_sys_dir = abs(&manifest_dir.join("../../3rdparty/rmlui-sys"));
 
-    println!("cargo:rerun-if-changed={}", rmlui_sys_dir.join("api.h").display());
-    println!("cargo:rerun-if-changed={}", rmlui_sys_dir.join("api.cpp").display());
-    println!("cargo:rerun-if-changed={}", rmlui_sys_dir.join("rust_bridge.cpp").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        rmlui_sys_dir.join("api.h").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        rmlui_sys_dir.join("api.cpp").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        rmlui_sys_dir.join("rust_bridge.cpp").display()
+    );
 
     let deps = env::var("DEERPUNK_3RDPARTY")
         .map(PathBuf::from)
@@ -56,13 +65,32 @@ fn main() {
         build_dir.clone(),
         dst.join("lib"),
         dst.clone(),
-        build_dir.join("RmlUi").join("Source").join("Core").join("Debug"),
-        build_dir.join("RmlUi").join("Source").join("Core").join("Release"),
+        build_dir
+            .join("RmlUi")
+            .join("Source")
+            .join("Core")
+            .join("Debug"),
+        build_dir
+            .join("RmlUi")
+            .join("Source")
+            .join("Core")
+            .join("Release"),
         build_dir.join("RmlUi").join("Source").join("Core"),
-        build_dir.join("RmlUi").join("Source").join("Lua").join("Debug"),
-        build_dir.join("RmlUi").join("Source").join("Lua").join("Release"),
+        build_dir
+            .join("RmlUi")
+            .join("Source")
+            .join("Lua")
+            .join("Debug"),
+        build_dir
+            .join("RmlUi")
+            .join("Source")
+            .join("Lua")
+            .join("Release"),
         build_dir.join("_deps").join("freetype-build").join("Debug"),
-        build_dir.join("_deps").join("freetype-build").join("Release"),
+        build_dir
+            .join("_deps")
+            .join("freetype-build")
+            .join("Release"),
         build_dir.join("freetype"),
         build_dir.join("freetype").join("Debug"),
         build_dir.join("freetype").join("Release"),

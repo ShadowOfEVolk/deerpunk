@@ -245,7 +245,7 @@ impl VertexLayoutSpec {
 
 fn align_stride(end: u32) -> u32 {
     let mut stride = end;
-    if stride % 4 != 0 {
+    if !stride.is_multiple_of(4) {
         stride += 4 - (stride % 4);
     }
     stride

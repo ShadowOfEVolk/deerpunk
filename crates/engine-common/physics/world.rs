@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use glam::Quat;
 use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
 
@@ -327,7 +326,7 @@ impl PhysicsWorld {
                     }
                 }
                 let array = rapier3d::geometry::Array2::new(*rows, *cols, cm);
-                SharedShape::heightfield(array, Vec3::new(scale[0], scale[1], scale[2]).into())
+                SharedShape::heightfield(array, Vec3::new(scale[0], scale[1], scale[2]))
             }
         };
 
@@ -350,6 +349,12 @@ impl PhysicsWorld {
         }
 
         builder
+    }
+}
+
+impl Default for PhysicsWorld {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

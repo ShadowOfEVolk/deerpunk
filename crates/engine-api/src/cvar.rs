@@ -25,8 +25,8 @@ impl CvarApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            get_f32_fn: unsafe { std::mem::transmute(resolve(r, "v1:cvar:get_f32")) },
-            set_fn: unsafe { std::mem::transmute(resolve(r, "v1:cvar:set")) },
+            get_f32_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:cvar:get_f32")) },
+            set_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:cvar:set")) },
         }
     }
 

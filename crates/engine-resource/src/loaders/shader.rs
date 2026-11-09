@@ -1,6 +1,6 @@
 //! `shader://` and `file://…/*.wgsl` → [`ShaderSource`] (raw WGSL text).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::loader::{LoadedAsset, Loader};
 use crate::resolve_content_path;

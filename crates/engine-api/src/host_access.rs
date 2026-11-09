@@ -38,28 +38,28 @@ impl HostAccessApi {
         Self {
             ctx,
             flush_albedos_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:flush_pending_albedos"))
+                crate::fn_from_erased(resolve(r, "v1:host:flush_pending_albedos"))
             },
             client_track_static_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:client_track_static"))
+                crate::fn_from_erased(resolve(r, "v1:host:client_track_static"))
             },
             refresh_stream_meshes_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:refresh_stream_meshes"))
+                crate::fn_from_erased(resolve(r, "v1:host:refresh_stream_meshes"))
             },
             client_apply_mesh_uri_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:client_apply_mesh_uri"))
+                crate::fn_from_erased(resolve(r, "v1:host:client_apply_mesh_uri"))
             },
             register_main_console_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:register_main_console"))
+                crate::fn_from_erased(resolve(r, "v1:host:register_main_console"))
             },
             start_listen_map_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:start_listen_map"))
+                crate::fn_from_erased(resolve(r, "v1:host:start_listen_map"))
             },
             loader_queue_set_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:loader_queue_set"))
+                crate::fn_from_erased(resolve(r, "v1:host:loader_queue_set"))
             },
             loader_queue_clear_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:host:loader_queue_clear"))
+                crate::fn_from_erased(resolve(r, "v1:host:loader_queue_clear"))
             },
         }
     }

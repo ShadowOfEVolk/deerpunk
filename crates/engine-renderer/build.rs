@@ -17,7 +17,7 @@ fn embed_proggy_clean_inc(ttf_path: &Path, out_path: &Path) {
             s.push('\n');
         }
     }
-    if bytes.len() % 16 != 0 {
+    if !bytes.len().is_multiple_of(16) {
         s.push('\n');
     }
     let _ = write!(

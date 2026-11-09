@@ -41,7 +41,6 @@ unsafe extern "C" {
     fn host_ui_key(ui: *mut HostUiOpaque, key: i32, down: i32);
     fn host_ui_unicode(ui: *mut HostUiOpaque, code: u32);
     fn host_ui_input_end(ui: *mut HostUiOpaque);
-    fn host_ui_key_down(ui: *mut HostUiOpaque, key: i32) -> i32;
     fn host_ui_key_pressed(ui: *mut HostUiOpaque, key: i32) -> i32;
     fn host_ui_begin(
         ui: *mut HostUiOpaque,
@@ -154,9 +153,6 @@ impl Default for UiFrameInput {
 pub struct HostUi {
     ui: *mut HostUiOpaque,
     pipeline: wgpu::RenderPipeline,
-    bgl: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    font_view: wgpu::TextureView,
     font_bg: wgpu::BindGroup,
     vb: wgpu::Buffer,
     ib: wgpu::Buffer,
@@ -356,9 +352,6 @@ impl HostUi {
         Self {
             ui,
             pipeline,
-            bgl,
-            sampler,
-            font_view,
             font_bg,
             vb,
             ib,

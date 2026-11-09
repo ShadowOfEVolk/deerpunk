@@ -10,7 +10,7 @@ use crate::world::{EntityId, World};
 use json_comments::StripComments;
 use serde_json::Value;
 
-use super::apply::{apply_component, apply_prefab_component_value};
+use super::apply::apply_prefab_component_value;
 use super::format::PrefabFile;
 use super::map_spawn::{apply_map_spawn_tail, MapSpawnOpts};
 use super::prefab_manager::PrefabManager;
@@ -193,7 +193,7 @@ pub fn spawn_prefab_filtered_with_component_overrides_cached(
     let entity = world.spawn();
     for (comp_name, value) in &prefab.components {
         if let Some(allow) = allow {
-            if !allow.iter().any(|a| *a == comp_name.as_str()) {
+            if !allow.contains(&comp_name.as_str()) {
                 continue;
             }
         }
@@ -275,7 +275,7 @@ pub fn spawn_prefab_filtered_with_overrides_cached(
     let entity = world.spawn();
     for (comp_name, value) in &prefab.components {
         if let Some(allow) = allow {
-            if !allow.iter().any(|a| *a == comp_name.as_str()) {
+            if !allow.contains(&comp_name.as_str()) {
                 continue;
             }
         }

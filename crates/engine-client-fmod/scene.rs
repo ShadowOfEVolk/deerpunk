@@ -95,7 +95,7 @@ pub fn build_scene_from_mesh(
     let mut materials: Vec<Material> = Vec::new();
 
     let nverts = vertices.len() as i32;
-    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+    for tri in mesh.indices.as_chunks::<3>().0 {
         let (a, b, c) = (tri[0] as i32, tri[1] as i32, tri[2] as i32);
         // Skip degenerate / OOB — phonon BVH heap-corrupts on bad tris.
         if a == b

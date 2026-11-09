@@ -27,9 +27,9 @@ impl ScheduleApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            add_system_fn: unsafe { std::mem::transmute(resolve(r, "v1:schedule:add_system")) },
-            clear_fn: unsafe { std::mem::transmute(resolve(r, "v1:schedule:clear")) },
-            run_fn: unsafe { std::mem::transmute(resolve(r, "v1:schedule:run")) },
+            add_system_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:schedule:add_system")) },
+            clear_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:schedule:clear")) },
+            run_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:schedule:run")) },
         }
     }
 

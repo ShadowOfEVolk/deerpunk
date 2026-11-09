@@ -84,8 +84,8 @@ fn write_field(base: *const std::ffi::c_void, field: &FieldMeta, value: &Value) 
             if arr.len() < 3 {
                 return Err("vec3 len".into());
             }
-            for i in 0..3 {
-                let n = arr[i].as_f64().ok_or("vec3 elem")? as f32;
+            for (i, elem) in arr.iter().take(3).enumerate() {
+                let n = elem.as_f64().ok_or("vec3 elem")? as f32;
                 unsafe { *(p.add(i * 4) as *mut f32) = n };
             }
         }
@@ -94,8 +94,8 @@ fn write_field(base: *const std::ffi::c_void, field: &FieldMeta, value: &Value) 
             if arr.len() < 4 {
                 return Err("quat len".into());
             }
-            for i in 0..4 {
-                let n = arr[i].as_f64().ok_or("quat elem")? as f32;
+            for (i, elem) in arr.iter().take(4).enumerate() {
+                let n = elem.as_f64().ok_or("quat elem")? as f32;
                 unsafe { *(p.add(i * 4) as *mut f32) = n };
             }
         }

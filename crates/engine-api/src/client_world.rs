@@ -49,28 +49,28 @@ impl ClientWorldApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            get_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:get")) },
-            set_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:set")) },
-            has_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:has")) },
-            spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:spawn")) },
-            destroy_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:destroy")) },
-            remove_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:remove")) },
-            is_alive_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:is_alive")) },
+            get_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:get")) },
+            set_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:set")) },
+            has_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:has")) },
+            spawn_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:spawn")) },
+            destroy_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:destroy")) },
+            remove_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:remove")) },
+            is_alive_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:is_alive")) },
             component_register_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client_world:component_register"))
+                crate::fn_from_erased(resolve(r, "v1:client_world:component_register"))
             },
-            query_fn: unsafe { std::mem::transmute(resolve(r, "v1:client_world:query")) },
+            query_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:query")) },
             register_observer_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client_world:register_observer"))
+                crate::fn_from_erased(resolve(r, "v1:client_world:register_observer"))
             },
             system_register_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client_world:system_register"))
+                crate::fn_from_erased(resolve(r, "v1:client_world:system_register"))
             },
             system_set_interval_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client_world:system_set_interval"))
+                crate::fn_from_erased(resolve(r, "v1:client_world:system_set_interval"))
             },
             system_set_stage_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client_world:system_set_stage"))
+                crate::fn_from_erased(resolve(r, "v1:client_world:system_set_stage"))
             },
         }
     }
@@ -121,7 +121,7 @@ impl ClientWorldApi {
         if on_set {
             flags |= 2;
         }
-        let cb_ptr: u64 = unsafe { std::mem::transmute(callback) };
+        let cb_ptr: u64 = callback as u64;
         (self.register_observer_fn)(
             self.ctx,
             query.as_ptr() as *mut u8,

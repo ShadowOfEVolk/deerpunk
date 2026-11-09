@@ -1,5 +1,4 @@
 use deerpunk_engine_common::MeshTexture;
-use std::collections::HashMap;
 
 /// Material GPU data array — SSBO backing storage.
 const INITIAL_CAP: usize = 64;
@@ -25,7 +24,6 @@ pub const MATERIAL_WHITE_ID: u32 = 0;
 pub struct MaterialAllocator {
     entries: Vec<MaterialGpuEntry>,
     gpu_buf: wgpu::Buffer,
-    cache: HashMap<u64, u32>,
     dirty: bool,
     pub generation: u64,
 }
@@ -43,7 +41,6 @@ impl MaterialAllocator {
         let mut allocator = Self {
             entries: Vec::with_capacity(INITIAL_CAP),
             gpu_buf,
-            cache: HashMap::new(),
             dirty: false,
             generation: 0,
         };
@@ -99,7 +96,7 @@ impl MaterialAllocator {
                 mapped_at_creation: false,
             });
             // Copy old data.
-            let old_size = self.entries.len() * std::mem::size_of::<MaterialGpuEntry>();
+            let _old_size = self.entries.len() * std::mem::size_of::<MaterialGpuEntry>();
             queue.write_buffer(&new_buf, 0, bytemuck::cast_slice(&self.entries));
             self.gpu_buf = new_buf;
             self.generation += 1;

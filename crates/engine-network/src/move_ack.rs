@@ -40,9 +40,7 @@ impl UserCmdAckRpc {
     }
 
     pub fn decode_packet(packet: &[u8]) -> Option<Self> {
-        let Some((&cmd, payload)) = packet.split_first() else {
-            return None;
-        };
+        let (&cmd, payload) = packet.split_first()?;
         if cmd != SVC::UserCmdAck as u8 {
             return None;
         }

@@ -27,13 +27,13 @@ unsafe impl Sync for ProfileApi {}
 impl ProfileApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         let zone_begin = try_resolve(r, "v1:profile:zone_begin").map(|p| unsafe {
-            std::mem::transmute(p)
+            crate::fn_from_erased(p)
         });
         let zone_end = try_resolve(r, "v1:profile:zone_end").map(|p| unsafe {
-            std::mem::transmute(p)
+            crate::fn_from_erased(p)
         });
         let frame_mark = try_resolve(r, "v1:profile:frame_mark").map(|p| unsafe {
-            std::mem::transmute(p)
+            crate::fn_from_erased(p)
         });
         Self {
             ctx,

@@ -14,6 +14,7 @@
 #include <memory>
 
 static std::unique_ptr<Rml::RenderInterface> g_renderer;
+static RustRenderProxy* g_proxy = nullptr;
 static const rmlui_callbacks_t* g_callbacks = nullptr;
 static std::unique_ptr<Rml::SystemInterface> g_system;
 static std::unique_ptr<Rml::FileInterface> g_file;
@@ -145,16 +146,17 @@ int rmlui_init(int viewport_w, int viewport_h, const rmlui_callbacks_t* callback
 
     g_system = std::make_unique<RustSystemProxy>(callbacks);
     g_file = std::make_unique<RustFileProxy>();
-    g_renderer = std::make_unique<RustRenderProxy>(render_api, callbacks);
-
-    if (auto* proxy = dynamic_cast<RustRenderProxy*>(g_renderer.get()))
-        proxy->SetViewport(viewport_w, viewport_h);
+    auto proxy = std::make_unique<RustRenderProxy>(render_api, callbacks);
+    g_proxy = proxy.get();
+    g_proxy->SetViewport(viewport_w, viewport_h);
+    g_renderer = std::move(proxy);
 
     Rml::SetRenderInterface(g_renderer.get());
     Rml::SetSystemInterface(g_system.get());
     Rml::SetFileInterface(g_file.get());
 
     if (!Rml::Initialise()) {
+        g_proxy = nullptr;
         g_renderer.reset();
         g_system.reset();
         g_file.reset();
@@ -172,6 +174,7 @@ void rmlui_shutdown(void)
     }
     g_callbacks = nullptr;
     Rml::Shutdown();
+    g_proxy = nullptr;
     g_renderer.reset();
     g_system.reset();
     g_file.reset();
@@ -181,10 +184,8 @@ void rmlui_set_viewport(int w, int h)
 {
     g_viewport_w = w;
     g_viewport_h = h;
-    if (g_renderer) {
-        if (auto* proxy = dynamic_cast<RustRenderProxy*>(g_renderer.get()))
-            proxy->SetViewport(w, h);
-    }
+    if (g_proxy)
+        g_proxy->SetViewport(w, h);
 }
 
 rmlui_handle_t rmlui_context_create(const char* name)
@@ -412,17 +413,24 @@ int rmlui_context_update(rmlui_handle_t ctx)
     if (!ctx) {
         return 0;
     }
-    return ((Rml::Context*)ctx)->Update() ? 1 : 0;
+    ((Rml::Context*)ctx)->Update();
+    return 1;
+}
+
+double rmlui_context_next_update_delay(rmlui_handle_t ctx)
+{
+    if (!ctx) {
+        return 0.0;
+    }
+    return ((Rml::Context*)ctx)->GetNextUpdateDelay();
 }
 
 void rmlui_context_render(rmlui_handle_t ctx)
 {
-    if (!ctx || !g_renderer) return;
-    if (auto* proxy = dynamic_cast<RustRenderProxy*>(g_renderer.get()))
-        proxy->BeginFrame();
+    if (!ctx || !g_proxy) return;
+    g_proxy->BeginFrame();
     ((Rml::Context*)ctx)->Render();
-    if (auto* proxy = dynamic_cast<RustRenderProxy*>(g_renderer.get()))
-        proxy->EndFrame();
+    g_proxy->EndFrame();
 }
 
 void rmlui_context_set_dimensions(rmlui_handle_t ctx, int w, int h)

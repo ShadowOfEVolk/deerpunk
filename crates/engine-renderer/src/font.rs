@@ -1,6 +1,6 @@
 /// Битмап-шрифт 6×8, ASCII 32..=126. Каждый символ — байт на строку, левый бит = MSB.
 /// Глифы рисуются на GPU как квады из font-atlas (белые, tint-ятся цветом текста).
-use crate::snapshot::{Instance, RenderSnapshot, TexSel};
+use crate::snapshot::{Instance, RenderSnapshot};
 
 pub const GLYPH_W: f32 = 8.0;
 pub const GLYPH_H: f32 = 8.0;
@@ -14,7 +14,7 @@ pub const ATLAS_W: u32 = 760;
 pub const ATLAS_H: u32 = 8;
 
 pub fn glyph_index(byte: u8) -> Option<usize> {
-    if byte < FIRST_CHAR || byte > b'~' {
+    if !(FIRST_CHAR..=b'~').contains(&byte) {
         return None;
     }
     Some((byte - FIRST_CHAR) as usize)
@@ -116,7 +116,7 @@ pub fn build_font_atlas() -> Vec<u8> {
                     continue;
                 }
                 let px = (idx as u32 * 8 + col as u32) as usize;
-                let offset = (row as usize * ATLAS_W as usize + px) * 4;
+                let offset = (row * ATLAS_W as usize + px) * 4;
                 data[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
             }
         }

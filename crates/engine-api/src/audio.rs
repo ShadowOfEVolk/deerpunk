@@ -25,14 +25,14 @@ impl AudioApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            play_2d_fn: unsafe { std::mem::transmute(resolve(r, "v1:audio:play_2d")) },
-            play_3d_fn: unsafe { std::mem::transmute(resolve(r, "v1:audio:play_3d")) },
+            play_2d_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:audio:play_2d")) },
+            play_3d_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:audio:play_3d")) },
             start_attached_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:audio:start_attached"))
+                crate::fn_from_erased(resolve(r, "v1:audio:start_attached"))
             },
-            stop_sound_fn: unsafe { std::mem::transmute(resolve(r, "v1:audio:stop_sound")) },
+            stop_sound_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:audio:stop_sound")) },
             set_world_mesh_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:audio:set_world_mesh"))
+                crate::fn_from_erased(resolve(r, "v1:audio:set_world_mesh"))
             },
         }
     }

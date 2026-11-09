@@ -11,8 +11,6 @@ deerpunk_engine_common::cvar_def!(
      Smaller = tighter collision (voxel 1-unit scale), larger = air cushion (HL scale)."
 );
 
-use std::collections::HashSet;
-
 use deerpunk_engine_common::network::SlotPlayGate;
 use deerpunk_engine_common::physics::{NullPhysics, PhysicsBackend, RapierPhysicsBackend};
 use deerpunk_engine_common::world::World;
@@ -39,7 +37,6 @@ pub struct ServerEngine {
     pub physics: Box<dyn PhysicsBackend>,
     pub(crate) initialized: bool,
     pub enabled: bool,
-    terrain_bodies: HashSet<u64>,
     pub players: PlayerConnections,
     pub dll: Option<ServerDll>,
     pub rep: ServerPrefabReplication,
@@ -65,7 +62,6 @@ impl ServerEngine {
             physics: Box::new(NullPhysics),
             initialized: false,
             enabled: false,
-            terrain_bodies: HashSet::new(),
             players: PlayerConnections::default(),
             dll: None,
             rep: ServerPrefabReplication::new(),

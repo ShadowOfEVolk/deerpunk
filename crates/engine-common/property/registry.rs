@@ -235,6 +235,12 @@ impl PropertyRegistry {
     }
 }
 
+impl Default for PropertyRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn canonical_property_path(path: &str) -> String {
     let path = path.trim();
     match path {

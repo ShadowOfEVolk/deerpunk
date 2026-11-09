@@ -32,3 +32,9 @@ impl MeshRenderer {
         }
     }
 }
+
+impl Default for MeshRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

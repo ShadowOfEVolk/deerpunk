@@ -2227,17 +2227,3 @@ impl Default for Host {
     }
 }
 
-/// Resolve a BSP path relative to gamedir.
-/// Accepts bare map name (`oldlifehome`), `maps/foo.bsp`, or absolute path.
-fn resolve_bsp_path(gamedir: &std::path::Path, path: &str) -> std::path::PathBuf {
-    let path = path.trim();
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return p.to_path_buf();
-    }
-    if path.contains('/') || path.contains('\\') || path.to_ascii_lowercase().ends_with(".bsp") {
-        return gamedir.join(path);
-    }
-    let name = path.trim_end_matches(".bsp");
-    gamedir.join("maps").join(format!("{name}.bsp"))
-}

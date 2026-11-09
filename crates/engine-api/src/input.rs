@@ -45,14 +45,14 @@ impl InputApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            is_key_down_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:is_key_down")) },
-            mouse_dx_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:mouse_dx")) },
-            mouse_dy_fn: unsafe { std::mem::transmute(resolve(r, "v1:input:mouse_dy")) },
+            is_key_down_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:input:is_key_down")) },
+            mouse_dx_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:input:mouse_dx")) },
+            mouse_dy_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:input:mouse_dy")) },
             take_mouse_wheel_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:input:take_mouse_wheel"))
+                crate::fn_from_erased(resolve(r, "v1:input:take_mouse_wheel"))
             },
             set_relative_mouse_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:input:set_relative_mouse"))
+                crate::fn_from_erased(resolve(r, "v1:input:set_relative_mouse"))
             },
         }
     }

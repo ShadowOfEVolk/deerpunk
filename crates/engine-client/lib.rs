@@ -17,8 +17,6 @@ pub mod common {
     pub use deerpunk_engine_common::*;
 }
 
-// pub use network::netchan::{IncomingMessage, NetChan};
-// pub use network::replication::{client_replication, ClientReplication};
 pub use camera::{
     tank_in_camera_view, Camera, CameraMode, FreecamController, CAMERA_SMOOTH_SPEED,
     FOLLOW_VIEW_SIZE,

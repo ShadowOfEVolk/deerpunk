@@ -1,7 +1,5 @@
 use tiny_skia::Color;
 
-use deerpunk_engine_common::frame::{frame_height, frame_width};
-
 use crate::font::{push_char, push_text, push_text_centered_shadow, text_width_f32};
 use crate::snapshot::{rgba_u8_4, RenderSnapshot};
 
@@ -9,12 +7,7 @@ const GLYPH_SCALE: f32 = 2.0;
 const SHADOW_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 200.0 / 255.0];
 
 pub fn color_f32(c: Color) -> [f32; 4] {
-    [
-        c.red() as f32,
-        c.green() as f32,
-        c.blue() as f32,
-        c.alpha() as f32,
-    ]
+    [c.red(), c.green(), c.blue(), c.alpha()]
 }
 
 pub fn push_text_centered_parts(
@@ -69,7 +62,7 @@ pub fn push_rect(snap: &mut RenderSnapshot, x: f32, y: f32, w: f32, h: f32, colo
 #[allow(dead_code)]
 pub(crate) fn debug_push_text(snap: &mut RenderSnapshot, x: f32, y: f32, text: &str) {
     for (i, byte) in text.bytes().enumerate() {
-        let color = if (i as u32 % 2) == 0 {
+        let color = if (i as u32).is_multiple_of(2) {
             rgba_u8_4([255, 255, 255, 255])
         } else {
             rgba_u8_4([200, 200, 200, 255])

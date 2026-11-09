@@ -10,15 +10,12 @@ pub(crate) struct Hdr {
     pub(crate) texture: Option<wgpu::Texture>,
     pub(crate) view: Option<wgpu::TextureView>,
     pub(crate) tonemap_bg_layout: wgpu::BindGroupLayout,
-    pub(crate) tonemap_bg: Option<wgpu::BindGroup>,
     pub(crate) tonemap_pipeline: Option<wgpu::RenderPipeline>,
     pub(crate) tonemap_pipeline_format: Option<wgpu::TextureFormat>,
     pub(crate) tonemap_uniform_buf: wgpu::Buffer,
     pub(crate) exposure_override: Option<f32>,
-    pub(crate) lum_bg_layout: wgpu::BindGroupLayout,
     pub(crate) lum_texture: Option<wgpu::Texture>,
     pub(crate) lum_view: Option<wgpu::TextureView>,
-    pub(crate) lum_pipeline: Option<wgpu::RenderPipeline>,
     pub(crate) lum_staging_buf: wgpu::Buffer,
     pub(crate) lum_readback_rx:
         Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
@@ -70,19 +67,6 @@ impl Hdr {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let lum_bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("luminance bg layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
         let lum_staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("lum_staging"),
             size: (64 * 64 * 4) as u64,
@@ -94,15 +78,12 @@ impl Hdr {
             texture: None,
             view: None,
             tonemap_bg_layout,
-            tonemap_bg: None,
             tonemap_pipeline: None,
             tonemap_pipeline_format: None,
             tonemap_uniform_buf,
             exposure_override: None,
-            lum_bg_layout,
             lum_texture: None,
             lum_view: None,
-            lum_pipeline: None,
             lum_staging_buf,
             lum_readback_rx: None,
             lum_readback_pending: false,
@@ -224,64 +205,6 @@ impl super::Renderer {
         self.hdr.tonemap_pipeline_format = Some(surface_format);
     }
 
-    pub(in crate::renderer) fn ensure_lum_pipeline(&mut self) {
-        if self.hdr.lum_pipeline.is_some() {
-            return;
-        }
-        let shader = self
-            .gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("luminance shader"),
-                source: wgpu::ShaderSource::Wgsl(self.shaders.luminance.clone().into()),
-            });
-        let layout = self
-            .gpu
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("luminance pipeline layout"),
-                bind_group_layouts: &[Some(&self.hdr.lum_bg_layout)],
-                immediate_size: 0,
-            });
-        let pipeline = self
-            .gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("luminance pipeline"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_fullscreen"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R32Float,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-        self.hdr.lum_pipeline = Some(pipeline);
-    }
-
     pub fn auto_exposure_stats(&self) -> (f32, f32, f32) {
         (
             self.hdr.exposure,
@@ -299,10 +222,6 @@ impl super::Renderer {
 
     pub fn set_tonemap_mode(&mut self, mode: f32) {
         self.hdr.tonemap_mode = mode;
-    }
-
-    pub(in crate::renderer) fn auto_exposure_enabled(&self) -> bool {
-        self.hdr.exposure_override.is_none()
     }
 
     /// Luminance readback is not part of the runtime frame.

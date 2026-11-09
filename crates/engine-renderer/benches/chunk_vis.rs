@@ -52,7 +52,11 @@ fn cube_in_planes(planes: &[Vec4; 6], origin: Vec3) -> bool {
     true
 }
 
-fn scan_corners(origins: &[[f32; 3]], view_proj: Mat4, check: fn([f32; 3], [f32; 3], Mat4) -> bool) -> u64 {
+fn scan_corners(
+    origins: &[[f32; 3]],
+    view_proj: Mat4,
+    check: fn([f32; 3], [f32; 3], Mat4) -> bool,
+) -> u64 {
     let mut sink = Sink { n: 0, mix: 0 };
     for (i, origin) in origins.iter().enumerate() {
         let max = [origin[0] + CHUNK, origin[1] + CHUNK, origin[2] + CHUNK];

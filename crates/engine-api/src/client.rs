@@ -73,15 +73,15 @@ impl ClientApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            view_ray_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:view_ray")) },
-            scene_time_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:scene_time")) },
-            debug_aabb_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:debug_aabb")) },
-            submit_mesh_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:submit_mesh")) },
+            view_ray_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client:view_ray")) },
+            scene_time_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client:scene_time")) },
+            debug_aabb_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client:debug_aabb")) },
+            submit_mesh_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client:submit_mesh")) },
             submit_mesh_ranges_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client:submit_mesh_ranges"))
+                crate::fn_from_erased(resolve(r, "v1:client:submit_mesh_ranges"))
             },
-            submit_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:submit")) },
-            vis_planes_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:vis_planes")) },
+            submit_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client:submit")) },
+            vis_planes_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client:vis_planes")) },
         }
     }
 

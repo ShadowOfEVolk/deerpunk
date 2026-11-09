@@ -40,7 +40,7 @@ impl NetChan {
 
     /// Set packet loss percentage (0.0 to 1.0)
     pub fn set_packet_loss(&mut self, loss_percent: f32) {
-        self.packet_loss_percent = loss_percent.max(0.0).min(1.0);
+        self.packet_loss_percent = loss_percent.clamp(0.0, 1.0);
     }
 
     /// Send a message to client (with latency and jitter)

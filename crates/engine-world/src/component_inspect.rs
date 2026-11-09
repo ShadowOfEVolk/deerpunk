@@ -35,6 +35,12 @@ pub struct ComponentInspectRegistry {
     by_name: Mutex<HashMap<String, ComponentInspectMeta>>,
 }
 
+impl Default for ComponentInspectRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ComponentInspectRegistry {
     pub fn new() -> Self {
         Self {

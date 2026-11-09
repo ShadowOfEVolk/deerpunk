@@ -29,10 +29,8 @@ pub fn mesh3d_uri_of(world: &World, entity: EntityId) -> Option<String> {
 pub fn set_mesh3d_uri(world: &World, entity: EntityId, uri: &str) {
     let mesh_id = world.component_init::<Mesh3D>();
     let mut m = world.get::<Mesh3D>(entity, mesh_id).unwrap_or_default();
-    if m.uri_str() != uri {
-        if m.mesh.is_valid() {
-            m.mesh = MeshHandle::INVALID;
-        }
+    if m.uri_str() != uri && m.mesh.is_valid() {
+        m.mesh = MeshHandle::INVALID;
     }
     m.set_uri(uri);
     world.set(entity, mesh_id, m);
@@ -42,7 +40,7 @@ pub fn set_mesh3d_uri(world: &World, entity: EntityId, uri: &str) {
 pub fn resolve_mesh3d_uri(
     world: &World,
     meshes: &mut MeshRegistry,
-    gamedir: &Path,
+    _gamedir: &Path,
     resources: &ResourceManager,
     entity: EntityId,
 ) -> Result<(), String> {
@@ -63,7 +61,7 @@ pub fn resolve_mesh3d_uri(
 pub fn apply_mesh3d_uri(
     world: &World,
     meshes: &mut MeshRegistry,
-    gamedir: &Path,
+    _gamedir: &Path,
     resources: &ResourceManager,
     entity: EntityId,
     uri: &str,

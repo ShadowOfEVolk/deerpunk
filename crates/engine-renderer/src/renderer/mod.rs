@@ -9,25 +9,23 @@
 //! - умеет два выхода: surface окна и offscreen + readback RGBA (headless).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
 use deerpunk_engine_common::frame::{frame_height, frame_width};
-use deerpunk_engine_common::material::{ShaderId, VertexLayoutSpec};
+use deerpunk_engine_common::material::ShaderId;
 
 use crate::shader_registry::ShaderRegistry;
 use tiny_skia::Pixmap;
 use wgpu::util::DeviceExt;
 
-use crate::asset_inventory::{AssetEntry, AssetKind, ASSET_ID_MATERIAL, ASSET_ID_MESH};
-use crate::bone_gpu::{GpuBoneBlock, GPU_BONE_BLOCK_SIZE};
+use crate::asset_inventory::{AssetEntry, AssetKind, ASSET_ID_MATERIAL};
+use crate::bone_gpu::GPU_BONE_BLOCK_SIZE;
 use crate::font::{build_font_atlas, ATLAS_H, ATLAS_W};
 use crate::frame::context::FrameCtx;
-use crate::mesh_allocator::{MESH_INDEX_SIZE, SKINNED_MESH_VERTEX_SIZE};
-use crate::mesh_vertex_pack::{self, pack_mesh_vertices};
-use crate::render_profile::{self, FrameDrawAccum, FrameSpeedsHud, RenderFrameProfile};
-use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
+use crate::mesh_allocator::SKINNED_MESH_VERTEX_SIZE;
+use crate::render_profile::{FrameDrawAccum, FrameSpeedsHud, RenderFrameProfile};
+use crate::snapshot::{Instance, RenderSnapshot, Shape, TexSel};
 
 mod features;
 
@@ -337,7 +335,6 @@ const _: () = assert!(std::mem::size_of::<GpuPointLight>() == 32);
 
 #[derive(Clone, Copy)]
 pub(crate) struct SpriteSlot {
-    cell: usize,
     uv: [f32; 4],
 }
 
@@ -416,7 +413,6 @@ pub struct Renderer {
 
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     pipeline_layout: wgpu::PipelineLayout,
-    globals_bg_layout: wgpu::BindGroupLayout,
     tex_bg_layout: wgpu::BindGroupLayout,
 
     mesh_globals_bg_layout: wgpu::BindGroupLayout,
@@ -440,14 +436,8 @@ pub struct Renderer {
     /// `r_fullbright` — mesh lighting forced off in the shader.
     fullbright: bool,
     wireframe: bool,
-    lights_bg_layout: wgpu::BindGroupLayout,
     lights_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
     lights_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING],
-
-    // Terrain splat pipeline
-    terrain_splat_bg_layout: wgpu::BindGroupLayout,
-    terrain_splat_pipeline_layout: wgpu::PipelineLayout,
-    terrain_splat_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
 
     sky: features::sky::Sky,
 
@@ -460,7 +450,6 @@ pub struct Renderer {
     debug_pipeline_occluded: Option<wgpu::RenderPipeline>,
     debug_vertex_buf: wgpu::Buffer,
 
-    sampler: wgpu::Sampler,
     globals_buf: wgpu::Buffer,
     instance_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
@@ -512,8 +501,6 @@ pub struct Renderer {
     mesh_uniform_scratch: Vec<u8>,
     /// Indirect commands for world-space multi-draw batches.
     mesh_indirect_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
-    /// Reused draw order for mesh pass (sort by shader / material to cut pipeline binds).
-    mesh_draw_order: Vec<usize>,
     /// Length of `mesh_batch_order`. Static plan is opaque only.
     mesh_batch_opaque_count: usize,
     mesh_batch_order: Vec<usize>,
@@ -697,7 +684,7 @@ impl Renderer {
             ],
         });
 
-        let mesh_uniform_bytes = std::mem::size_of::<MeshUniform>() as u64;
+        let _mesh_uniform_bytes = std::mem::size_of::<MeshUniform>() as u64;
         let mesh_view_layout_entry = wgpu::BindGroupLayoutEntry {
             binding: 2,
             visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -772,20 +759,14 @@ impl Renderer {
                 mapped_at_creation: false,
             }));
         }
-        let mesh_globals_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] = mesh_globals_bufs
-            .try_into()
-            .ok()
-            .expect("mesh globals ring");
+        let mesh_globals_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
+            mesh_globals_bufs.try_into().expect("mesh globals ring");
         let mesh_view_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
-            mesh_view_bufs.try_into().ok().expect("mesh view ring");
-        let mesh_globals_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] = mesh_globals_bgs
-            .try_into()
-            .ok()
-            .expect("mesh globals bg ring");
-        let mesh_indirect_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] = mesh_indirect_bufs
-            .try_into()
-            .ok()
-            .expect("mesh indirect ring");
+            mesh_view_bufs.try_into().expect("mesh view ring");
+        let mesh_globals_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] =
+            mesh_globals_bgs.try_into().expect("mesh globals bg ring");
+        let mesh_indirect_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
+            mesh_indirect_bufs.try_into().expect("mesh indirect ring");
         // Material SSBO bind group (now with PBR texture slots)
         let material_bg_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -829,7 +810,7 @@ impl Renderer {
                     },
                 ],
             });
-        let material_allocator = crate::material_allocator::MaterialAllocator::new(&device);
+        let material_allocator = crate::material_allocator::MaterialAllocator::new(device);
         // Scene-level lighting defaults (no sun, no ambient — gamelib sets via set_scene_lighting).
         let scene_sun_dir: [f32; 4] = [0.0, 0.0, 1.0, 0.0];
         let scene_ambient: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
@@ -943,9 +924,9 @@ impl Renderer {
             lights_bgs.push(lights_bg);
         }
         let lights_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING] =
-            lights_bufs.try_into().ok().expect("lights ring");
+            lights_bufs.try_into().expect("lights ring");
         let lights_bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] =
-            lights_bgs.try_into().ok().expect("lights bg ring");
+            lights_bgs.try_into().expect("lights bg ring");
 
         let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh pipeline layout"),
@@ -1008,80 +989,7 @@ impl Renderer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        // Terrain splat bind group layout: globals(0) + [layer0, layer1, layer2, layer3, splat_map, sampler](1)
-        let terrain_splat_bg_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("terrain splat bg layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let terrain_splat_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("terrain splat pipeline layout"),
-                bind_group_layouts: &[
-                    Some(&mesh_globals_bg_layout),
-                    Some(&terrain_splat_bg_layout),
-                ],
-                immediate_size: 0,
-            });
-
-        let sky = features::sky::Sky::new(&device);
+        let sky = features::sky::Sky::new(device);
 
         let debug_globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("debug view globals"),
@@ -1368,20 +1276,8 @@ impl Renderer {
         let mut mesh_allocators: Vec<Box<dyn crate::mesh_allocator::MeshAllocator>> = Vec::new();
         // Allocator id 0 = default built-in slab allocator.
         mesh_allocators.push(Box::new(crate::mesh_allocator::SlabMeshAllocator::new()));
-        let ui_pass = crate::ui_pass::UiPass::new(&device, shaders.ui.clone());
-        let postfx = crate::postfx::PostFx::new(
-            &device,
-            &queue,
-            hdr.format,
-            hdr.tonemap_bg_layout.clone(),
-            crate::postfx::PostFxShaders {
-                bloom_threshold: shaders.bloom_threshold.clone(),
-                bloom_blur: shaders.bloom_blur.clone(),
-                bloom_composite: shaders.bloom_composite.clone(),
-                grain: shaders.grain.clone(),
-                tonemap: shaders.tonemap.clone(),
-            },
-        );
+        let ui_pass = crate::ui_pass::UiPass::new(device, shaders.ui.clone());
+        let postfx = crate::postfx::PostFx::new(device, hdr.tonemap_bg_layout.clone());
 
         Self {
             gpu,
@@ -1391,7 +1287,6 @@ impl Renderer {
             ui_upload: false,
             pipelines: HashMap::new(),
             pipeline_layout,
-            globals_bg_layout,
             tex_bg_layout,
 
             mesh_globals_bg_layout,
@@ -1411,13 +1306,8 @@ impl Renderer {
             repeat_sampler,
             fullbright: false,
             wireframe: false,
-            lights_bg_layout,
             lights_bufs,
             lights_bgs,
-
-            terrain_splat_bg_layout,
-            terrain_splat_pipeline_layout,
-            terrain_splat_pipelines: HashMap::new(),
 
             sky,
 
@@ -1429,7 +1319,6 @@ impl Renderer {
             debug_pipeline_occluded: None,
             debug_vertex_buf: debug_vb,
 
-            sampler,
             globals_buf,
             instance_buf,
             globals_bg,
@@ -1466,7 +1355,6 @@ impl Renderer {
             mesh_gpu: crate::mesh_gpu_pool::MeshGpuPool::default(),
             mesh_uniform_scratch: Vec::new(),
             mesh_indirect_bufs,
-            mesh_draw_order: Vec::new(),
             mesh_batch_opaque_count: 0,
             mesh_batch_order: Vec::new(),
             mesh_batch_for_index: Vec::new(),
@@ -1517,14 +1405,6 @@ impl Renderer {
             defer_surface_submit: false,
             pending_surface_present: None,
         }
-    }
-
-    /// Block until the GPU finishes the last submitted command buffer.
-    /// Call before `queue.write_buffer` into buffers that frame may still read.
-    fn wait_gpu_idle(&self) {
-        crate::gamelib_profile::zone_begin("render.wait_gpu");
-        let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
-        crate::gamelib_profile::zone_end();
     }
 
     pub fn set_defer_surface_submit(&mut self, defer: bool) {
@@ -1844,7 +1724,7 @@ impl Renderer {
     /// Readback GPU map-текстуры (отладка: что реально залито на GPU).
     pub fn dump_map_texture(&mut self) -> Option<Vec<u8>> {
         let (tex, w, h) = self.map_texture.as_ref()?;
-        let bpr = ((4 * w + 255) & !255) as u32;
+        let bpr = (4 * w + 255) & !255;
         let buf_size = (bpr as u64) * (*h as u64);
         let buf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("map readback debug"),
@@ -1925,39 +1805,12 @@ impl Renderer {
         self.pipelines.clear();
         self.skinned_mesh_pipelines.clear();
         self.shader_mesh_pipelines.clear();
-        self.terrain_splat_pipelines.clear();
         self.sky.clear_pipelines();
         self.debug_pipeline = None;
         self.debug_pipeline_occluded = None;
         self.hdr.tonemap_pipeline = None;
         self.hdr.tonemap_pipeline_format = None;
-        self.hdr.lum_pipeline = None;
-        self.postfx
-            .reload_shader_sources(crate::postfx::PostFxShaders {
-                bloom_threshold: self.shaders.bloom_threshold.clone(),
-                bloom_blur: self.shaders.bloom_blur.clone(),
-                bloom_composite: self.shaders.bloom_composite.clone(),
-                grain: self.shaders.grain.clone(),
-                tonemap: self.shaders.tonemap.clone(),
-            });
         self.invalidate_material_bgs();
-    }
-
-    /// Нарисовать снапшот в окно и показать.
-    pub fn set_bloom(&mut self, enabled: bool, threshold: f32, intensity: f32) {
-        self.postfx.bloom_enabled = enabled;
-        self.postfx.bloom_threshold = threshold;
-        self.postfx.bloom_intensity = intensity;
-    }
-
-    pub fn set_bloom_downscale(&mut self, scale: u32) {
-        self.postfx.set_bloom_downscale(scale);
-    }
-
-    pub fn set_grain(&mut self, enabled: bool, strength: f32, downscale: f32) {
-        self.postfx.grain_enabled = enabled;
-        self.postfx.grain_strength = strength;
-        self.postfx.grain_downscale = downscale;
     }
 
     pub fn set_godrays(&mut self, enabled: bool, strength: f32, decay: f32, density: f32) {

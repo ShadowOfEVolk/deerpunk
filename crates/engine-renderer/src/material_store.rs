@@ -324,6 +324,12 @@ impl MaterialStore {
     }
 }
 
+impl Default for MaterialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Load WGSL via [`ResourceManager`] (cached by URI), compile via [`ShaderRegistry`] (cached by path+defines).
 fn resolve_shader_id(
     shaders: &mut ShaderRegistry,
@@ -408,7 +414,7 @@ fn resolve_value(
             let slot = tex_resolver.resolve(path)?;
             Ok(PropertyValue::Texture(slot))
         }
-        _ => Err(format!("property value kind mismatch")),
+        _ => Err("property value kind mismatch".to_string()),
     }
 }
 
@@ -475,46 +481,6 @@ fn material_asset_hash(asset: &MaterialAsset) -> u64 {
                 }
             }
             PropertyValueSer::Texture(uri) => uri.hash(&mut hasher),
-        }
-    }
-    hasher.finish()
-}
-
-/// Hash resolved properties + BSP lightmap URIs (legacy; prefer [`material_asset_hash`]).
-fn material_content_hash(asset: &MaterialAsset, props: &[PropertyValue]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    asset.shader.hash(&mut hasher);
-    for def in &asset.shader_defines {
-        def.hash(&mut hasher);
-    }
-    for prop in props {
-        match prop {
-            PropertyValue::Float(v) => v.to_bits().hash(&mut hasher),
-            PropertyValue::Color(v) => {
-                for f in v {
-                    f.to_bits().hash(&mut hasher);
-                }
-            }
-            PropertyValue::Vec3(v) => {
-                for f in v {
-                    f.to_bits().hash(&mut hasher);
-                }
-            }
-            PropertyValue::Vec4(v) => {
-                for f in v {
-                    f.to_bits().hash(&mut hasher);
-                }
-            }
-            PropertyValue::Texture(slot) => slot.0.hash(&mut hasher),
-        }
-    }
-    for (name, value) in &asset.properties {
-        if let PropertyValueSer::Texture(uri) = value {
-            if uri.contains("#lightmap:") {
-                name.hash(&mut hasher);
-                uri.hash(&mut hasher);
-            }
         }
     }
     hasher.finish()

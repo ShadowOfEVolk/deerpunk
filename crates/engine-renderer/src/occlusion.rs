@@ -76,10 +76,6 @@ impl MeshOcclusion {
         }
     }
 
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-
     /// GPU occlusion hides draws after warmup; when false, all draws pass.
     pub fn filters_draws(&self) -> bool {
         self.enabled && self.warmup_frames == 0
@@ -333,8 +329,7 @@ impl MeshOcclusion {
         });
 
         let align = 256u64;
-        let uniform_stride =
-            ((std::mem::size_of::<OccUniform>() as u64 + align - 1) / align) * align;
+        let uniform_stride = (std::mem::size_of::<OccUniform>() as u64).div_ceil(align) * align;
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("occlusion uniforms"),
             size: uniform_stride * MAX_OCCLUSION_QUERIES as u64,

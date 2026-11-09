@@ -88,62 +88,62 @@ impl NetApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            client_cmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:client_cmd")) },
-            set_enabled_fn: unsafe { std::mem::transmute(resolve(r, "v1:server:set_enabled")) },
-            is_enabled_fn: unsafe { std::mem::transmute(resolve(r, "v1:server:is_enabled")) },
+            client_cmd_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:client_cmd")) },
+            set_enabled_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:server:set_enabled")) },
+            is_enabled_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:server:is_enabled")) },
             server_activated_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:server:activated"))
+                crate::fn_from_erased(resolve(r, "v1:server:activated"))
             },
-            in_game_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:in_game")) },
+            in_game_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:in_game")) },
             set_player_entity_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:set_entity"))
+                crate::fn_from_erased(resolve(r, "v1:players:set_entity"))
             },
-            send_usercmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:send_usercmd")) },
+            send_usercmd_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:send_usercmd")) },
             send_client_command_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:net:send_client_command"))
+                crate::fn_from_erased(resolve(r, "v1:net:send_client_command"))
             },
             pop_client_command_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:net:pop_client_command"))
+                crate::fn_from_erased(resolve(r, "v1:net:pop_client_command"))
             },
-            get_usercmd_fn: unsafe { std::mem::transmute(resolve(r, "v1:players:get_usercmd")) },
-            move_snapshot_fn: unsafe { std::mem::transmute(resolve(r, "v1:move:snapshot")) },
+            get_usercmd_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:players:get_usercmd")) },
+            move_snapshot_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:move:snapshot")) },
             local_entity_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:local_entity"))
+                crate::fn_from_erased(resolve(r, "v1:players:local_entity"))
             },
             um_register_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:net:msg_register"))
+                crate::fn_from_erased(resolve(r, "v1:net:msg_register"))
             },
-            um_send_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:msg_send")) },
-            um_hook_fn: unsafe { std::mem::transmute(resolve(r, "v1:net:msg_hook")) },
+            um_send_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:msg_send")) },
+            um_hook_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:msg_hook")) },
             player_net_id_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:net:player_net_id"))
+                crate::fn_from_erased(resolve(r, "v1:net:player_net_id"))
             },
             client_set_view_net_id_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:client:set_view_net_id"))
+                crate::fn_from_erased(resolve(r, "v1:client:set_view_net_id"))
             },
             usercmd_ack_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:usercmd_ack"))
+                crate::fn_from_erased(resolve(r, "v1:players:usercmd_ack"))
             },
             usercmd_outgoing_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:usercmd_outgoing"))
+                crate::fn_from_erased(resolve(r, "v1:players:usercmd_outgoing"))
             },
             usercmd_lookup_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:usercmd_lookup"))
+                crate::fn_from_erased(resolve(r, "v1:players:usercmd_lookup"))
             },
             set_simorg_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:set_simorg"))
+                crate::fn_from_erased(resolve(r, "v1:players:set_simorg"))
             },
             clear_simorg_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:clear_simorg"))
+                crate::fn_from_erased(resolve(r, "v1:players:clear_simorg"))
             },
             usercmd_sent_time_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:usercmd_sent_time"))
+                crate::fn_from_erased(resolve(r, "v1:players:usercmd_sent_time"))
             },
             server_feet_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:server_feet"))
+                crate::fn_from_erased(resolve(r, "v1:players:server_feet"))
             },
             prediction_correction_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:players:prediction_correction"))
+                crate::fn_from_erased(resolve(r, "v1:players:prediction_correction"))
             },
         }
     }

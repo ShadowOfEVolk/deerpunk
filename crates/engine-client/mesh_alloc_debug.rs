@@ -3,9 +3,6 @@
 use deerpunk_engine_renderer::mesh_alloc_debug::{build_report, index_unit_bytes, SideView};
 use deerpunk_engine_renderer::Renderer;
 
-const BAR_H: f32 = 14.0;
-const BAR_GAP: f32 = 4.0;
-
 /// `mode`: 0 = off (caller should skip). `1` = all allocators; `N>1` = allocator id `N-1`.
 pub fn tick(mode: i32, renderer: &Renderer) {
     if mode <= 0 {

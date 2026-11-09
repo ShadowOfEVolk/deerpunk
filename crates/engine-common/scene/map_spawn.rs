@@ -38,7 +38,7 @@ pub fn post_map_kv_applied(world: &World, entity: EntityId) {
     if ptr.is_null() {
         return;
     }
-    let kv = unsafe { &*ptr };
+    let _kv = unsafe { &*ptr };
     super::studio_present::sync_studio_presentation(world, entity);
 }
 

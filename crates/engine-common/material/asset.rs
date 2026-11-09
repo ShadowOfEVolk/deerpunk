@@ -70,7 +70,7 @@ impl PropertyValueSer {
 
 mod props_map {
     use serde::de::{MapAccess, SeqAccess, Visitor};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serializer};
     use std::fmt;
 
     use super::PropertyValueSer;

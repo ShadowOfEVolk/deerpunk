@@ -19,7 +19,6 @@ impl Renderer {
             let h = frame_height();
             let exposure = self.hdr.exposure;
             let tonemap_mode = self.hdr.tonemap_mode;
-            let game_time = ctx.snapshot.game_time;
             let pipeline = self.hdr.tonemap_pipeline.as_ref().unwrap().clone();
             self.postfx.encode_tonemap_chain(
                 &self.gpu.device,
@@ -34,7 +33,6 @@ impl Renderer {
                 &self.hdr.tonemap_uniform_buf,
                 exposure,
                 tonemap_mode,
-                game_time,
                 self.scene_sun_dir,
                 ctx.snapshot.view_proj,
                 ctx.snapshot.camera_pos,

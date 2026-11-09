@@ -6,7 +6,6 @@ use super::replication::NetworkComponent;
 /// Component metadata in the buffer
 #[derive(Clone, Copy, Debug)]
 struct ComponentInfo {
-    component_type: ComponentType,
     offset: usize,
     size: usize,
 }
@@ -61,11 +60,10 @@ impl EntityState {
         let size = data.len();
         
         self.buffer.extend_from_slice(data);
-        self.component_info.insert(component_type, ComponentInfo {
+        self.component_info.insert(
             component_type,
-            offset,
-            size,
-        });
+            ComponentInfo { offset, size },
+        );
     }
     
     /// Get component data slice from buffer
@@ -95,7 +93,7 @@ impl EntityState {
             self.buffer.drain(info.offset..end);
             
             // Update offsets of components after the removed one
-            for (_, comp_info) in self.component_info.iter_mut() {
+            for comp_info in self.component_info.values_mut() {
                 if comp_info.offset > info.offset {
                     comp_info.offset -= info.size;
                 }

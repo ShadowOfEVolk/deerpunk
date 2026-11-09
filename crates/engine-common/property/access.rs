@@ -149,45 +149,6 @@ pub fn snapshot_component_save(
     out
 }
 
-fn read_memory(
-    world: &World,
-    entity: EntityId,
-    component_id: crate::world::ComponentId,
-    offset: u32,
-    wire: WireKind,
-) -> Option<FieldValue> {
-    if !world.has(entity, component_id) {
-        return None;
-    }
-    let base = world.get_raw(entity, component_id);
-    if base.is_null() {
-        return None;
-    }
-    let p = unsafe { base.add(offset as usize) };
-    match wire {
-        WireKind::U32 => Some(FieldValue::U32(unsafe { *(p as *const u32) })),
-        WireKind::U16 => Some(FieldValue::U32(unsafe { *(p as *const u16) as u32 })),
-        WireKind::U8 => Some(FieldValue::U32(unsafe { *(p as *const u8) as u32 })),
-        WireKind::I32 => Some(FieldValue::U32(unsafe { *(p as *const i32) as u32 })),
-        WireKind::F32 => Some(FieldValue::U32(unsafe { (*(p as *const f32)).to_bits() })),
-        WireKind::Bool => Some(FieldValue::U32(unsafe { *(p as *const u8) as u32 })),
-        WireKind::Vec3 => {
-            let x = unsafe { *(p as *const f32) };
-            let y = unsafe { *(p.add(4) as *const f32) };
-            let z = unsafe { *(p.add(8) as *const f32) };
-            Some(FieldValue::Vec3([x, y, z]))
-        }
-        WireKind::Quat => {
-            let mut arr = [0.0f32; 4];
-            for i in 0..4 {
-                arr[i] = unsafe { *(p.add(i * 4) as *const f32) };
-            }
-            Some(FieldValue::Quat(arr))
-        }
-        _ => None,
-    }
-}
-
 fn write_memory(
     world: &World,
     entity: EntityId,

@@ -23,7 +23,7 @@ impl LogApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            write_fn: unsafe { std::mem::transmute(resolve(r, "v1:log:write")) },
+            write_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:log:write")) },
         }
     }
 

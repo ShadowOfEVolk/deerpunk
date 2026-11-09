@@ -1,15 +1,27 @@
 //! Accumulates RmlUi geometry into `UiFrame` (no CPU raster).
+//!
+//! `CompileGeometry` stores vertices once. `RenderGeometry` only records a draw
+//! (mesh id, translation, texture, scissor). Identical draw lists produce no frame,
+//! so a hover that does not change layout does not rebuild GPU meshes.
 
 use std::collections::HashMap;
 
-use deerpunk_engine_common::ui_draw::{UiBatch, UiFrame, UiTextureUpload, UiVertex};
+use deerpunk_engine_common::ui_draw::{UiDraw, UiFrame, UiMesh, UiTextureUpload, UiVertex};
+
+struct StoredMesh {
+    vertices: Vec<UiVertex>,
+    indices: Vec<u32>,
+}
 
 pub struct UiGeometryBuilder {
     width: u32,
     height: u32,
-    vertices: Vec<UiVertex>,
-    indices: Vec<u32>,
-    batches: Vec<UiBatch>,
+    meshes: HashMap<u32, StoredMesh>,
+    pending_meshes: Vec<u32>,
+    released_meshes: Vec<u32>,
+    draws: Vec<UiDraw>,
+    last_draws: Vec<UiDraw>,
+    next_mesh: u32,
     textures: HashMap<u32, UiTextureUpload>,
     released: Vec<u32>,
     next_tex: u32,
@@ -38,9 +50,12 @@ impl UiGeometryBuilder {
         Self {
             width,
             height,
-            vertices: Vec::new(),
-            indices: Vec::new(),
-            batches: Vec::new(),
+            meshes: HashMap::new(),
+            pending_meshes: Vec::new(),
+            released_meshes: Vec::new(),
+            draws: Vec::new(),
+            last_draws: Vec::new(),
+            next_mesh: 1,
             textures,
             released: Vec::new(),
             next_tex: 2,
@@ -57,25 +72,43 @@ impl UiGeometryBuilder {
     }
 
     pub fn begin_frame(&mut self) {
-        self.vertices.clear();
-        self.indices.clear();
-        self.batches.clear();
+        self.draws.clear();
         self.released.clear();
+        self.released_meshes.clear();
+        self.pending_meshes.clear();
         self.pending_uploads.clear();
     }
 
-    /// Ensure the 1x1 white texture is uploaded at least once (solid-color geometry).
-    pub fn ensure_white_upload(&mut self) {
-        if let Some(w) = self.textures.get(&self.white).cloned() {
-            self.pending_uploads.entry(self.white).or_insert(w);
+    /// `None` when this render produced the same draws and no new GPU resources.
+    pub fn take_frame_if_changed(&mut self) -> Option<UiFrame> {
+        let changed = !self.pending_meshes.is_empty()
+            || !self.released_meshes.is_empty()
+            || !self.pending_uploads.is_empty()
+            || !self.released.is_empty()
+            || self.draws != self.last_draws;
+        if !changed {
+            self.draws.clear();
+            return None;
         }
+        self.last_draws.clone_from(&self.draws);
+        Some(self.take_frame())
     }
 
-    pub fn take_frame(&mut self) -> UiFrame {
+    fn take_frame(&mut self) -> UiFrame {
+        let mut meshes = Vec::with_capacity(self.pending_meshes.len());
+        for id in self.pending_meshes.drain(..) {
+            if let Some(mesh) = self.meshes.get(&id) {
+                meshes.push(UiMesh {
+                    id,
+                    vertices: mesh.vertices.clone(),
+                    indices: mesh.indices.clone(),
+                });
+            }
+        }
         UiFrame {
-            vertices: std::mem::take(&mut self.vertices),
-            indices: std::mem::take(&mut self.indices),
-            batches: std::mem::take(&mut self.batches),
+            meshes,
+            released_meshes: std::mem::take(&mut self.released_meshes),
+            draws: std::mem::take(&mut self.draws),
             textures: std::mem::take(&mut self.pending_uploads),
             released: std::mem::take(&mut self.released),
             screen: [self.width, self.height],
@@ -100,7 +133,13 @@ impl UiGeometryBuilder {
         id
     }
 
-    pub fn load_texture_rgba(&mut self, rgba: Vec<u8>, w: u32, h: u32, filter_nearest: bool) -> u32 {
+    pub fn load_texture_rgba(
+        &mut self,
+        rgba: Vec<u8>,
+        w: u32,
+        h: u32,
+        filter_nearest: bool,
+    ) -> u32 {
         let id = self.next_tex;
         self.next_tex += 1;
         let upload = UiTextureUpload {
@@ -129,67 +168,75 @@ impl UiGeometryBuilder {
         self.scissor = Some([x, y, w, h]);
     }
 
-    pub fn draw_indexed(
+    /// Decode `Rml::Vertex` (position, premultiplied colour, uv) at `stride`.
+    pub fn compile_geometry(
         &mut self,
-        positions: &[f32],
-        colours: &[u8],
-        texcoords: &[f32],
+        bytes: &[u8],
+        stride: usize,
+        num_vertices: usize,
         indices: &[i32],
-        tx: f32,
-        ty: f32,
-        texture: usize,
-    ) {
+    ) -> u32 {
+        if stride < 20 || num_vertices == 0 || bytes.len() < stride * num_vertices {
+            return 0;
+        }
+        let mut vertices = Vec::with_capacity(num_vertices);
+        for i in 0..num_vertices {
+            let v = &bytes[i * stride..];
+            let x = f32::from_le_bytes(v[0..4].try_into().unwrap());
+            let y = f32::from_le_bytes(v[4..8].try_into().unwrap());
+            let u = f32::from_le_bytes(v[12..16].try_into().unwrap());
+            let vv = f32::from_le_bytes(v[16..20].try_into().unwrap());
+            vertices.push(UiVertex {
+                pos: [x, y],
+                uv: [u, vv],
+                color: [v[8], v[9], v[10], v[11]],
+            });
+        }
+        let mut idx = Vec::with_capacity(indices.len());
+        for &i in indices {
+            if i >= 0 && (i as usize) < num_vertices {
+                idx.push(i as u32);
+            }
+        }
+        let id = self.next_mesh;
+        self.next_mesh = self.next_mesh.wrapping_add(1).max(1);
+        self.meshes.insert(
+            id,
+            StoredMesh {
+                vertices,
+                indices: idx,
+            },
+        );
+        self.pending_meshes.push(id);
+        id
+    }
+
+    pub fn release_geometry(&mut self, id: u32) {
+        if id == 0 {
+            return;
+        }
+        self.meshes.remove(&id);
+        if let Some(pos) = self.pending_meshes.iter().position(|m| *m == id) {
+            self.pending_meshes.swap_remove(pos);
+        } else {
+            self.released_meshes.push(id);
+        }
+    }
+
+    pub fn draw_geometry(&mut self, id: u32, tx: f32, ty: f32, texture: usize) {
+        if id == 0 || !self.meshes.contains_key(&id) {
+            return;
+        }
         let tex_id = if texture == 0 || texture == usize::MAX {
             self.white
         } else {
             texture as u32
         };
-
-        let base = self.vertices.len() as u32;
-        let max_v = indices.iter().copied().max().unwrap_or(0).max(0) as usize + 1;
-        let count = max_v.min(positions.len() / 2);
-        for i in 0..count {
-            if i * 2 + 1 >= positions.len() {
-                break;
-            }
-            self.vertices.push(UiVertex {
-                pos: [positions[i * 2] + tx, positions[i * 2 + 1] + ty],
-                uv: [
-                    texcoords.get(i * 2).copied().unwrap_or(0.0),
-                    texcoords.get(i * 2 + 1).copied().unwrap_or(0.0),
-                ],
-                color: [
-                    colours.get(i * 4).copied().unwrap_or(255),
-                    colours.get(i * 4 + 1).copied().unwrap_or(255),
-                    colours.get(i * 4 + 2).copied().unwrap_or(255),
-                    colours.get(i * 4 + 3).copied().unwrap_or(255),
-                ],
-            });
-        }
-
-        let index_start = self.indices.len() as u32;
-        for &idx in indices {
-            if idx < 0 || idx as usize >= count {
-                continue;
-            }
-            self.indices.push(base + idx as u32);
-        }
-        let index_count = self.indices.len() as u32 - index_start;
-
         let scissor = if self.scissor_on { self.scissor } else { None };
-
-        // Merge with previous batch if same texture + scissor
-        if let Some(last) = self.batches.last_mut() {
-            if last.texture_id == tex_id && last.scissor == scissor {
-                last.index_count += index_count;
-                return;
-            }
-        }
-
-        self.batches.push(UiBatch {
+        self.draws.push(UiDraw {
+            mesh_id: id,
+            translation: [tx, ty],
             texture_id: tex_id,
-            index_start,
-            index_count,
             scissor,
         });
     }

@@ -37,15 +37,15 @@ impl MaterialsApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            load_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:load")) },
+            load_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:materials:load")) },
             load_with_defines_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:materials:load_with_defines"))
+                crate::fn_from_erased(resolve(r, "v1:materials:load_with_defines"))
             },
-            resolve_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:resolve")) },
-            create_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:create")) },
-            reload_fn: unsafe { std::mem::transmute(resolve(r, "v1:materials:reload")) },
+            resolve_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:materials:resolve")) },
+            create_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:materials:create")) },
+            reload_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:materials:reload")) },
             set_texture_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:materials:set_texture"))
+                crate::fn_from_erased(resolve(r, "v1:materials:set_texture"))
             },
         }
     }

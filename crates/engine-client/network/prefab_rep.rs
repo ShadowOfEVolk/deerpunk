@@ -8,8 +8,8 @@ use deerpunk_engine_common::network::field_apply::apply_field_ex;
 use deerpunk_engine_common::network::field_path::{FieldValue, NetFieldId};
 use deerpunk_engine_common::network::protocol::SVC;
 use deerpunk_engine_common::network::{
-    NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, PrefabNetId, PrefabNetRegistry, SpawnPrefabRpc,
-    StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc,
+    NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, PrefabNetRegistry, SpawnPrefabRpc, StreamInRpc,
+    StreamOutRpc, StreamUpdateBatchRpc,
 };
 use deerpunk_engine_common::resource::{MeshRegistry, ResourceManager};
 use deerpunk_engine_common::scene::spawn_prefab_filtered_with_component_overrides_cached;
@@ -204,8 +204,6 @@ impl ClientPrefabReplication {
                     true
                 }
             }
-        } else if cmd == SVC::UserMessage as u8 {
-            false
         } else {
             false
         }

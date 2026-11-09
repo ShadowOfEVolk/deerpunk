@@ -1,4 +1,3 @@
-use std::ffi::c_void;
 
 use crate::resolve_fn;
 
@@ -21,34 +20,34 @@ impl RendererApiResolved {
         Self {
             ctx,
             load_texture_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:load_texture"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:load_texture"))
             },
             upload_texture_raw_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:upload_texture_raw"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:upload_texture_raw"))
             },
             set_scene_lighting_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_scene_lighting"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:set_scene_lighting"))
             },
             set_scene_fog_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_scene_fog"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:set_scene_fog"))
             },
             set_sky_palette_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_sky_palette"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:set_sky_palette"))
             },
             set_procedural_sky_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_procedural_sky"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:set_procedural_sky"))
             },
             set_gamelib_sky_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:set_gamelib_sky"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:set_gamelib_sky"))
             },
             load_shader_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:load_shader"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:load_shader"))
             },
             shader_vertex_size_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:shader_vertex_size"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:shader_vertex_size"))
             },
             reload_shaders_fn: unsafe {
-                std::mem::transmute(resolve_fn(resolver, "v1:renderer:reload_shaders"))
+                crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:reload_shaders"))
             },
         }
     }

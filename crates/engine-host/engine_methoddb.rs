@@ -969,7 +969,7 @@ impl crate::Host {
     ) {
         self.gamelib_schedule.add_named(
             "gamelib",
-            crate::schedule::CallbackSystem::new("gamelib", system_fn, user_data),
+            crate::schedule::CallbackSystem::new(system_fn, user_data),
         );
     }
 

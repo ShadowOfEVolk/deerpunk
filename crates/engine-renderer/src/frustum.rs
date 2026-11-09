@@ -62,30 +62,6 @@ fn aabb_corners(aabb: Aabb) -> [Vec3; 8] {
     ]
 }
 
-/// World-space AABB that encloses the camera frustum (for spatial broad-phase).
-pub fn frustum_world_aabb(view: Mat4, near: f32, far: f32, fov_y: f32, aspect: f32) -> Aabb {
-    let inv_view = view.inverse();
-    let tan = (fov_y * 0.5).tan();
-    let near_d = near.max(0.05);
-    let far_d = far.max(near_d + 0.1);
-    let mut out = Aabb::EMPTY;
-    let eye = inv_view.transform_point3(Vec3::ZERO);
-    out = out.merge(Aabb::from_min_max(eye, eye));
-    for d in [near_d, far_d] {
-        let h = d * tan;
-        let w = h * aspect;
-        for sx in [-1.0f32, 1.0] {
-            for sy in [-1.0f32, 1.0] {
-                // glam `look_to_rh`: camera looks down -Z in view space.
-                let v = Vec3::new(sx * w, sy * h, -d);
-                let p = inv_view.transform_point3(v);
-                out = out.merge(Aabb::from_min_max(p, p));
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 #[path = "frustum_tests.rs"]
 mod tests;

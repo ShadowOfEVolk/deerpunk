@@ -407,23 +407,25 @@ impl MeshRegistry {
     /// Legacy full-world sweep (debug / recovery). Prefer [`Self::attach`] / [`Self::detach`].
     pub fn sweep(&mut self, live: &HashSet<usize>) {
         for idx in 1..self.slots.len() {
-            let slot = &mut self.slots[idx];
-            if slot.mesh.is_none() {
-                continue;
-            }
-            let packed = MeshHandle::from_parts(idx as u32, slot.gen).0;
-            if live.contains(&packed) {
-                continue;
-            }
-            let index_still_referenced = live
-                .iter()
-                .any(|&h| MeshHandle(h).idx() as usize == idx);
-            if index_still_referenced {
-                continue;
-            }
-            let prev = slot.mesh.take();
-            slot.gen = slot.gen.wrapping_add(1);
-            drop(slot);
+            let prev = {
+                let slot = &mut self.slots[idx];
+                if slot.mesh.is_none() {
+                    continue;
+                }
+                let packed = MeshHandle::from_parts(idx as u32, slot.gen).0;
+                if live.contains(&packed) {
+                    continue;
+                }
+                let index_still_referenced = live
+                    .iter()
+                    .any(|&h| MeshHandle(h).idx() as usize == idx);
+                if index_still_referenced {
+                    continue;
+                }
+                slot.gen = slot.gen.wrapping_add(1);
+                (packed, slot.mesh.take())
+            };
+            let (packed, prev) = prev;
             self.free.push(idx);
             self.set_mesh_revision(idx, 0);
             self.handle_refs.remove(&packed);

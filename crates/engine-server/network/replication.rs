@@ -1,5 +1,5 @@
 pub use deerpunk_engine_common::{NetworkComponent, NetworkField};
-use std::io::{Read, Write};
+use std::io::Write;
 
 pub struct ServerReplication {}
 
@@ -55,5 +55,11 @@ impl ServerReplication {
                 writer.write_all(to_field).unwrap();
             }
         }
+    }
+}
+
+impl Default for ServerReplication {
+    fn default() -> Self {
+        Self::new()
     }
 }

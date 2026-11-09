@@ -6,8 +6,6 @@ deerpunk_engine_common::cvar_def!(
     "Show in-game Nuklear console (1=visible). Toggle with ~."
 );
 
-use std::ffi::{c_void, CStr, CString};
-
 use deerpunk_engine_common::input::{Input, KEY_GRAVE};
 use deerpunk_engine_common::logger;
 
@@ -17,10 +15,6 @@ use deerpunk_engine_common::cvar::CvarSystem;
 const INPUT_CAP: usize = 512;
 const HISTORY_CAP: usize = 128;
 const LINE_TMP: usize = 64;
-const MAX_SUGGESTIONS: usize = 12;
-/// Visible suggestion rows above the input; extra matches scroll inside the panel.
-const SUGGEST_VISIBLE_ROWS: usize = 6;
-
 pub struct Console {
     input_buf: [u8; INPUT_CAP],
     grave_down: bool,
@@ -34,8 +28,6 @@ pub struct Console {
     /// Auto-scroll log to bottom until the user scrolls up.
     log_follow_tail: bool,
     line_z: [u8; logger::LOG_LINE_CAP + 1],
-    /// Tab candidates for the Nuklear input callback (filled each `draw`).
-    tab_cycle: Vec<String>,
     prev_up: bool,
     prev_down: bool,
     prev_tab: bool,
@@ -56,7 +48,6 @@ impl Console {
             completion_pick: 0,
             log_follow_tail: true,
             line_z: [0; logger::LOG_LINE_CAP + 1],
-            tab_cycle: Vec::new(),
             prev_up: false,
             prev_down: false,
             prev_tab: false,

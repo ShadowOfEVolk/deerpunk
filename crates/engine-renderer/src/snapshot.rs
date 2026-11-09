@@ -546,7 +546,7 @@ pub struct PointLightDraw {
 }
 
 /// Геометрия сцены — всё что можно рендерить (shared; each camera culls by layer).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SceneGeometry {
     pub mesh_draws: Vec<MeshDraw>,
     pub skinned_mesh_draws: Vec<SkinnedMeshDraw>,
@@ -562,20 +562,6 @@ impl SceneGeometry {
     /// Recompute [`Self::cull_serial`] once per extract (O(n); cull uses O(1) compare).
     pub fn refresh_cull_serial(&mut self) {
         self.cull_serial = crate::cull::scene_geometry_cull_serial(self);
-    }
-}
-
-impl Default for SceneGeometry {
-    fn default() -> Self {
-        Self {
-            mesh_draws: Vec::new(),
-            skinned_mesh_draws: Vec::new(),
-            bone_palettes: Vec::new(),
-            terrain_splat_draws: Vec::new(),
-            sky: None,
-            point_lights: Vec::new(),
-            cull_serial: 0,
-        }
     }
 }
 
@@ -687,11 +673,6 @@ impl RenderScene {
                 deerpunk_engine_common::coord::view_proj_world_mesh_clip(projection, cam.rotation);
             let cull_cam = CullCamera {
                 view_proj: view_proj_cull,
-                view,
-                near: cam.near,
-                far: cam.far,
-                fov_y: cam.fov_y,
-                aspect,
                 layer_mask: cam.layer_mask,
             };
 
@@ -834,5 +815,11 @@ impl RenderScene {
                 }
             }
         }
+    }
+}
+
+impl Default for RenderScene {
+    fn default() -> Self {
+        Self::new()
     }
 }

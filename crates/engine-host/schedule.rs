@@ -14,18 +14,13 @@ impl<F: FnMut(f32) + Send> System for F {
 
 /// Gamelib-registered callback (`v1:schedule:add_system`).
 pub struct CallbackSystem {
-    name: &'static str,
     func: ScheduleSystemFn,
     user_data: *mut c_void,
 }
 
 impl CallbackSystem {
-    pub fn new(name: &'static str, func: ScheduleSystemFn, user_data: *mut c_void) -> Self {
-        Self {
-            name,
-            func,
-            user_data,
-        }
+    pub fn new(func: ScheduleSystemFn, user_data: *mut c_void) -> Self {
+        Self { func, user_data }
     }
 }
 

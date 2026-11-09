@@ -106,8 +106,10 @@ void rmlui_document_close(rmlui_handle_t doc);
 /** Отправить кастомное событие в документ (bubbles). Для RML: data-event-stateupdated="..." или onstateupdated="..." */
 void rmlui_document_dispatch_event(rmlui_handle_t doc, const char* event_type);
 
-/** Returns 1 when the context needs Render(), 0 when nothing changed. */
+/** Runs `Context::Update`. Always steps the context; use the delay to skip later frames. */
 int rmlui_context_update(rmlui_handle_t ctx);
+/** Seconds until the next `Update` is required. Infinity means "only after input". */
+double rmlui_context_next_update_delay(rmlui_handle_t ctx);
 void rmlui_context_render(rmlui_handle_t ctx);
 void rmlui_context_set_dimensions(rmlui_handle_t ctx, int w, int h);
 /** CSS px / dp scale. 1 = one layout px per context pixel. */

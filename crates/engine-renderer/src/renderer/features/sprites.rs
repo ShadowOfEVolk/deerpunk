@@ -45,7 +45,7 @@ impl Renderer {
                 multiview_mask: None,
             });
             ctx.draw_acc.note_pipeline();
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(pipeline);
             ctx.draw_acc.note_bind();
             pass.set_bind_group(0, &self.globals_bg, &[]);
             Self::draw_batched(
@@ -114,7 +114,7 @@ impl Renderer {
                 (cell_x + w) as f32 / SPRITE_ATLAS_SIZE as f32,
                 (cell_y + h) as f32 / SPRITE_ATLAS_SIZE as f32,
             ];
-            self.atlas.insert(ptr, SpriteSlot { cell, uv });
+            self.atlas.insert(ptr, SpriteSlot { uv });
         }
     }
 
@@ -123,52 +123,11 @@ impl Renderer {
         self.free_cells = (0..SPRITE_CELLS).collect();
     }
 
-    pub(in crate::renderer) fn build_instances(
-        &self,
-        snapshot: &RenderSnapshot,
-    ) -> Vec<GpuInstance> {
-        self.build_instances_from(&snapshot.instances)
-    }
-
     pub(in crate::renderer) fn build_instances_from(
         &self,
         instances: &[Instance],
     ) -> Vec<GpuInstance> {
         instances
-            .iter()
-            .map(|inst| {
-                let uv = match (inst.tex, &inst.sprite) {
-                    (TexSel::Sprite, Some(sprite)) => {
-                        let ptr = Arc::as_ptr(sprite) as usize;
-                        self.atlas
-                            .get(&ptr)
-                            .map(|s| s.uv)
-                            .unwrap_or([0.0, 0.0, 1.0, 1.0])
-                    }
-                    _ => inst.uv,
-                };
-                GpuInstance {
-                    x: inst.x,
-                    y: inst.y,
-                    rot: inst.rot,
-                    hw: inst.hw,
-                    hh: inst.hh,
-                    _pad0: [0.0; 3],
-                    uv,
-                    color: inst.color,
-                    shape: inst.shape as u32,
-                    _pad: [0; 3],
-                }
-            })
-            .collect()
-    }
-
-    pub(in crate::renderer) fn build_hud_instances(
-        &self,
-        snapshot: &RenderSnapshot,
-    ) -> Vec<GpuInstance> {
-        snapshot
-            .hud
             .iter()
             .map(|inst| {
                 let uv = match (inst.tex, &inst.sprite) {

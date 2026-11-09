@@ -6,12 +6,12 @@
 
 use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 use deerpunk_engine_common::MeshTexture;
-use deerpunk_engine_renderer::Aabb;
 use deerpunk_engine_renderer::mesh_allocator::MeshHandle as GpuMesh;
 use deerpunk_engine_renderer::mesh_batch_bench::{
     bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes, StaticBatchPlanBench,
 };
 use deerpunk_engine_renderer::snapshot::MeshDraw;
+use deerpunk_engine_renderer::Aabb;
 use std::hint::black_box;
 use std::time::Instant;
 

@@ -11,7 +11,7 @@ use renetcode::{
 };
 
 use deerpunk_engine_common::network::lan::{
-    self, encode_info, LanAdvertiseState,
+    self, LanAdvertiseState,
 };
 
 use crate::connect_auth;

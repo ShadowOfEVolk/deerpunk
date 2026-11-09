@@ -30,9 +30,7 @@ impl UserMessageRpc {
     }
 
     pub fn decode(payload: &[u8]) -> Option<Self> {
-        let Some((&id, data)) = payload.split_first() else {
-            return None;
-        };
+        let (&id, data) = payload.split_first()?;
         Some(Self {
             msg_id: id as u16,
             data: data.to_vec(),

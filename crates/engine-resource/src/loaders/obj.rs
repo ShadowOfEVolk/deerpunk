@@ -55,8 +55,8 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
                 };
                 let (v0, t0, n0) = parse_ref(verts[0])?;
                 let (v1, t1, n1) = parse_ref(verts[1])?;
-                for i in 2..verts.len() {
-                    let (v2, t2, n2) = parse_ref(verts[i])?;
+                for vert in verts.iter().skip(2) {
+                    let (v2, t2, n2) = parse_ref(vert)?;
                     for &(vi, ti, ni) in &[(v0, t0, n0), (v1, t1, n1), (v2, t2, n2)] {
                         let pos_idx = if vi > 0 { vi - 1 } else { positions.len().wrapping_sub(vi) };
                         let pos = *positions.get(pos_idx).ok_or_else(|| format!("vertex index {vi} out of range"))?;
@@ -176,12 +176,7 @@ pub fn resolve_map_kd(obj_path: &Path, map_kd: &str) -> Option<PathBuf> {
         dir = d.parent();
     }
 
-    for c in candidates {
-        if c.is_file() {
-            return Some(c);
-        }
-    }
-    None
+    candidates.into_iter().find(|c| c.is_file())
 }
 
 /// Load first diffuse from OBJ's MTL into RGBA8 (for [`PendingAlbedoAtlas`]).

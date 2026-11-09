@@ -1,12 +1,12 @@
-use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use deerpunk_engine_common::ui_draw::UiFrame;
@@ -17,7 +17,11 @@ use crate::ffi;
 use crate::paths;
 
 static GEOM: Mutex<Option<UiGeometryBuilder>> = Mutex::new(None);
-static START: Mutex<Option<Instant>> = Mutex::new(None);
+static START: OnceLock<Instant> = OnceLock::new();
+/// `f64` bits. `Context::GetNextUpdateDelay` — infinity means idle until input.
+static NEXT_UPDATE_AT: AtomicU64 = AtomicU64::new(0);
+/// Input, resize, or a data-model write happened since the last `frame`.
+static UI_FORCE: AtomicBool = AtomicBool::new(true);
 static DUMMY_RENDER_API: Mutex<Option<Box<ffi::rmlui_render_api_t>>> = Mutex::new(None);
 /// Kept alive for RmlUi (`g_callbacks` stores a raw pointer).
 static CALLBACKS: Mutex<Option<Box<ffi::rmlui_callbacks_t>>> = Mutex::new(None);
@@ -54,6 +58,7 @@ pub fn lua_eval(code: &str) {
     if code.is_empty() {
         return;
     }
+    mark_ui_dirty();
     let c = CString::new(code).expect("ui lua_eval: code contains null byte");
     unsafe {
         ffi::rmlui_lua_do_string(c.as_ptr());
@@ -99,12 +104,14 @@ impl UiDocument {
 
     pub fn show(&self) {
         if !self.handle.is_null() {
+            mark_ui_dirty();
             unsafe { ffi::rmlui_document_show(self.handle) };
         }
     }
 
     pub fn hide(&self) {
         if !self.handle.is_null() {
+            mark_ui_dirty();
             unsafe { ffi::rmlui_document_hide(self.handle) };
         }
     }
@@ -127,6 +134,7 @@ impl UiDocument {
         };
         if ok {
             self.remember(field, DataModelValue::Bool(value));
+            mark_ui_dirty();
         }
         ok
     }
@@ -147,6 +155,7 @@ impl UiDocument {
         };
         if ok {
             self.remember(field, DataModelValue::Number(value));
+            mark_ui_dirty();
         }
         ok
     }
@@ -176,6 +185,7 @@ impl UiDocument {
         };
         if ok {
             self.remember(field, DataModelValue::String(value.to_string()));
+            mark_ui_dirty();
         }
         ok
     }
@@ -211,7 +221,9 @@ pub struct UiRuntime {
 impl UiRuntime {
     pub fn new(assets: Box<dyn UiAssetSource>, screen: (u32, u32), context_name: &str) -> Self {
         assets::set_ui_base_path(assets.base().to_path_buf());
-        *START.lock().unwrap() = Some(Instant::now());
+        let _ = START.set(Instant::now());
+        UI_FORCE.store(true, Ordering::Relaxed);
+        NEXT_UPDATE_AT.store(0, Ordering::Relaxed);
         *GEOM.lock().unwrap() = Some(UiGeometryBuilder::new(screen.0, screen.1));
 
         let (w, h) = screen;
@@ -301,6 +313,7 @@ impl UiRuntime {
             log::error!(target: "ui", "failed to load document: {relative}");
             return None;
         }
+        mark_ui_dirty();
         Some(UiDocument {
             handle,
             written: RefCell::new(HashMap::new()),
@@ -308,6 +321,7 @@ impl UiRuntime {
     }
 
     pub fn resize(&self, w: u32, h: u32) {
+        mark_ui_dirty();
         with_geom(|g| g.resize(w, h));
         unsafe {
             ffi::rmlui_set_viewport(w as i32, h as i32);
@@ -322,11 +336,13 @@ impl UiRuntime {
         if self.ctx.is_null() || !(ratio > 0.0) {
             return;
         }
+        mark_ui_dirty();
         unsafe { ffi::rmlui_context_set_dp_ratio(self.ctx, ratio) };
     }
 
     pub fn mouse_move(&self, x: i32, y: i32) {
         if !self.ctx.is_null() {
+            mark_ui_dirty();
             unsafe { ffi::rmlui_process_mouse_move(self.ctx, x, y) };
         }
     }
@@ -335,6 +351,7 @@ impl UiRuntime {
         if self.ctx.is_null() {
             return;
         }
+        mark_ui_dirty();
         unsafe {
             if down {
                 ffi::rmlui_process_mouse_button_down(self.ctx, button);
@@ -350,6 +367,7 @@ impl UiRuntime {
         if self.ctx.is_null() || delta == 0.0 {
             return;
         }
+        mark_ui_dirty();
         unsafe { ffi::rmlui_process_mouse_wheel(self.ctx, -delta) };
     }
 
@@ -357,6 +375,7 @@ impl UiRuntime {
         if self.ctx.is_null() || rml_key == 0 {
             return;
         }
+        mark_ui_dirty();
         unsafe { ffi::rmlui_process_key_down(self.ctx, rml_key) };
     }
 
@@ -364,6 +383,7 @@ impl UiRuntime {
         if self.ctx.is_null() || rml_key == 0 {
             return;
         }
+        mark_ui_dirty();
         unsafe { ffi::rmlui_process_key_up(self.ctx, rml_key) };
     }
 
@@ -371,24 +391,47 @@ impl UiRuntime {
         if self.ctx.is_null() || codepoint == 0 {
             return;
         }
+        mark_ui_dirty();
         unsafe { ffi::rmlui_process_text_input(self.ctx, codepoint) };
     }
 
-    /// Update RmlUi and collect GPU geometry for the wgpu UI pass.
+    /// Update RmlUi and collect GPU commands for the wgpu UI pass.
+    ///
+    /// Skips the update when `GetNextUpdateDelay` has not elapsed and nothing
+    /// (pointer, keys, data model, resize) requested a frame. A render whose
+    /// draw list matches the previous one returns `None` so the GPU mesh stays.
     pub fn frame(&self) -> Option<UiFrame> {
         if !self.is_ready() {
             return None;
         }
-        let dirty = unsafe { ffi::rmlui_context_update(self.ctx) } != 0;
-        if !dirty {
+        let now = ui_elapsed_secs();
+        let next_at = f64::from_bits(NEXT_UPDATE_AT.load(Ordering::Relaxed));
+        let force = UI_FORCE.swap(false, Ordering::Relaxed);
+        if !force && now < next_at {
             return None;
         }
+        unsafe { ffi::rmlui_context_update(self.ctx) };
+        let delay = unsafe { ffi::rmlui_context_next_update_delay(self.ctx) };
+        let next = if delay.is_finite() {
+            now + delay
+        } else {
+            f64::INFINITY
+        };
+        NEXT_UPDATE_AT.store(next.to_bits(), Ordering::Relaxed);
         with_geom(|g| g.begin_frame());
         unsafe {
             ffi::rmlui_context_render(self.ctx);
         }
-        with_geom(|g| g.take_frame())
+        with_geom(|g| g.take_frame_if_changed()).flatten()
     }
+}
+
+fn mark_ui_dirty() {
+    UI_FORCE.store(true, Ordering::Relaxed);
+}
+
+fn ui_elapsed_secs() -> f64 {
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
 impl Drop for UiRuntime {
@@ -441,12 +484,7 @@ fn make_dummy_render_api() -> Box<ffi::rmlui_render_api_t> {
     unsafe extern "C" fn noop_uv(_: f32, _: f32) {}
     unsafe extern "C" fn noop_v(_: f32, _: f32, _: f32) {}
     unsafe extern "C" fn noop_bind(_: c_int, _: u32) {}
-    unsafe extern "C" fn noop_load(
-        _: *const c_char,
-        _: *const u8,
-        _: usize,
-        _: c_int,
-    ) -> c_int {
+    unsafe extern "C" fn noop_load(_: *const c_char, _: *const u8, _: usize, _: c_int) -> c_int {
         0
     }
     unsafe extern "C" fn noop_create(
@@ -504,11 +542,7 @@ fn make_dummy_render_api() -> Box<ffi::rmlui_render_api_t> {
 static BASE_PATH_CACHED: std::sync::Mutex<Option<CString>> = std::sync::Mutex::new(None);
 
 unsafe extern "C" fn cb_get_time() -> f64 {
-    START
-        .lock()
-        .ok()
-        .and_then(|g| g.map(|t| t.elapsed().as_secs_f64()))
-        .unwrap_or(0.0)
+    ui_elapsed_secs()
 }
 
 unsafe extern "C" fn cb_log(level: c_int, msg: *const c_char) {
@@ -605,7 +639,11 @@ fn list_files_json(root: &Path, pattern: &str) -> String {
         let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !ext.is_empty() && !fname.to_ascii_lowercase().ends_with(&ext.to_ascii_lowercase()) {
+        if !ext.is_empty()
+            && !fname
+                .to_ascii_lowercase()
+                .ends_with(&ext.to_ascii_lowercase())
+        {
             continue;
         }
         let rel = if dir_rel.is_empty() {
@@ -642,7 +680,7 @@ pub unsafe extern "C" fn rust_create_renderer(
     _cb: *const ffi::rmlui_callbacks_t,
 ) -> *mut std::ffi::c_void {
     // Soft renderer already created in UiRuntime::new
-    1 as *mut std::ffi::c_void
+    std::ptr::dangling_mut::<std::ffi::c_void>()
 }
 
 #[no_mangle]
@@ -660,32 +698,35 @@ pub unsafe extern "C" fn rust_render_begin_frame(_h: *mut std::ffi::c_void) {}
 pub unsafe extern "C" fn rust_render_end_frame(_h: *mut std::ffi::c_void) {}
 
 #[no_mangle]
-pub unsafe extern "C" fn rust_render_geometry(
-    _h: *mut std::ffi::c_void,
-    positions: *const f32,
-    colours: *const u8,
-    texcoords: *const f32,
+pub unsafe extern "C" fn rust_compile_geometry(
+    vertices: *const u8,
+    stride: c_int,
     num_vertices: c_int,
     indices: *const i32,
     num_indices: c_int,
-    tx: f32,
-    ty: f32,
-    texture: usize,
-) {
-    if positions.is_null() || colours.is_null() || indices.is_null() || num_indices <= 0 || num_vertices <= 0 {
-        return;
+) -> u32 {
+    if vertices.is_null() || stride <= 0 || num_vertices <= 0 {
+        return 0;
     }
-    let n = num_indices as usize;
     let nv = num_vertices as usize;
-    let idx = std::slice::from_raw_parts(indices, n);
-    let pos = std::slice::from_raw_parts(positions, nv * 2);
-    let col = std::slice::from_raw_parts(colours, nv * 4);
-    let uv = if texcoords.is_null() {
+    let stride = stride as usize;
+    let bytes = std::slice::from_raw_parts(vertices, stride * nv);
+    let idx = if indices.is_null() || num_indices <= 0 {
         &[][..]
     } else {
-        std::slice::from_raw_parts(texcoords, nv * 2)
+        std::slice::from_raw_parts(indices, num_indices as usize)
     };
-    with_geom(|r| r.draw_indexed(pos, col, uv, idx, tx, ty, texture));
+    with_geom(|r| r.compile_geometry(bytes, stride, nv, idx)).unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rust_release_geometry(id: u32) {
+    with_geom(|r| r.release_geometry(id));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rust_draw_geometry(id: u32, tx: f32, ty: f32, texture: usize) {
+    with_geom(|r| r.draw_geometry(id, tx, ty, texture));
 }
 
 #[no_mangle]
@@ -722,7 +763,8 @@ pub unsafe extern "C" fn rust_load_texture(
                 .to_string_lossy()
                 .replace('\\', "/")
                 .contains("/textures/");
-            let id = with_geom(|r| r.load_texture_rgba(rgba.into_raw(), w, h, nearest)).unwrap_or(0);
+            let id =
+                with_geom(|r| r.load_texture_rgba(rgba.into_raw(), w, h, nearest)).unwrap_or(0);
             id as usize
         }
         Err(e) => {
@@ -774,7 +816,7 @@ pub unsafe extern "C" fn rust_scissor_region(
 pub unsafe extern "C" fn rust_create_system(
     _cb: *const ffi::rmlui_callbacks_t,
 ) -> *mut std::ffi::c_void {
-    1 as *mut std::ffi::c_void
+    std::ptr::dangling_mut::<std::ffi::c_void>()
 }
 
 #[no_mangle]
@@ -837,13 +879,17 @@ pub unsafe extern "C" fn rust_file_read(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rust_file_seek(f: *mut std::ffi::c_void, offset: i64, origin: c_int) -> c_int {
+pub unsafe extern "C" fn rust_file_seek(
+    f: *mut std::ffi::c_void,
+    offset: i64,
+    origin: c_int,
+) -> c_int {
     if f.is_null() {
         return -1;
     }
     let file = &mut *(f as *mut FileState);
     let new_pos = match origin {
-        0 => offset as i64,
+        0 => offset,
         1 => file.pos as i64 + offset,
         2 => file.data.len() as i64 + offset,
         _ => return -1,

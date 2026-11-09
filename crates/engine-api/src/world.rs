@@ -74,34 +74,34 @@ impl WorldApiResolved {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            get_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:get")) },
-            set_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:set")) },
-            has_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:has")) },
-            remove_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:remove")) },
-            spawn_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn")) },
-            spawn_bundle_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn_bundle")) },
-            destroy_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:destroy")) },
+            get_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:get")) },
+            set_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:set")) },
+            has_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:has")) },
+            remove_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:remove")) },
+            spawn_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:spawn")) },
+            spawn_bundle_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:spawn_bundle")) },
+            destroy_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:destroy")) },
             destroy_deferred_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:world:destroy_deferred"))
+                crate::fn_from_erased(resolve(r, "v1:world:destroy_deferred"))
             },
-            clear_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:clear")) },
-            query_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query")) },
-            query_count_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_count")) },
-            query_matches_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_matches")) },
-            query_prepare_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_prepare")) },
-            query_execute_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:query_execute")) },
-            spawn_prefab_fn: unsafe { std::mem::transmute(resolve(r, "v1:world:spawn_prefab")) },
+            clear_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:clear")) },
+            query_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query")) },
+            query_count_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_count")) },
+            query_matches_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_matches")) },
+            query_prepare_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_prepare")) },
+            query_execute_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_execute")) },
+            spawn_prefab_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:spawn_prefab")) },
             component_register_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:world:component_register"))
+                crate::fn_from_erased(resolve(r, "v1:world:component_register"))
             },
             system_register_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:world:system_register"))
+                crate::fn_from_erased(resolve(r, "v1:world:system_register"))
             },
             system_set_interval_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:world:system_set_interval"))
+                crate::fn_from_erased(resolve(r, "v1:world:system_set_interval"))
             },
             system_set_stage_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:world:system_set_stage"))
+                crate::fn_from_erased(resolve(r, "v1:world:system_set_stage"))
             },
         }
     }

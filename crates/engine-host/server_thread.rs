@@ -44,7 +44,6 @@ pub enum ServerThreadCmd {
         world: String,
         seed: i64,
     },
-    FinishJoin(Vec<u32>),
     Shutdown,
 }
 
@@ -98,10 +97,6 @@ impl ServerThread {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
-    }
-
-    pub fn set_enabled_flag(&self, on: bool) {
-        self.enabled.store(on, Ordering::Relaxed);
     }
 
     pub fn shutdown(&mut self) {
@@ -170,9 +165,6 @@ fn server_main(
                     host.cmd.add_command(line);
                     host.rebind_cmd_refs();
                     host.cmd.frame();
-                }
-                ServerThreadCmd::FinishJoin(slots) => {
-                    host.finish_client_join(&slots);
                 }
                 ServerThreadCmd::Shutdown => {
                     running.store(false, Ordering::Relaxed);

@@ -449,7 +449,7 @@ fn generate_tramp(
     let full_name = format!("{}:{}", ns.name.value(), api_suffix);
     let tramp_ident = format_ident!(
         "__methoddb_tramp_{}",
-        full_name.replace(':', "_").replace('.', "_")
+        full_name.replace([':', '.'], "_")
     );
     let rust_method = &method.sig.ident;
     let scope_flags = ns.scope_flags;
@@ -783,18 +783,10 @@ fn generate_tramp(
     };
 
     let invoke = if ns.on_host {
-        if self_mut {
-            quote! { host.#rust_method(#(#rust_args,)*) }
-        } else {
-            quote! { host.#rust_method(#(#rust_args,)*) }
-        }
+        quote! { host.#rust_method(#(#rust_args,)*) }
     } else {
         let field = ns.host_field.as_ref().expect("host_field");
-        if self_mut {
-            quote! { host.#field.#rust_method(#(#rust_args,)*) }
-        } else {
-            quote! { host.#field.#rust_method(#(#rust_args,)*) }
-        }
+        quote! { host.#field.#rust_method(#(#rust_args,)*) }
     };
 
     let return_mode = classify_return(&method.sig.output)?;
@@ -832,7 +824,7 @@ fn generate_tramp(
 
     Ok(quote! {
         #[doc(hidden)]
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
         pub extern "C" fn #tramp_ident(#(#ffi_params,)*) -> #ffi_ret {
             #host_ref
             #(#pre_call)*

@@ -219,7 +219,7 @@ pub fn fetch_connect_token_on_socket(
     server_addr: SocketAddr,
     client_id: u64,
 ) -> Result<ConnectToken, String> {
-    let challenge = encode_challenge(client_id, server_addr);
+    let _challenge = encode_challenge(client_id, server_addr);
     let deadline = std::time::Instant::now() + FETCH_TIMEOUT;
     let mut buf = [0u8; 2048];
     let mut last_send = std::time::Instant::now() - Duration::from_secs(1);

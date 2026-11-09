@@ -304,7 +304,7 @@ impl KiraBackend {
             .playback_rate(pitch_mul.clamp(0.1, 4.0) as f64);
 
         if let Some(mut old) = self.loop_streams.remove(&instance_id) {
-            let _ = old.stop(Tween::default());
+            old.stop(Tween::default());
         }
 
         match manager.play(data) {
@@ -508,7 +508,7 @@ impl AudioBackend for KiraBackend {
         self.last_listener = *listener;
         if let Some(m) = self.manager.as_mut() {
             if (volume - self.last_volume).abs() > 0.001 {
-                let _ = m.main_track().set_volume(
+                m.main_track().set_volume(
                     volume.clamp(0.0, 1.0) as f64,
                     Tween::default(),
                 );
@@ -524,8 +524,8 @@ impl AudioBackend for KiraBackend {
                         listener.up,
                         *origin,
                     );
-                let _ = handle.set_volume(atten.clamp(0.0, 2.0) as f64, Tween::default());
-                let _ = handle.set_panning(pan, Tween::default());
+                handle.set_volume(atten.clamp(0.0, 2.0) as f64, Tween::default());
+                handle.set_panning(pan, Tween::default());
             }
         }
     }
@@ -546,7 +546,7 @@ impl AudioBackend for KiraBackend {
             return;
         }
         if let Some(mut h) = self.loop_streams.remove(&instance_id) {
-            let _ = h.stop(Tween::default());
+            h.stop(Tween::default());
         }
     }
 
@@ -616,7 +616,7 @@ impl AudioBackend for KiraBackend {
 
     fn stop_attached(&mut self, key: u64) {
         if let Some(mut h) = self.attached.remove(&key) {
-            let _ = h.stop(Tween::default());
+            h.stop(Tween::default());
         }
     }
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use deerpunk_engine_common::cvar_def::ARCHIVE;
 use deerpunk_engine_common::network::lan::{
-    self, encode_info, DEFAULT_GAME_PORT, LanAdvertiseState,
+    encode_info, DEFAULT_GAME_PORT, LanAdvertiseState,
 };
 
 deerpunk_engine_common::cvar_def!(

@@ -192,7 +192,9 @@ impl RapierPhysicsBackend {
                     .map(|v| rapier3d::math::Vector::new(v[0], v[1], v[2]))
                     .collect();
                 let tris: Vec<[u32; 3]> = indices
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|c| [c[0], c[1], c[2]])
                     .collect();
                 match SharedShape::trimesh(pts, tris) {

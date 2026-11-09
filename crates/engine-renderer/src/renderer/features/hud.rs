@@ -3,7 +3,6 @@
 use crate::frame::context::FrameCtx;
 use crate::render_profile::lap_ms;
 use crate::renderer::Renderer;
-use deerpunk_engine_common::frame::{frame_height, frame_width};
 
 impl Renderer {
     pub(crate) fn pass_hud(
@@ -35,7 +34,7 @@ impl Renderer {
                 multiview_mask: None,
             });
             ctx.draw_acc.note_pipeline();
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(pipeline);
             ctx.draw_acc.note_bind();
             pass.set_bind_group(0, &self.hud_globals_bg, &[]);
             Self::draw_batched(

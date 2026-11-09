@@ -98,11 +98,6 @@ pub fn world_bounds(model: Mat4, mesh: &deerpunk_engine_common::resource::mesh::
 
 pub struct CullCamera {
     pub view_proj: Mat4,
-    pub view: Mat4,
-    pub near: f32,
-    pub far: f32,
-    pub fov_y: f32,
-    pub aspect: f32,
     pub layer_mask: u32,
 }
 

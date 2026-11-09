@@ -1,12 +1,10 @@
 //! Static mesh pass, then skinned mesh pass.
 
-use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use bytemuck::Zeroable;
 use deerpunk_engine_common::frame::{frame_height, frame_width};
 use deerpunk_engine_common::material::{ShaderId, VertexLayoutSpec};
-use wgpu::util::DeviceExt;
 
 use crate::asset_inventory::{AssetEntry, AssetKind, ASSET_ID_MESH};
 use crate::bone_gpu::{GpuBoneBlock, GPU_BONE_BLOCK_SIZE};
@@ -16,8 +14,8 @@ use crate::mesh_vertex_pack;
 use crate::render_profile::lap_ms;
 use crate::renderer::{
     build_rgba_mipmap_chain, texture_mip_levels, GpuPointLight, LightsUniform, MeshBatchKey,
-    MeshUniform, MeshVertex, Renderer, SkinnedMeshVertex, ALBEDO_TEX_FORMAT, DEPTH_FORMAT,
-    FRAME_UNIFORM_RING, MAX_POINT_LIGHTS, MESH_UNIFORM_SLOTS_INIT, TEX_FORMAT,
+    MeshUniform, Renderer, SkinnedMeshVertex, ALBEDO_TEX_FORMAT, DEPTH_FORMAT, FRAME_UNIFORM_RING,
+    MAX_POINT_LIGHTS, MESH_UNIFORM_SLOTS_INIT, TEX_FORMAT,
 };
 use crate::shader_registry::ShaderRegistry;
 use crate::snapshot::MeshTexture;
@@ -154,14 +152,6 @@ pub fn bench_build_indirect(
     cmds
 }
 
-fn mesh_batch_fingerprint(meshes: &MeshDrawListView<'_>) -> u64 {
-    let mut h = meshes.len() as u64;
-    for i in 0..meshes.len() {
-        h = hash_batch_draw(h, meshes.get(i));
-    }
-    h | 1
-}
-
 /// Same scratch the renderer keeps across frames. The bench writes the plan back,
 /// which is what `encode_static_mesh_pass` does after `static_batch_plan`.
 #[doc(hidden)]
@@ -203,6 +193,12 @@ impl StaticBatchPlanBench {
         self.groups = groups;
         self.for_index = for_index;
         groups_n
+    }
+}
+
+impl Default for StaticBatchPlanBench {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1369,7 +1365,7 @@ impl Renderer {
                 );
             }
             let bgs: [wgpu::BindGroup; FRAME_UNIFORM_RING] =
-                bgs.try_into().ok().expect("skinned globals ring");
+                bgs.try_into().expect("skinned globals ring");
             self.skinned_mesh_globals_bgs.insert(handle, bgs);
         }
         let block = GpuBoneBlock::from_palette(palette);
@@ -1378,45 +1374,6 @@ impl Renderer {
             .queue
             .write_buffer(buf, 0, bytemuck::bytes_of(&block));
         &self.skinned_mesh_globals_bgs.get(&handle).unwrap()[self.frame_uniform_ring as usize]
-    }
-
-    pub(in crate::renderer) fn mesh_vertex_layout_extended() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: size_of::<MeshVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    offset: 12,
-                    format: wgpu::VertexFormat::Float32x3,
-                    shader_location: 1,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    format: wgpu::VertexFormat::Float32x2,
-                    shader_location: 2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 32,
-                    format: wgpu::VertexFormat::Float32x4,
-                    shader_location: 3,
-                },
-                wgpu::VertexAttribute {
-                    offset: 48,
-                    format: wgpu::VertexFormat::Float32x2,
-                    shader_location: 4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 56,
-                    format: wgpu::VertexFormat::Float32x4,
-                    shader_location: 5,
-                },
-            ],
-        }
     }
 
     pub(in crate::renderer) fn build_shader_mesh_pipeline(
@@ -1823,17 +1780,9 @@ impl Renderer {
         Self::mesh_has_bsp_surface_data(self.registry_mesh(*mesh))
     }
 
-    pub(crate) fn mesh_static_handle_cached(&self, i: usize) -> crate::mesh_allocator::MeshHandle {
-        self.mesh_pass_static_handles[i].expect("static mesh handle not resolved")
-    }
-
-    pub(crate) fn mesh_skinned_handle_cached(&self, j: usize) -> crate::mesh_allocator::MeshHandle {
-        self.mesh_pass_skinned_handles[j].expect("skinned mesh handle not resolved")
-    }
-
     pub(in crate::renderer) fn mesh_uniform_stride() -> u64 {
         let mesh_align = 16u64;
-        ((std::mem::size_of::<MeshUniform>() as u64 + mesh_align - 1) / mesh_align) * mesh_align
+        (std::mem::size_of::<MeshUniform>() as u64).div_ceil(mesh_align) * mesh_align
     }
 
     /// Grow `mesh_globals_buf` when static+skinned draw count exceeds capacity.
@@ -1930,7 +1879,6 @@ impl Renderer {
         while !handle.is_valid() || !self.mesh_pool.handle_fits(handle) {
             if handle.is_valid() {
                 alloc.free(handle);
-                handle = crate::mesh_allocator::MeshHandle::INVALID;
             }
             grow_attempts += 1;
             assert!(
@@ -1958,7 +1906,7 @@ impl Renderer {
             (handle.idx_count as usize) * crate::mesh_allocator::MESH_INDEX_SIZE as usize;
         assert_eq!(
             ib_bytes,
-            indices.len() * std::mem::size_of::<u32>(),
+            std::mem::size_of_val(indices),
             "mesh upload idx_count mismatch"
         );
         assert!(
@@ -2307,6 +2255,7 @@ mod batch_tests {
             face: 0,
             world_bounds: Aabb::EMPTY,
             entity_id: 0,
+            skip_vis: false,
             uniform_aux: 0,
         }
     }

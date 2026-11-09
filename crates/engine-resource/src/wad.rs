@@ -90,7 +90,7 @@ impl WadArchive {
             let disksize = i32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap()) as usize;
             let typ = data[off + 12];
             // 0x43 = miptex ('C'), 0x42 = qpic — we only want miptex
-            if typ != 0x43 && typ != b'C' {
+            if typ != b'C' {
                 continue;
             }
             let name = cstr16(&data[off + 16..off + 32]);
@@ -117,6 +117,10 @@ impl WadArchive {
 
     pub fn len(&self) -> usize {
         self.textures.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.textures.is_empty()
     }
 }
 

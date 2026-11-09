@@ -125,16 +125,16 @@ impl UserCmd {
         let pitch = f32::from_le_bytes(bytes[8..12].try_into().ok()?);
         let buttons = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
         let mut axes = [0.0f32; AXIS_COUNT];
-        for i in 0..AXIS_COUNT {
+        for (i, axis) in axes.iter_mut().enumerate() {
             let o = 20 + i * 4;
-            axes[i] = f32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
+            *axis = f32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
         }
         let sequence = u32::from_le_bytes(bytes[36..40].try_into().ok()?);
         let mut claimed_feet = [0.0f32; 3];
         if flags & USERCMD_FLAG_CLAIMED_FEET != 0 {
-            for i in 0..3 {
+            for (i, axis) in claimed_feet.iter_mut().enumerate() {
                 let o = 40 + i * 4;
-                claimed_feet[i] = f32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
+                *axis = f32::from_le_bytes(bytes[o..o + 4].try_into().ok()?);
             }
         }
         Some(Self {
@@ -174,10 +174,12 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let mut cmd = UserCmd::default();
-        cmd.yaw = 1.25;
-        cmd.pitch = -0.5;
-        cmd.buttons = BUTTON_USE | BUTTON_SPEED;
+        let mut cmd = UserCmd {
+            yaw: 1.25,
+            pitch: -0.5,
+            buttons: BUTTON_USE | BUTTON_SPEED,
+            ..UserCmd::default()
+        };
         cmd.axes[AXIS_FORWARD] = 1.0;
         cmd.axes[AXIS_SIDE] = -0.5;
         let bytes = cmd.encode();

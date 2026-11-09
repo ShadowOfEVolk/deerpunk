@@ -49,13 +49,13 @@ impl ResourcesApi {
         Self {
             ctx,
             register_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:resources:register"))
+                crate::fn_from_erased(resolve(r, "v1:resources:register"))
             },
             load_material_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:resources:load_material"))
+                crate::fn_from_erased(resolve(r, "v1:resources:load_material"))
             },
             is_loaded_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:resources:is_loaded"))
+                crate::fn_from_erased(resolve(r, "v1:resources:is_loaded"))
             },
         }
     }

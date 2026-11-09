@@ -1,8 +1,4 @@
-use glam::{Quat, Vec3};
-use rapier3d::math::Pose3;
-
-use super::{PhysicsWorld, RigidBodyHandle};
-use crate::transform::Transform;
+use super::PhysicsWorld;
 
 // Фаза 1: Копируем позицию из Transform для всех тел с RigidBodyHandle.
 //pub fn physics_sync_in(physics: &mut PhysicsWorld, world: &FlecsWorld) {

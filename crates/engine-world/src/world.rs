@@ -192,6 +192,12 @@ pub struct World {
 unsafe impl Send for World {}
 unsafe impl Sync for World {}
 
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl World {
     pub fn new() -> Self {
         let inner = unsafe { sys::ecs_init() };
@@ -393,7 +399,6 @@ impl World {
                     type_: ti,
                 },
             )
-            .into()
         };
         if let Some(apply) = desc.prefab_apply {
             if apply as usize != 0 {
@@ -405,7 +410,7 @@ impl World {
                     desc.name.clone(),
                     PrefabApplier {
                         component_id: id,
-                        component_size: desc.size as usize,
+                        component_size: desc.size,
                         kind: PrefabApplierKind::Ffi {
                             user: desc.prefab_apply_user,
                             apply,
@@ -480,6 +485,9 @@ impl World {
         }
     }
 
+    // Pointer is an FFI payload: null is rejected, Flecs reads `size` bytes. The
+    // signature stays safe so host bindings can forward a checked C pointer.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn set_raw(
         &self,
         entity: EntityId,
@@ -621,7 +629,7 @@ impl World {
                 SystemSchedule::Manual => 0,
                 SystemSchedule::OnUpdate => sys::EcsOnUpdate,
             };
-            let id: SystemId = sys::ecs_system_init(self.inner, &flecs_desc).into();
+            let id: SystemId = sys::ecs_system_init(self.inner, &flecs_desc);
             log::info!(target: "ecs", "registered system '{name}' query='{query}' id={id}");
             id
         }
@@ -693,7 +701,7 @@ impl World {
             flecs_desc.ctx = slot as *mut ProgressSystemSlot as *mut c_void;
             flecs_desc.phase = sys::EcsOnUpdate;
             flecs_desc.interval = interval_secs.max(0.0);
-            let id: SystemId = sys::ecs_system_init(self.inner, &flecs_desc).into();
+            let id: SystemId = sys::ecs_system_init(self.inner, &flecs_desc);
             log::info!(
                 target: "ecs",
                 "registered progress system '{name_static}' query='{query_static}' id={id} interval={}s",
@@ -910,7 +918,7 @@ impl World {
                 if i >= 32 {
                     break;
                 }
-                desc.terms[i].id = comp_id as u64;
+                desc.terms[i].id = comp_id;
                 desc.terms[i].src.id = 0;
                 desc.terms[i].src.name = core::ptr::null();
             }
@@ -1116,10 +1124,8 @@ pub fn install_panic_hook(world: &World) {
         let ptr = world.inner as usize;
         std::panic::set_hook(Box::new(move |info| {
             let path = "crash_world_dump.txt";
-            unsafe {
-                let w = ptr as *mut sys::ecs_world_t;
-                dump_world_from_ptr(w, path);
-            }
+            let w = ptr as *mut sys::ecs_world_t;
+            dump_world_from_ptr(w, path);
             log::error!("Panic occurred — world dumped to {}", path);
             if let Some(s) = info.payload().downcast_ref::<&str>() {
                 log::error!("Panic: {}", s);
@@ -1209,15 +1215,16 @@ fn short_type_name<T: ?Sized>() -> &'static str {
     full.split("::").last().unwrap_or(full)
 }
 
-fn layout_hook() -> Option<fn(ComponentId, &crate::layout_meta::LayoutMeta)> {
+type LayoutHook = fn(ComponentId, &crate::layout_meta::LayoutMeta);
+
+fn layout_hook() -> Option<LayoutHook> {
     *LAYOUT_HOOK.lock().unwrap()
 }
 
-static LAYOUT_HOOK: Mutex<Option<fn(ComponentId, &crate::layout_meta::LayoutMeta)>> =
-    Mutex::new(None);
+static LAYOUT_HOOK: Mutex<Option<LayoutHook>> = Mutex::new(None);
 
 /// Engine-common property registry listens here. Not a Flecs type.
-pub fn set_layout_hook(hook: fn(ComponentId, &crate::layout_meta::LayoutMeta)) {
+pub fn set_layout_hook(hook: LayoutHook) {
     *LAYOUT_HOOK.lock().unwrap() = Some(hook);
 }
 
@@ -1225,7 +1232,15 @@ pub fn set_layout_hook(hook: fn(ComponentId, &crate::layout_meta::LayoutMeta)) {
 mod stage_tests {
     use super::*;
 
-    extern "C" fn count_runs(user: *mut c_void) {
+    extern "C" fn count_runs(
+        _entities: *const EntityId,
+        _count: u32,
+        _fields: *const *const c_void,
+        _field_count: u32,
+        _sizes: *const usize,
+        _dt: f32,
+        user: *mut c_void,
+    ) {
         unsafe { *(user as *mut u32) += 1 };
     }
 

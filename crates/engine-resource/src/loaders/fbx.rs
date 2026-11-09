@@ -95,7 +95,7 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         return Err(format!("bad vertices count: {}", positions.len()));
     }
     let mut verts = Vec::with_capacity(positions.len() / 3);
-    for chunk in positions.chunks_exact(3) {
+    for chunk in positions.as_chunks::<3>().0 {
         verts.push([chunk[0] as f32, chunk[1] as f32, chunk[2] as f32]);
     }
     let normals = vec![[0.0, 0.0, 1.0]; verts.len()];
@@ -111,9 +111,9 @@ fn parse_fbx_binary(data: &[u8]) -> Result<Mesh, String> {
         let count = i - start + 1;
         if count >= 3 {
             let a = polys[start] as u32;
-            for j in start + 1..i {
+            for poly in &polys[start + 1..i] {
                 indices.push(a);
-                indices.push(polys[j] as u32);
+                indices.push(*poly as u32);
                 indices.push(last);
             }
         }

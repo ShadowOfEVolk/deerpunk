@@ -383,13 +383,13 @@ fn expand_includes_inner(
 fn parse_include_path(trimmed: &str) -> Option<&str> {
     let rest = trimmed.strip_prefix("#include")?;
     let rest = rest.trim();
-    if rest.starts_with('"') {
-        let end = rest[1..].find('"')?;
-        return Some(&rest[1..1 + end]);
+    if let Some(body) = rest.strip_prefix('"') {
+        let end = body.find('"')?;
+        return Some(&body[..end]);
     }
-    if rest.starts_with('<') {
-        let end = rest[1..].find('>')?;
-        return Some(&rest[1..1 + end]);
+    if let Some(body) = rest.strip_prefix('<') {
+        let end = body.find('>')?;
+        return Some(&body[..end]);
     }
     None
 }

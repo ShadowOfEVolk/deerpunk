@@ -26,17 +26,6 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
     let e = cvar.get_f32_or("r_exposure", 1.0);
     r.set_exposure_override(if e < 0.0 { None } else { Some(e) });
     r.set_tonemap_mode(cvar.get_f32_or("r_tonemap", -1.0));
-    r.set_bloom(
-        cvar.get_f32_or("r_bloom", 1.0) >= 0.5,
-        cvar.get_f32_or("r_bloom_threshold", 0.7),
-        cvar.get_f32_or("r_bloom_intensity", 1.0),
-    );
-    r.set_bloom_downscale(cvar.get_f32_or("r_bloom_downscale", 2.0).round() as u32);
-    r.set_grain(
-        cvar.get_f32_or("r_grain", 1.0) >= 0.5,
-        cvar.get_f32_or("r_grain_strength", 0.025),
-        cvar.get_f32_or("r_grain_downscale", 3.0).clamp(1.0, 8.0),
-    );
     r.set_godrays(
         cvar.get_f32_or("r_godrays", 1.0) >= 0.5,
         cvar.get_f32_or("r_godray_intensity", 0.58),

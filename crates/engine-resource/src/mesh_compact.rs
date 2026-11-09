@@ -26,11 +26,11 @@ pub fn decode_position_u20x3(words: [u32; 2]) -> [f32; 3] {
     const SCALE: f32 = 32.0 / POSITION_MAX as f32;
     const OFFSET: f32 = -8.0;
     let mut out = [0u32; 3];
-    for axis in 0..3 {
+    for (axis, word) in out.iter_mut().enumerate() {
         let shift = (axis as u32) * 10;
         let lo = (words[0] >> shift) & 0x3FF;
         let hi = (words[1] >> shift) & 0x3FF;
-        out[axis] = (hi << 10) | lo;
+        *word = (hi << 10) | lo;
     }
     [
         out[0] as f32 * SCALE + OFFSET,
@@ -63,6 +63,8 @@ pub fn encode_light_tile_u32(block_level: f32, sky_level: f32, atlas_tile: u16) 
 }
 
 /// Append one compact vertex (`COMPACT_CHUNK_VERTEX_STRIDE` bytes) to `out`.
+/// Each argument is one packed field; folding them would hide the layout.
+#[allow(clippy::too_many_arguments)]
 pub fn push_compact_vertex(
     out: &mut Vec<u8>,
     position: [f32; 3],

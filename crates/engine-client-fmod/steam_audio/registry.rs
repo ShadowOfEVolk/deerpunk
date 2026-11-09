@@ -100,7 +100,7 @@ impl SimRegistry {
 
     fn make_inputs<'a>(
         origin: Vec3,
-        dist_mult_box: &Box<f32>,
+        dist_mult_box: &f32,
         probe_batch: Option<&'a ProbeBatch>,
         reflections_baked_id: Option<&'a BakedDataIdentifier>,
     ) -> SimulationInputs<'a> {
@@ -110,7 +110,7 @@ impl SimRegistry {
             direct_simulation: Some(DirectSimulationParameters {
                 distance_attenuation: Some(DistanceAttenuationModel::Callback {
                     callback: dist_atten_callback,
-                    user_data: &**dist_mult_box as *const f32 as *mut core::ffi::c_void,
+                    user_data: dist_mult_box as *const f32 as *mut core::ffi::c_void,
                     dirty: false,
                 }),
                 air_absorption: Some(audionimbus::AirAbsorptionModel::Default),

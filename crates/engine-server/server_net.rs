@@ -30,7 +30,6 @@ struct HostSession {
     client_slots: HashMap<ClientId, u32>,
     private_key: [u8; NETCODE_KEY_BYTES],
     public_addresses: Vec<SocketAddr>,
-    listen_port: u16,
 }
 
 /// Listen / dedicated: one bound UDP socket, remote clients over renet.
@@ -103,7 +102,6 @@ impl ServerNet {
             client_slots: HashMap::new(),
             private_key,
             public_addresses,
-            listen_port: port,
         });
         Ok(())
     }

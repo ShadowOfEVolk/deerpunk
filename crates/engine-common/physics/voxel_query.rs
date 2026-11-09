@@ -128,26 +128,28 @@ pub fn cast_ray_volume(
     let mut traveled = 0.0f32;
     let mut last_axis = 0usize;
     loop {
-        if (0..S_I).contains(&ix) && (0..S_I).contains(&iy) && (0..S_I).contains(&iz) {
-            if volume.is_solid(ix as usize, iy as usize, iz as usize) {
-                let mut normal = [0.0f32; 3];
-                normal[last_axis] = -step[last_axis] as f32;
-                let point = [
-                    origin[0] + d[0] * traveled,
-                    origin[1] + d[1] * traveled,
-                    origin[2] + d[2] * traveled,
-                ];
-                return Some(RayCastHit {
-                    fraction: if max_dist > 0.0 {
-                        traveled / max_dist
-                    } else {
-                        1.0
-                    },
-                    normal,
-                    point,
-                    entity,
-                });
-            }
+        if (0..S_I).contains(&ix)
+            && (0..S_I).contains(&iy)
+            && (0..S_I).contains(&iz)
+            && volume.is_solid(ix as usize, iy as usize, iz as usize)
+        {
+            let mut normal = [0.0f32; 3];
+            normal[last_axis] = -step[last_axis] as f32;
+            let point = [
+                origin[0] + d[0] * traveled,
+                origin[1] + d[1] * traveled,
+                origin[2] + d[2] * traveled,
+            ];
+            return Some(RayCastHit {
+                fraction: if max_dist > 0.0 {
+                    traveled / max_dist
+                } else {
+                    1.0
+                },
+                normal,
+                point,
+                entity,
+            });
         }
         // Advance to the next cell boundary.
         if t_max[0] < t_max[1] && t_max[0] < t_max[2] {
@@ -282,11 +284,7 @@ pub fn cast_capsule_volume(
         } else {
             lead.floor() as i32
         };
-        let mut t_boundary = if sign > 0.0 {
-            (cell as f32 - lead) / d[axis]
-        } else {
-            (cell as f32 - lead) / d[axis]
-        };
+        let mut t_boundary = (cell as f32 - lead) / d[axis];
         let t_step = (1.0 / d[axis].abs()).max(1e-6);
         let (a, b) = other_axes(axis);
 

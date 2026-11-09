@@ -124,7 +124,6 @@ pub struct MeshApi {
     get_buffer_fn: Option<MeshGetBufferFn>,
     mark_dirty_fn: Option<MeshMarkDirtyFn>,
     register_allocator_fn: Option<MeshRegisterAllocatorFn>,
-    release_fn: Option<extern "C" fn(*mut u8, usize)>,
     pin_fn: Option<extern "C" fn(*mut u8, usize)>,
     unpin_fn: Option<extern "C" fn(*mut u8, usize)>,
     content_id_fn: Option<extern "C" fn(*mut u8, usize) -> u64>,
@@ -137,25 +136,24 @@ impl MeshApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            create_fn: resolve(r, "v1:mesh:create").map(|p| unsafe { std::mem::transmute(p) }),
+            create_fn: resolve(r, "v1:mesh:create").map(|p| unsafe { crate::fn_from_erased(p) }),
             create_with_fn: resolve(r, "v1:mesh:create_with")
-                .map(|p| unsafe { std::mem::transmute(p) }),
-            update_fn: resolve(r, "v1:mesh:update").map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
+            update_fn: resolve(r, "v1:mesh:update").map(|p| unsafe { crate::fn_from_erased(p) }),
             update_packed_fn: resolve(r, "v1:mesh:update_packed")
-                .map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
             create_packed_fn: resolve(r, "v1:mesh:create_packed")
-                .map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
             get_buffer_fn: resolve(r, "v1:mesh:get_buffer")
-                .map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
             mark_dirty_fn: resolve(r, "v1:mesh:mark_dirty")
-                .map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
             register_allocator_fn: resolve(r, "v1:mesh:register_allocator")
-                .map(|p| unsafe { std::mem::transmute(p) }),
-            release_fn: resolve(r, "v1:mesh:release").map(|p| unsafe { std::mem::transmute(p) }),
-            pin_fn: resolve(r, "v1:mesh:pin").map(|p| unsafe { std::mem::transmute(p) }),
-            unpin_fn: resolve(r, "v1:mesh:unpin").map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
+            pin_fn: resolve(r, "v1:mesh:pin").map(|p| unsafe { crate::fn_from_erased(p) }),
+            unpin_fn: resolve(r, "v1:mesh:unpin").map(|p| unsafe { crate::fn_from_erased(p) }),
             content_id_fn: resolve(r, "v1:mesh:content_id")
-                .map(|p| unsafe { std::mem::transmute(p) }),
+                .map(|p| unsafe { crate::fn_from_erased(p) }),
         }
     }
 
@@ -329,6 +327,8 @@ impl MeshApi {
     ///
     /// Returns `u32::MAX` on failure. Re-registering the same `name`
     /// returns the previously assigned id (idempotent).
+    // `vtable` is read only to copy its bytes into the host call.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn register_allocator(
         &self,
         name: &str,

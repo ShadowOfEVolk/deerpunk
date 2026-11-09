@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use crate::components::{Mesh3D, NetworkEntity, StudioModel, TransformComponent, Worldspawn};
+use crate::components::{Mesh3D, NetworkEntity, StudioModel, Worldspawn};
 use crate::material::DrawMaterial;
 use crate::network::field_apply::read_field;
 use crate::network::field_path::{FieldValue, PropertyId};

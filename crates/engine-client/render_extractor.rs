@@ -299,8 +299,6 @@ impl RenderExtractor {
                 });
             }
         }
-        drop(_z_cam);
-
         let extract_frustum = if early_cull {
             scene.cameras.first().map(|c| {
                 let view = c.view_matrix();
@@ -386,8 +384,6 @@ impl RenderExtractor {
                     }
                 }
             }
-            drop(_z_static);
-
             let _z_terrain =
                 deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.terrain");
             if let Some(batches) = world.query_batches(self.q_terrain_splat) {
@@ -433,8 +429,6 @@ impl RenderExtractor {
                     }
                 }
             }
-            drop(_z_terrain);
-
             let _z_skinned =
                 deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.skinned");
             if let Some(batches) = world.query_batches(self.q_skinned) {
@@ -517,7 +511,6 @@ impl RenderExtractor {
                     }
                 }
             }
-            drop(_z_skinned);
         }
 
         let _z_lights = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.lights");
@@ -542,8 +535,6 @@ impl RenderExtractor {
                 }
             }
         }
-        drop(_z_lights);
-
         gpu_stats.extractor_ms = extract_body_start.elapsed().as_secs_f32() * 1000.0;
         gpu_stats.extract_frustum_skip = frustum_skip;
 

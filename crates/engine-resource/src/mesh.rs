@@ -109,7 +109,7 @@ impl Mesh {
 
     pub fn vertex_count(&self) -> usize {
         let stride = self.vertex_size as usize;
-        if stride == 0 || self.vertex_bytes.len() % stride != 0 {
+        if stride == 0 || !self.vertex_bytes.len().is_multiple_of(stride) {
             return 0;
         }
         self.vertex_bytes.len() / stride
@@ -120,7 +120,7 @@ impl Mesh {
         self.vertex_size > 0
             && stride > 0
             && !self.vertex_bytes.is_empty()
-            && self.vertex_bytes.len() % stride == 0
+            && self.vertex_bytes.len().is_multiple_of(stride)
             && (self.positions.is_empty()
                 || self.vertex_bytes.len() == self.positions.len() * stride)
     }
@@ -182,12 +182,15 @@ impl Mesh {
     }
 }
 
-fn build_cube() -> (Vec<[f32;3]>, Vec<[f32;3]>, Vec<[f32;2]>, Vec<u32>) {
+type CubeGeometry = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
+
+fn build_cube() -> CubeGeometry {
     let mut pos = Vec::new();
     let mut nrm = Vec::new();
     let mut uv = Vec::new();
     let mut idx = Vec::new();
-    let faces: [([f32;3], [f32;3], [f32;3], [f32;3], [f32;3]); 6] = [
+    type CubeFace = ([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]);
+    let faces: [CubeFace; 6] = [
         ([ 0.0, 0.0,-1.0], [-1.0,-1.0,-1.0], [ 1.0,-1.0,-1.0], [ 1.0, 1.0,-1.0], [-1.0, 1.0,-1.0]),
         ([ 0.0, 0.0, 1.0], [ 1.0,-1.0, 1.0], [-1.0,-1.0, 1.0], [-1.0, 1.0, 1.0], [ 1.0, 1.0, 1.0]),
         ([ 1.0, 0.0, 0.0], [ 1.0,-1.0,-1.0], [ 1.0, 1.0,-1.0], [ 1.0, 1.0, 1.0], [ 1.0,-1.0, 1.0]),

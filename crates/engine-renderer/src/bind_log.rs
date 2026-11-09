@@ -9,9 +9,9 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 const SLOTS: usize = 4;
 
 std::thread_local! {
-    static LAST: [Cell<u64>; SLOTS] = [const { Cell::new(0) }; SLOTS];
-    static COUNTS: [Cell<u32>; SLOTS] = [const { Cell::new(0) }; SLOTS];
-    static REPEATS: [Cell<u32>; SLOTS] = [const { Cell::new(0) }; SLOTS];
+    static LAST: [Cell<u64>; SLOTS] = const { [const { Cell::new(0) }; SLOTS] };
+    static COUNTS: [Cell<u32>; SLOTS] = const { [const { Cell::new(0) }; SLOTS] };
+    static REPEATS: [Cell<u32>; SLOTS] = const { [const { Cell::new(0) }; SLOTS] };
 }
 
 /// Synced from [`r_logbindgroups`] each frame via client `apply_renderer_cvars`.

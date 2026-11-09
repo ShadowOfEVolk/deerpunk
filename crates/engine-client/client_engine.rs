@@ -2,9 +2,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use deerpunk_engine_common::components::{CameraComponent, SoundEmitter, TransformComponent};
+use deerpunk_engine_common::components::{SoundEmitter, TransformComponent};
 use deerpunk_engine_common::input::Input;
-use deerpunk_engine_common::material::DrawMaterial;
 use deerpunk_engine_common::material::{screen_dither_preprocessor_defines, ShaderPreprocessor};
 use deerpunk_engine_common::network::sound_event::SoundPlayRpc;
 use deerpunk_engine_common::network::ClientSessionPhase;
@@ -15,7 +14,7 @@ use deerpunk_engine_renderer::debug_draw::DebugDraw;
 use deerpunk_engine_renderer::material_store::MaterialStore;
 use deerpunk_engine_renderer::renderer::{Renderer, ShaderSources};
 use deerpunk_engine_renderer::shader_registry::ShaderRegistry;
-use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget, SkyDraw};
+use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget};
 
 use crate::camera_compose::pack_surface_camera;
 
@@ -34,7 +33,7 @@ use std::collections::HashMap;
 pub use deerpunk_engine_renderer::{DebugColor, DebugDraw as DebugDrawBuf, DebugPrimitive};
 
 use crate::app::App;
-use crate::audio::{AudioBackend, AudioListener, FmodEventInfo, NullAudio};
+use crate::audio::{AudioBackend, AudioListener, FmodEventInfo};
 use crate::bone_buffer_pool::{BoneBufferHandle, BoneBufferPool};
 use crate::client_dll::ClientDll;
 use crate::console::Console;
@@ -148,7 +147,6 @@ pub struct ClientEngine {
     /// Latest Hosek payload from gamelib (`set_gamelib_sky` FFI).
     gamelib_sky: Option<GamelibSkyPayload>,
     cull_scratch: CullScratch,
-    surface_snapshot: RenderSnapshot,
     /// Per-frame surface cameras (sorted by `order`) for compose.
     camera_build_scratch: Vec<deerpunk_engine_renderer::snapshot::CameraRenderSnapshot>,
     camera_compose_scratch: Vec<RenderSnapshot>,
@@ -160,12 +158,6 @@ pub struct ClientEngine {
     /// [`cl_render_thread`]: 0 = sync submit/present, 1 = async submit on `deerpunk-submit`.
     /// Present always stays on this thread.
     render_pipeline_mode: usize,
-}
-
-#[inline]
-fn smoothstep_sky(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 impl ClientEngine {
@@ -241,9 +233,6 @@ impl ClientEngine {
             procedural_sky: false,
             gamelib_sky: None,
             cull_scratch: CullScratch::new(),
-            surface_snapshot: RenderSnapshot::new(
-                deerpunk_engine_common::components::ColorLoad::Clear,
-            ),
             camera_build_scratch: Vec::new(),
             camera_compose_scratch: Vec::new(),
             game_debug: DebugDraw::new(),
@@ -1013,9 +1002,10 @@ impl ClientEngine {
         }
         extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
         self.renderer.note_extract_gpu_stats(extract_gpu);
-        self.prepare_view_proj = scene.cameras.first().map(|c| {
-            c.projection_matrix(aspect) * c.view_matrix()
-        });
+        self.prepare_view_proj = scene
+            .cameras
+            .first()
+            .map(|c| c.projection_matrix(aspect) * c.view_matrix());
         scene
     }
 
@@ -1141,7 +1131,8 @@ impl ClientEngine {
         {
             return false;
         }
-        let binsets = unsafe { std::slice::from_raw_parts(desc.binsets, desc.binset_count as usize) };
+        let binsets =
+            unsafe { std::slice::from_raw_parts(desc.binsets, desc.binset_count as usize) };
         let bins = unsafe { std::slice::from_raw_parts(desc.bins, desc.bin_count as usize) };
         let position = desc.position;
         let rotation = desc.rotation;
@@ -1198,10 +1189,10 @@ impl ClientEngine {
                 position,
                 rotation,
                 scale,
-            bounds_min,
-            bounds_max,
-            desc.skip_vis != 0,
-            bins[start..end]
+                bounds_min,
+                bounds_max,
+                desc.skip_vis != 0,
+                bins[start..end]
                     .iter()
                     .map(|b| (b.first_index, b.index_count, b.face))
                     .filter(|(_, count, _)| *count != 0),
@@ -1548,10 +1539,9 @@ impl ClientEngine {
                 std::sync::atomic::AtomicBool::new(false);
             if !LOG_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 log::info!(
-                    "[client] first UiFrame: batches={} verts={} idx={} tex_uploads={}",
-                    frame.batches.len(),
-                    frame.vertices.len(),
-                    frame.indices.len(),
+                    "[client] first UiFrame: draws={} new_meshes={} tex_uploads={}",
+                    frame.draws.len(),
+                    frame.meshes.len(),
                     frame.textures.len()
                 );
             }

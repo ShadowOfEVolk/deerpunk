@@ -1,7 +1,7 @@
 //! Client-only predicted feet (`cl.simorg`) — separate from authoritative `server_feet`.
 
 use deerpunk_engine_common::components::TransformComponent;
-use glam::{Quat, Vec3};
+use glam::Vec3;
 
 use crate::client_engine::ClientEngine;
 

@@ -8,9 +8,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use deerpunk_engine_common::material::{
-    MaterialHandle, PropertyKind, RenderPass, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
+    RenderPass, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
 };
-use deerpunk_engine_common::MeshTexture;
 
 use crate::shader_fallback::ERROR_MESH_WGSL;
 
@@ -191,6 +190,12 @@ impl ShaderRegistry {
             }
         }
         Ok(id)
+    }
+}
+
+impl Default for ShaderRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

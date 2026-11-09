@@ -27,11 +27,11 @@ impl EntitySpawnDescriptor {
         let origin = kv
             .get("origin")
             .and_then(|s| parse_vec3_str(s))
-            .map(|a| Vec3::from_array(a));
+            .map(Vec3::from_array);
         let angles = kv
             .get("angles")
             .and_then(|s| parse_vec3_str(s))
-            .map(|a| Vec3::from_array(a));
+            .map(Vec3::from_array);
         Self {
             classname: classname.into(),
             origin,
@@ -123,19 +123,6 @@ fn spawn_prefab(
 
     world.set_entity_name(entity, &desc.classname);
 
-    entity
-}
-
-/// Minimal entity without a prefab: transform + MapKv only.
-fn spawn_minimal(
-    world: &World,
-    desc: &EntitySpawnDescriptor,
-    submodels: &[BspSubmodel],
-) -> EntityId {
-    let entity = world.spawn();
-    apply_transform_from_map(world, entity, desc, submodels);
-    let kv_id = world.component_init::<MapKv>();
-    world.set(entity, kv_id, MapKv::new(desc.kv.clone()));
     entity
 }
 

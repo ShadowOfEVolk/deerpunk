@@ -7,7 +7,7 @@ use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 
 use crate::draw_list::{MeshDrawListView, SkinnedDrawListView};
 use crate::frame::context::FrameCtx;
-use crate::render_profile::{self, lap_ms};
+use crate::render_profile::lap_ms;
 use crate::renderer::Renderer;
 
 macro_rules! render_scope {

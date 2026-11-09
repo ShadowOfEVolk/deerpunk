@@ -30,7 +30,6 @@ pub mod render_profile;
 mod shader_fallback;
 pub mod shader_registry;
 pub mod snapshot;
-mod spatial_grid;
 pub mod text_util;
 pub mod tracy_lifecycle;
 pub mod ui_pass;

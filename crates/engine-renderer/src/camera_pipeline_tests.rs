@@ -196,11 +196,12 @@ fn prepare_system_mesh_is_in_the_camera_draw_list() {
     let mut scene = test_scene_two_cameras();
     let before = scene.geometry.mesh_draws.len();
     let extra = scene.geometry.mesh_draws[0].clone();
-    let mut systems: Vec<
-        Box<dyn for<'a> FnMut(&mut crate::prepare::PrepareDrawList<'a>) + Send>,
-    > = vec![Box::new(move |draws: &mut crate::prepare::PrepareDrawList| {
-        draws.push_mesh(extra.clone());
-    })];
+    let mut systems: Vec<Box<dyn for<'a> FnMut(&mut crate::prepare::PrepareDrawList<'a>) + Send>> =
+        vec![Box::new(
+            move |draws: &mut crate::prepare::PrepareDrawList| {
+                draws.push_mesh(extra.clone());
+            },
+        )];
     crate::prepare::run_prepare_systems(&mut scene, &mut systems);
     assert_eq!(scene.geometry.mesh_draws.len(), before + 1);
     let mut scratch = CullScratch::new();

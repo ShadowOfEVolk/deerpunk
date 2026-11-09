@@ -153,6 +153,12 @@ pub struct LayoutMetaRegistry {
     by_id: Mutex<HashMap<ComponentId, RegisteredLayout>>,
 }
 
+impl Default for LayoutMetaRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LayoutMetaRegistry {
     pub fn new() -> Self {
         Self {

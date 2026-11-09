@@ -40,6 +40,11 @@ impl From<UiVertex> for GpuUiVertex {
     }
 }
 
+struct CachedMesh {
+    verts: Vec<GpuUiVertex>,
+    indices: Vec<u32>,
+}
+
 struct HudTarget {
     _tex: wgpu::Texture,
     view: wgpu::TextureView,
@@ -55,7 +60,6 @@ pub struct UiPass {
     composite_format: Option<wgpu::TextureFormat>,
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
-    globals_layout: wgpu::BindGroupLayout,
     tex_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     sampler_linear: wgpu::Sampler,
@@ -67,6 +71,9 @@ pub struct UiPass {
     textures: HashMap<u32, (wgpu::Texture, wgpu::BindGroup)>,
     shader: String,
     gpu_vert_scratch: Vec<GpuUiVertex>,
+    index_scratch: Vec<u32>,
+    /// Compiled RmlUi meshes. Positions are local; draws add translation.
+    meshes: HashMap<u32, CachedMesh>,
     hud: Option<HudTarget>,
     blit_vbo: wgpu::Buffer,
 }
@@ -163,7 +170,6 @@ impl UiPass {
             composite_format: None,
             globals_buf,
             globals_bg,
-            globals_layout,
             tex_layout,
             pipeline_layout,
             sampler_linear,
@@ -175,6 +181,8 @@ impl UiPass {
             textures: HashMap::new(),
             shader: shader_source,
             gpu_vert_scratch: Vec::new(),
+            index_scratch: Vec::new(),
+            meshes: HashMap::new(),
             hud: None,
             blit_vbo,
         }
@@ -189,7 +197,8 @@ impl UiPass {
             label: Some("ui shader"),
             source: wgpu::ShaderSource::Wgsl(self.shader.clone().into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ui pipeline"),
             layout: Some(&self.pipeline_layout),
             vertex: wgpu::VertexState {
@@ -224,8 +233,7 @@ impl UiPass {
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
-        });
-        pipeline
+        })
     }
 
     fn ensure_geom_pipeline(&mut self, device: &wgpu::Device) {
@@ -388,14 +396,68 @@ impl UiPass {
         if upload && !frame.is_empty() {
             self.ensure_geom_pipeline(device);
             self.sync_textures(device, queue, frame);
+            for id in &frame.released_meshes {
+                self.meshes.remove(id);
+            }
+            for mesh in &frame.meshes {
+                let verts: Vec<GpuUiVertex> = mesh
+                    .vertices
+                    .iter()
+                    .copied()
+                    .map(GpuUiVertex::from)
+                    .collect();
+                self.meshes.insert(
+                    mesh.id,
+                    CachedMesh {
+                        verts,
+                        indices: mesh.indices.clone(),
+                    },
+                );
+            }
+            if frame.draws.is_empty() {
+                if let Some(_p) = prof.as_mut() {
+                    lap_ms(&mut lap);
+                }
+                self.blit(device, encoder, target, format, w, h);
+                return;
+            }
             self.ensure_hud(device, w, h);
             self.gpu_vert_scratch.clear();
-            self.gpu_vert_scratch.reserve(frame.vertices.len());
-            for v in &frame.vertices {
-                self.gpu_vert_scratch.push(GpuUiVertex::from(*v));
+            self.index_scratch.clear();
+            let mut ranges: Vec<(u32, u32, u32, Option<[i32; 4]>)> = Vec::new();
+            for draw in &frame.draws {
+                let Some(mesh) = self.meshes.get(&draw.mesh_id) else {
+                    continue;
+                };
+                let base = self.gpu_vert_scratch.len() as u32;
+                for v in &mesh.verts {
+                    let mut out = *v;
+                    out.pos[0] += draw.translation[0];
+                    out.pos[1] += draw.translation[1];
+                    self.gpu_vert_scratch.push(out);
+                }
+                let index_start = self.index_scratch.len() as u32;
+                for i in &mesh.indices {
+                    self.index_scratch.push(base + *i);
+                }
+                let index_count = self.index_scratch.len() as u32 - index_start;
+                if let Some(last) = ranges.last_mut() {
+                    if last.0 == draw.texture_id && last.3 == draw.scissor {
+                        last.2 += index_count;
+                        continue;
+                    }
+                }
+                ranges.push((draw.texture_id, index_start, index_count, draw.scissor));
+            }
+            if self.gpu_vert_scratch.is_empty() || self.index_scratch.is_empty() {
+                if let Some(_p) = prof.as_mut() {
+                    lap_ms(&mut lap);
+                }
+                self.blit(device, encoder, target, format, w, h);
+                return;
             }
             let v_bytes = bytemuck::cast_slice(&self.gpu_vert_scratch);
-            let i_bytes = bytemuck::cast_slice(&frame.indices);
+            let i_bytes = bytemuck::cast_slice(&self.index_scratch);
             Self::ensure_buffer(
                 device,
                 &mut self.vbo,
@@ -444,14 +506,14 @@ impl UiPass {
             pass.set_bind_group(0, &self.globals_bg, &[]);
             pass.set_vertex_buffer(0, self.vbo.slice(..));
             pass.set_index_buffer(self.ibo.slice(..), wgpu::IndexFormat::Uint32);
-            for batch in &frame.batches {
-                if batch.index_count == 0 {
+            for (texture_id, index_start, index_count, scissor) in &ranges {
+                if *index_count == 0 {
                     continue;
                 }
-                let Some((_, bg)) = self.textures.get(&batch.texture_id) else {
+                let Some((_, bg)) = self.textures.get(texture_id) else {
                     continue;
                 };
-                if let Some([x, y, sw, sh]) = batch.scissor {
+                if let Some([x, y, sw, sh]) = *scissor {
                     let x0 = x.clamp(0, w as i32) as u32;
                     let y0 = y.clamp(0, h as i32) as u32;
                     let x1 = (x + sw).clamp(0, w as i32) as u32;
@@ -464,20 +526,16 @@ impl UiPass {
                     pass.set_scissor_rect(0, 0, w, h);
                 }
                 pass.set_bind_group(1, bg, &[]);
-                pass.draw_indexed(
-                    batch.index_start..batch.index_start + batch.index_count,
-                    0,
-                    0..1,
-                );
+                pass.draw_indexed(*index_start..*index_start + *index_count, 0, 0..1);
             }
             drop(pass);
             self.write_blit(queue, w, h);
         }
-        if let Some(p) = prof.as_mut() {
+        if let Some(_p) = prof.as_mut() {
             lap_ms(&mut lap);
         }
         self.blit(device, encoder, target, format, w, h);
-        if let Some(p) = prof.as_mut() {
+        if let Some(_p) = prof.as_mut() {
             lap_ms(&mut lap);
         }
     }

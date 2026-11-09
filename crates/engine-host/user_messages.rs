@@ -10,7 +10,6 @@ pub type UmHookFn = extern "C" fn(*const u8, usize, *const u8, usize);
 #[derive(Clone, Debug)]
 struct UmEntry {
     id: u16,
-    size: i16,
 }
 
 pub struct UserMessageRegistry {
@@ -46,7 +45,7 @@ impl UserMessageRegistry {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         self.by_name
-            .insert(name.to_string(), UmEntry { id, size });
+            .insert(name.to_string(), UmEntry { id });
         self.by_id.insert(id, name.to_string());
         log::info!("[um] register '{name}' id={id} size={size}");
         Ok(id)

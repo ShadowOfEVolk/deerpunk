@@ -109,11 +109,8 @@ impl Sky {
             sky_globals_bufs.push(buf);
             sky_globals_bgs.push(bg);
         }
-        let sky_globals_bufs = sky_globals_bufs.try_into().ok().expect("sky uniform ring");
-        let sky_globals_bgs = sky_globals_bgs
-            .try_into()
-            .ok()
-            .expect("sky uniform ring bg");
+        let sky_globals_bufs = sky_globals_bufs.try_into().expect("sky uniform ring");
+        let sky_globals_bgs = sky_globals_bgs.try_into().expect("sky uniform ring bg");
 
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky pipeline layout"),
@@ -366,7 +363,7 @@ impl Renderer {
         let snapshot = ctx.snapshot;
         let view = ctx.hdr_view;
         ctx.draw_acc.note_pass();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear hdr"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,

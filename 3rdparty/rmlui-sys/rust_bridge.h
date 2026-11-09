@@ -23,11 +23,11 @@ void rust_render_set_viewport(rust_render_handle_t handle, int width, int height
 void rust_render_begin_frame(rust_render_handle_t h);
 void rust_render_end_frame(rust_render_handle_t h);
 
-void rust_render_geometry(rust_render_handle_t handle,
-    const float* positions, const unsigned char* colours, const float* texcoords,
-    int num_vertices,
-    const int* indices, int num_indices,
-    float tx, float ty, uintptr_t texture);
+/* Compile once. `vertices` is Rml::Vertex with `stride` bytes. Returns a non-zero id. */
+uint32_t rust_compile_geometry(const void* vertices, int stride, int num_vertices,
+    const int* indices, int num_indices);
+void rust_release_geometry(uint32_t id);
+void rust_draw_geometry(uint32_t id, float tx, float ty, uintptr_t texture);
 
 uintptr_t rust_load_texture(rust_render_handle_t handle, const char* source, int* out_w, int* out_h);
 uintptr_t rust_generate_texture(rust_render_handle_t handle, const unsigned char* rgba, int width, int height);

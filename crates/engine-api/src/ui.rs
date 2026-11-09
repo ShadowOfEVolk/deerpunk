@@ -52,19 +52,19 @@ impl UiApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            load_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:load")) },
-            unload_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:unload")) },
-            show_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:show")) },
-            hide_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:hide")) },
-            lua_eval_fn: unsafe { std::mem::transmute(resolve(r, "v1:ui:lua_eval")) },
+            load_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:ui:load")) },
+            unload_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:ui:unload")) },
+            show_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:ui:show")) },
+            hide_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:ui:hide")) },
+            lua_eval_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:ui:lua_eval")) },
             data_model_set_bool_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:ui:data_model_set_bool"))
+                crate::fn_from_erased(resolve(r, "v1:ui:data_model_set_bool"))
             },
             data_model_set_number_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:ui:data_model_set_number"))
+                crate::fn_from_erased(resolve(r, "v1:ui:data_model_set_number"))
             },
             data_model_set_string_fn: unsafe {
-                std::mem::transmute(resolve(r, "v1:ui:data_model_set_string"))
+                crate::fn_from_erased(resolve(r, "v1:ui:data_model_set_string"))
             },
         }
     }

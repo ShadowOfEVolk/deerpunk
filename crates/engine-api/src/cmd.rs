@@ -30,8 +30,8 @@ impl CmdApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            register_fn: unsafe { std::mem::transmute(resolve(r, "v1:cmd:register")) },
-            execute_fn: unsafe { std::mem::transmute(resolve(r, "v1:cmd:execute")) },
+            register_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:cmd:register")) },
+            execute_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:cmd:execute")) },
         }
     }
 

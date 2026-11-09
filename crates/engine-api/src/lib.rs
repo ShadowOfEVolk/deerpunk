@@ -34,6 +34,16 @@ pub use deerpunk_engine_ffi::{
 /// Alias for [`ResolverFn`] (methoddb resolver).
 pub type Resolver = ResolverFn;
 
+/// MethodDB hands back `*const ()`. `T` is the field's `extern "C" fn` type.
+///
+/// # Safety
+///
+/// `ptr` must be a function pointer with ABI and signature `T`.
+pub(crate) unsafe fn fn_from_erased<T: Copy>(ptr: *const ()) -> T {
+    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<*const ()>());
+    std::mem::transmute_copy(&ptr)
+}
+
 // ── EngineApi (top-level) ──────────────────────────────────────
 
 pub struct EngineApi {
@@ -100,8 +110,8 @@ impl EngineApi {
             log: log::LogApi::new(ctx, resolver),
             profile: profile::ProfileApi::new(ctx, resolver),
 
-            frame: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:frame")) },
-            shutdown: unsafe { std::mem::transmute(resolve_fn(resolver, "v1:engine:shutdown")) },
+            frame: unsafe { fn_from_erased(resolve_fn(resolver, "v1:engine:frame")) },
+            shutdown: unsafe { fn_from_erased(resolve_fn(resolver, "v1:engine:shutdown")) },
         }
     }
 
