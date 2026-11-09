@@ -533,6 +533,98 @@ impl crate::Host {
             -1
         }
     }
+
+    /// `1` and 24 floats when the extracted camera has clip planes. `0` means draw everything.
+    #[methoddb::bind(name = "vis_planes")]
+    pub fn api_client_vis_planes(&self, out: *mut f32) -> i32 {
+        if out.is_null() {
+            return 0;
+        }
+        let Some(client) = self.client_engine.as_ref() else {
+            return 0;
+        };
+        let mut planes = [0.0f32; 24];
+        if !client.write_vis_planes(&mut planes) {
+            return 0;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(planes.as_ptr(), out, 24);
+        }
+        1
+    }
+
+    /// One chunk (or prop): shared transform, one binset per mesh+material.
+    #[methoddb::bind(name = "submit")]
+    pub fn api_client_submit(
+        &mut self,
+        desc: *const deerpunk_engine_api::client::MeshSubmit,
+    ) -> i32 {
+        if desc.is_null() {
+            return -1;
+        }
+        let desc = unsafe { &*desc };
+        let meshes = &self.mesh_registry as *const deerpunk_engine_common::resource::MeshRegistry;
+        let Some(client) = self.client_engine.as_mut() else {
+            return -1;
+        };
+        if client.submit(unsafe { &*meshes }, desc) {
+            0
+        } else {
+            -1
+        }
+    }
+
+    /// Several index spans of one mesh. Lookup and the model matrix run once.
+    #[methoddb::bind(name = "submit_mesh_ranges")]
+    pub fn api_client_submit_mesh_ranges(
+        &mut self,
+        entity: u64,
+        mesh: u64,
+        material: u32,
+        uniform_aux: u32,
+        layer_mask: u32,
+        position: *const f32,
+        rotation: *const f32,
+        scale: *const f32,
+        ranges: *const deerpunk_engine_api::client::MeshSubmitRange,
+        range_count: u32,
+    ) -> i32 {
+        if position.is_null() || rotation.is_null() || scale.is_null() || ranges.is_null() || range_count == 0
+        {
+            return -1;
+        }
+        let meshes = &self.mesh_registry as *const deerpunk_engine_common::resource::MeshRegistry;
+        let Some(client) = self.client_engine.as_mut() else {
+            return -1;
+        };
+        let position = unsafe { [*position, *position.add(1), *position.add(2)] };
+        let rotation = unsafe {
+            [
+                *rotation,
+                *rotation.add(1),
+                *rotation.add(2),
+                *rotation.add(3),
+            ]
+        };
+        let scale = unsafe { [*scale, *scale.add(1), *scale.add(2)] };
+        let src = unsafe { std::slice::from_raw_parts(ranges, range_count as usize) };
+        if client.submit_mesh_ranges(
+            unsafe { &*meshes },
+            entity,
+            deerpunk_engine_common::resource::mesh_handle::MeshHandle(mesh as usize),
+            deerpunk_engine_common::material::MaterialHandle(material),
+            uniform_aux,
+            layer_mask,
+            position,
+            rotation,
+            scale,
+            src.iter().map(|r| (r.first_index, r.index_count, r.face)),
+        ) {
+            0
+        } else {
+            -1
+        }
+    }
 }
 
 #[cfg(not(any(feature = "client", feature = "full")))]
@@ -580,6 +672,36 @@ impl crate::Host {
         _first_index: u32,
         _index_count: u32,
         _face: u8,
+    ) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "submit")]
+    pub fn api_client_submit(
+        &mut self,
+        _desc: *const deerpunk_engine_api::client::MeshSubmit,
+    ) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "vis_planes")]
+    pub fn api_client_vis_planes(&self, _out: *mut f32) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "submit_mesh_ranges")]
+    pub fn api_client_submit_mesh_ranges(
+        &mut self,
+        _entity: u64,
+        _mesh: u64,
+        _material: u32,
+        _uniform_aux: u32,
+        _layer_mask: u32,
+        _position: *const f32,
+        _rotation: *const f32,
+        _scale: *const f32,
+        _ranges: *const deerpunk_engine_api::client::MeshSubmitRange,
+        _range_count: u32,
     ) -> i32 {
         -1
     }
@@ -1603,12 +1725,6 @@ impl crate::Host {
             return;
         }
         ce.world.set_raw(entity, comp, data, size);
-        let chunk_id = ce
-            .world
-            .component_init::<deerpunk_engine_common::components::ChunkRenderer>();
-        if comp == chunk_id {
-            ce.mesh_lifecycle_adopt_chunk(&mut self.mesh_registry, entity);
-        }
         if size == std::mem::size_of::<deerpunk_engine_common::material::DrawMaterial>() {
             let _ = deerpunk_engine_client::draw_material_resolve::resolve_draw_material_uri(
                 ce,
@@ -2088,6 +2204,28 @@ impl crate::Host {
     #[methoddb::bind(name = "allocator_id")]
     pub fn api_mesh_allocator_id(&self, name: &str) -> u32 {
         self.mesh_allocator_names.get(name).copied().unwrap_or(u32::MAX)
+    }
+
+    /// Keep a mesh that is not referenced by `Mesh3D` / `SkinnedMesh3D`.
+    /// The game calls this when it owns the handle (chunk layers) and
+    /// [`api_mesh_unpin`] when that owner drops it.
+    #[methoddb::bind(name = "pin")]
+    pub fn api_mesh_pin(&mut self, handle: usize) {
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
+        let Some(ce) = self.client_engine.as_mut() else {
+            return;
+        };
+        ce.mesh_pin_handle(&mut self.mesh_registry, MeshHandle(handle));
+    }
+
+    /// Inverse of [`api_mesh_pin`].
+    #[methoddb::bind(name = "unpin")]
+    pub fn api_mesh_unpin(&mut self, handle: usize) {
+        use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
+        let Some(ce) = self.client_engine.as_mut() else {
+            return;
+        };
+        ce.mesh_unpin_handle(&mut self.mesh_registry, MeshHandle(handle));
     }
 
     /// `v1:mesh:release` is **removed**: mesh lifetime is owned by the

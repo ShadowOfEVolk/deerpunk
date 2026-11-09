@@ -1,7 +1,6 @@
 pub mod bone_buffer;
 pub mod cam_pass;
 pub mod camera;
-pub mod chunk_renderer;
 pub mod lua_script;
 pub mod map_kv;
 pub mod mesh3d;
@@ -28,7 +27,6 @@ pub mod world_transform;
 pub mod worldspawn;
 pub use bone_buffer::BoneBufferComponent;
 pub use camera::{CameraComponent, ColorLoad, DepthAttachment, DepthLoad, DepthTargetId};
-pub use chunk_renderer::ChunkRenderer;
 pub use lua_script::LuaScript;
 pub use map_kv::MapKv;
 pub use mesh3d::Mesh3D;

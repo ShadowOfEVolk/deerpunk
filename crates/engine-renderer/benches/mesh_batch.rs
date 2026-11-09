@@ -9,7 +9,7 @@ use deerpunk_engine_common::MeshTexture;
 use deerpunk_engine_renderer::Aabb;
 use deerpunk_engine_renderer::mesh_allocator::MeshHandle as GpuMesh;
 use deerpunk_engine_renderer::mesh_batch_bench::{
-    bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes,
+    bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes, StaticBatchPlanBench,
 };
 use deerpunk_engine_renderer::snapshot::MeshDraw;
 use std::hint::black_box;
@@ -20,22 +20,27 @@ const DRAWS: usize = 4096;
 fn draw(slot: u32) -> MeshDraw {
     MeshDraw {
         mesh: MeshHandle::from_parts(slot + 1, 1),
-        model_mat: [[0.0; 4]; 4],
+        model_mat: {
+            let mut m = [[0.0; 4]; 4];
+            m[3] = [slot as f32, (slot % 64) as f32, 0.0, 1.0];
+            m
+        },
         layer_mask: 1,
         batchable: true,
-        material_id: 3,
-        texture: MeshTexture(1),
+        material_id: slot % 8,
+        texture: MeshTexture(slot % 4),
         normal: MeshTexture(0),
         orm: MeshTexture(0),
         sun_dir: [0.0; 4],
         ambient: [0.0; 4],
-        shader_id: 1,
+        shader_id: if slot % 32 == 0 { 2 } else { 1 },
         lightmap_gpu: 0,
         first_index: 0,
         index_count: 36,
         face: (slot % 7) as u8,
         world_bounds: Aabb::EMPTY,
         entity_id: slot as u64,
+        skip_vis: false,
         uniform_aux: 0,
     }
 }
@@ -94,5 +99,15 @@ fn main() {
             &mut order,
             &mut scratch,
         ))
+    });
+
+    let mut plan = StaticBatchPlanBench::new();
+    time("static_batch_plan cold", 40, || {
+        plan = StaticBatchPlanBench::new();
+        plan.frame(black_box(&draws), [0.0, 0.0, 0.0])
+    });
+    time("static_batch_plan warm", 200, || {
+        let t = black_box(plan.frame(black_box(&draws), [1.0, 2.0, 3.0]));
+        t
     });
 }

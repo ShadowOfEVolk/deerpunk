@@ -7,8 +7,18 @@ use crate::Resolver;
 pub type EntityId = u64;
 pub type ComponentId = u64;
 
-/// `v1:world:system_register` callback (Flecs OnUpdate).
-pub type WorldProgressSystemFn = extern "C" fn(*mut c_void);
+/// `v1:world:system_register` callback. One call per matching Flecs table.
+/// `fields[term]` is the column for query term `term`. Row `i` starts at
+/// `fields[term] + i * sizes[term]`. Pointers are valid only for the call.
+pub type WorldProgressSystemFn = extern "C" fn(
+    entities: *const u64,
+    count: u32,
+    fields: *const *const c_void,
+    field_count: u32,
+    sizes: *const usize,
+    dt: f32,
+    user_data: *mut c_void,
+);
 
 fn resolve(r: Resolver, name: &str) -> *const () {
     let bytes = name.as_bytes();
@@ -253,6 +263,7 @@ impl WorldApiResolved {
     }
 
     /// Register a Flecs system (runs during host `ecs_progress` / OnUpdate).
+    /// `run` is called once per matching table. `fields[term]` is that query term's column.
     /// `interval_secs`: Flecs `ecs_system_desc_t::interval` (0 = every progress step).
     pub fn system_register(
         &self,

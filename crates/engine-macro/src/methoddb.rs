@@ -174,6 +174,8 @@ enum AbiType {
     ConstU64Ptr,
     ConstVoidPtrPtr,
     ConstColliderPartPtr,
+    ConstMeshSubmitRangePtr,
+    ConstMeshSubmitPtr,
     MutCapsuleCastHitOut,
     ConstResourceLoaderDescPtr,
     ConstComponentRegisterDescPtr,
@@ -284,6 +286,22 @@ fn classify_ty(ty: &Type) -> syn::Result<AbiType> {
                         .unwrap_or(false) =>
             {
                 Ok(AbiType::ConstColliderPartPtr)
+            }
+            Type::Path(syn::TypePath { qself: None, path, .. })
+                if ptr.mutability.is_none()
+                    && path_last_ident(path)
+                        .map(|i| i == "MeshSubmitRange")
+                        .unwrap_or(false) =>
+            {
+                Ok(AbiType::ConstMeshSubmitRangePtr)
+            }
+            Type::Path(syn::TypePath { qself: None, path, .. })
+                if ptr.mutability.is_none()
+                    && path_last_ident(path)
+                        .map(|i| i == "MeshSubmit")
+                        .unwrap_or(false) =>
+            {
+                Ok(AbiType::ConstMeshSubmitPtr)
             }
             Type::Path(syn::TypePath { qself: None, path, .. }) if path.is_ident("u64") => {
                 if ptr.mutability.is_some() {
@@ -703,9 +721,33 @@ fn generate_tramp(
             AbiType::WorldProgressSystemFn => {
                 let cb = format_ident!("__arg{}", arg_idx);
                 ffi_params.push(quote! {
-                    #cb: extern "C" fn(*mut std::ffi::c_void)
+                    #cb: extern "C" fn(
+                        *const u64,
+                        u32,
+                        *const *const std::ffi::c_void,
+                        u32,
+                        *const usize,
+                        f32,
+                        *mut std::ffi::c_void,
+                    )
                 });
                 rust_args.push(quote! { #cb });
+                arg_idx += 1;
+            }
+            AbiType::ConstMeshSubmitPtr => {
+                let n = format_ident!("__arg{}", arg_idx);
+                ffi_params.push(quote! {
+                    #n: *const deerpunk_engine_api::client::MeshSubmit
+                });
+                rust_args.push(quote! { #n });
+                arg_idx += 1;
+            }
+            AbiType::ConstMeshSubmitRangePtr => {
+                let n = format_ident!("__arg{}", arg_idx);
+                ffi_params.push(quote! {
+                    #n: *const deerpunk_engine_api::client::MeshSubmitRange
+                });
+                rust_args.push(quote! { #n });
                 arg_idx += 1;
             }
             AbiType::ConstColliderPartPtr => {

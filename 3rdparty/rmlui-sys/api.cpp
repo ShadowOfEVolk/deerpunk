@@ -432,6 +432,13 @@ void rmlui_context_set_dimensions(rmlui_handle_t ctx, int w, int h)
     }
 }
 
+void rmlui_context_set_dp_ratio(rmlui_handle_t ctx, float ratio)
+{
+    if (ctx && ratio > 0.f) {
+        ((Rml::Context*)ctx)->SetDensityIndependentPixelRatio(ratio);
+    }
+}
+
 void rmlui_process_mouse_move(rmlui_handle_t ctx, int x, int y)
 {
     if (ctx) {

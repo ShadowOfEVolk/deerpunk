@@ -1164,7 +1164,6 @@ impl Host {
                 }
             }
         }
-
     }
 
     /// Nuklear overlays — call from the renderer during `host_ui_begin_frame` … `host_ui_end_frame`.
@@ -2029,13 +2028,20 @@ impl Host {
                 }
             }
 
-            self.frame(dt);
-
             let render_pipeline = self.cvar.get_usize_or("cl_render_thread", 0);
             if let Some(client) = self.client_engine.as_mut() {
                 client.set_render_pipeline(render_pipeline);
             }
-            if render_pipeline >= 1 {
+            let skip_gpu = self
+                .client_engine
+                .as_ref()
+                .is_some_and(|client| client.should_skip_gpu());
+            if skip_gpu {
+                let _g = system_profiler::scope("frame.occluded");
+                if let Some(client) = self.client_engine.as_mut() {
+                    client.discard_pending_present();
+                }
+            } else if render_pipeline >= 1 {
                 {
                     let _g = system_profiler::scope("frame.render_wait");
                     if let Some(client) = self.client_engine.as_mut() {
@@ -2050,6 +2056,14 @@ impl Host {
                 }
             } else if let Some(client) = self.client_engine.as_mut() {
                 client.set_render_pipeline(0);
+            }
+
+            self.frame(dt);
+
+            if skip_gpu {
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                system_profiler::end_frame();
+                continue;
             }
 
             {
@@ -2099,12 +2113,7 @@ impl Host {
                 let extract_start = std::time::Instant::now();
                 let (client, registry) = self.split_client_registry();
                 let mut scene =
-                    client.extract_scene_view(
-                        registry,
-                        view_ent,
-                        early_cull,
-                        draw_world,
-                    );
+                    client.extract_scene_view(registry, view_ent, early_cull, draw_world);
                 scene.cull = deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
                 let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;
                 self.client_engine

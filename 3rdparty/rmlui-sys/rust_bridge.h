@@ -25,6 +25,7 @@ void rust_render_end_frame(rust_render_handle_t h);
 
 void rust_render_geometry(rust_render_handle_t handle,
     const float* positions, const unsigned char* colours, const float* texcoords,
+    int num_vertices,
     const int* indices, int num_indices,
     float tx, float ty, uintptr_t texture);
 

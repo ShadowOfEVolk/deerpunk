@@ -52,6 +52,9 @@ pub struct MeshDraw {
     pub world_bounds: Aabb,
     /// ECS entity id for persistent spatial cull (`0` = fallback to draw index).
     pub entity_id: u64,
+    /// Frustum was tested before submit. The cull pass keeps the draw when the
+    /// layer matches and does not test `world_bounds` again.
+    pub skip_vis: bool,
     /// Copied to `MeshUniform.material_data.y` (e.g. mining crack stage).
     pub uniform_aux: u32,
 }
@@ -376,6 +379,7 @@ impl RenderSnapshot {
             face: 0,
             world_bounds: bounds,
             entity_id: 0,
+            skip_vis: false,
             uniform_aux: 0,
             layer_mask: deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD,
         });
@@ -412,6 +416,7 @@ impl RenderSnapshot {
             face: 0,
             world_bounds: bounds,
             entity_id: 0,
+            skip_vis: false,
             uniform_aux: 0,
             layer_mask: deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD,
         });

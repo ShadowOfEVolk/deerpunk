@@ -32,7 +32,9 @@ use crate::snapshot::{Instance, MeshTexture, RenderSnapshot, Shape, TexSel};
 mod features;
 
 #[doc(hidden)]
-pub use features::mesh::{bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes};
+pub use features::mesh::{
+    bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes, StaticBatchPlanBench,
+};
 pub mod frame;
 mod hdr;
 
@@ -512,13 +514,13 @@ pub struct Renderer {
     mesh_indirect_bufs: [wgpu::Buffer; FRAME_UNIFORM_RING],
     /// Reused draw order for mesh pass (sort by shader / material to cut pipeline binds).
     mesh_draw_order: Vec<usize>,
-    /// Opaque batch groups reused while draw keys (shader/material/textures) stay put.
-    mesh_batch_fp: u64,
-    /// Prefix of `mesh_batch_order` that is opaque. The tail is re-sorted by depth.
+    /// Length of `mesh_batch_order`. Static plan is opaque only.
     mesh_batch_opaque_count: usize,
     mesh_batch_order: Vec<usize>,
     mesh_batch_for_index: Vec<Option<MeshBatchKey>>,
     mesh_batch_groups: HashMap<MeshBatchKey, Vec<usize>>,
+    /// Batchable draws, sorted by key. Reused so a changed visible set does not allocate.
+    mesh_batch_pairs: Vec<(MeshBatchKey, u32)>,
     /// `upload_prep` already ran for this frame (multi-camera).
     upload_prepped: bool,
     /// Per-frame lazy GPU mesh handles (index = snapshot draw index).
@@ -1465,11 +1467,11 @@ impl Renderer {
             mesh_uniform_scratch: Vec::new(),
             mesh_indirect_bufs,
             mesh_draw_order: Vec::new(),
-            mesh_batch_fp: 0,
             mesh_batch_opaque_count: 0,
             mesh_batch_order: Vec::new(),
             mesh_batch_for_index: Vec::new(),
             mesh_batch_groups: HashMap::new(),
+            mesh_batch_pairs: Vec::new(),
             upload_prepped: false,
             mesh_pass_static_handles: Vec::new(),
             mesh_pass_skinned_handles: Vec::new(),
@@ -1535,6 +1537,14 @@ impl Renderer {
 
     pub fn take_pending_surface_present(&mut self) -> Option<PendingSurfacePresent> {
         self.pending_surface_present.take()
+    }
+
+    /// Present on the calling thread. The submit worker must not call this:
+    /// it shares the window-server lock with event polling.
+    pub fn present_surface(&self, surface: wgpu::SurfaceTexture) -> f32 {
+        let start = std::time::Instant::now();
+        self.gpu.queue.present(surface);
+        start.elapsed().as_secs_f32() * 1000.0
     }
 
     pub fn finish_deferred_surface_submit(

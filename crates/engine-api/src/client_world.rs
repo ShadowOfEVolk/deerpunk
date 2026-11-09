@@ -75,7 +75,8 @@ impl ClientWorldApi {
         }
     }
 
-    /// Flecs OnUpdate system on the client world (runs in host `client.tick_world` / `ecs_progress`).
+    /// Flecs system on the client world. `run` receives each matching table.
+    /// Component columns are `fields[term]` in query order and live only for that call.
     pub fn system_register(
         &self,
         name: &str,

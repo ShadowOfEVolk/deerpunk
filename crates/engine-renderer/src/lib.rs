@@ -38,7 +38,9 @@ pub mod upload_log;
 
 #[doc(hidden)]
 pub mod mesh_batch_bench {
-    pub use crate::renderer::{bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes};
+    pub use crate::renderer::{
+        bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes, StaticBatchPlanBench,
+    };
 }
 
 pub use puffin_lifecycle::{puffin_active, puffin_begin_frame, puffin_ensure_started};

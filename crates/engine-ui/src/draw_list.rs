@@ -146,8 +146,9 @@ impl UiGeometryBuilder {
         };
 
         let base = self.vertices.len() as u32;
-        let max_v = indices.iter().copied().max().unwrap_or(0) as usize + 1;
-        for i in 0..max_v {
+        let max_v = indices.iter().copied().max().unwrap_or(0).max(0) as usize + 1;
+        let count = max_v.min(positions.len() / 2);
+        for i in 0..count {
             if i * 2 + 1 >= positions.len() {
                 break;
             }
@@ -168,6 +169,9 @@ impl UiGeometryBuilder {
 
         let index_start = self.indices.len() as u32;
         for &idx in indices {
+            if idx < 0 || idx as usize >= count {
+                continue;
+            }
             self.indices.push(base + idx as u32);
         }
         let index_count = self.indices.len() as u32 - index_start;

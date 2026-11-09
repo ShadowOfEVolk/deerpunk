@@ -202,6 +202,7 @@ impl RenderExtractor {
             face: 0,
             world_bounds: deerpunk_engine_renderer::Aabb::default(),
             entity_id: ent_copy,
+            skip_vis: false,
             uniform_aux,
             layer_mask,
         })

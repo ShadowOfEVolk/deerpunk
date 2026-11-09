@@ -1,10 +1,11 @@
-//! Optional async `queue.submit` + `present` while the main thread runs the next frame sim/extract.
+//! Optional async `queue.submit` while the main thread runs the next frame's early work.
+//! `present` stays on the main thread: it takes the window-server lock that `SDL_PollEvent` also needs.
 
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use deerpunk_engine_renderer::renderer::PendingSurfaceTail;
-use wgpu::{CommandBuffer, Queue, SurfaceTexture};
+use wgpu::{CommandBuffer, Queue};
 
 pub struct SubmitThread {
     job_tx: Sender<SubmitJob>,
@@ -14,12 +15,10 @@ pub struct SubmitThread {
 
 struct SubmitJob {
     cmds: Vec<CommandBuffer>,
-    surface: SurfaceTexture,
 }
 
 pub struct SubmitDone {
     pub submit_ms: f32,
-    pub present_ms: f32,
 }
 
 impl SubmitThread {
@@ -35,13 +34,7 @@ impl SubmitThread {
                     let submit_start = std::time::Instant::now();
                     queue_worker.submit(job.cmds);
                     let submit_ms = submit_start.elapsed().as_secs_f32() * 1000.0;
-                    let present_start = std::time::Instant::now();
-                    queue_worker.present(job.surface);
-                    let present_ms = present_start.elapsed().as_secs_f32() * 1000.0;
-                    let _ = done_tx.send(SubmitDone {
-                        submit_ms,
-                        present_ms,
-                    });
+                    let _ = done_tx.send(SubmitDone { submit_ms });
                 }
             })
             .expect("spawn deerpunk-submit thread");
@@ -54,16 +47,13 @@ impl SubmitThread {
     }
 
     pub fn wait(&self) -> SubmitDone {
-        self.done_rx.recv().unwrap_or(SubmitDone {
-            submit_ms: 0.0,
-            present_ms: 0.0,
-        })
+        self.done_rx.recv().unwrap_or(SubmitDone { submit_ms: 0.0 })
     }
 
-    fn submit(&self, cmds: Vec<CommandBuffer>, surface: SurfaceTexture) {
+    fn submit(&self, cmds: Vec<CommandBuffer>) {
         self.job_tx
-            .send(SubmitJob { cmds, surface })
-            .expect("submit job channel (prior present still in flight?)");
+            .send(SubmitJob { cmds })
+            .expect("submit job channel (prior submit still in flight?)");
     }
 
     pub fn shutdown(mut self) {
@@ -81,6 +71,7 @@ pub struct PipelinedSubmit {
 }
 
 struct CompletionMeta {
+    surface: wgpu::SurfaceTexture,
     lum_copied: bool,
     occlusion_queries: bool,
     tail: PendingSurfaceTail,
@@ -104,12 +95,36 @@ impl PipelinedSubmit {
         }
         let done = self.thread.wait();
         if let Some(meta) = self.completion_meta.take() {
+            let present_ms = renderer.present_surface(meta.surface);
             renderer.finish_deferred_surface_submit(
                 meta.lum_copied,
                 meta.occlusion_queries,
                 meta.tail,
                 done.submit_ms,
-                done.present_ms,
+                present_ms,
+            );
+        }
+        self.in_flight = false;
+    }
+
+    /// Wait for `queue.submit`, then drop the surface without `present`.
+    /// Presenting a minimized window blocks the main thread until it is restored.
+    pub fn discard_and_complete(
+        &mut self,
+        renderer: &mut deerpunk_engine_renderer::renderer::Renderer,
+    ) {
+        if !self.in_flight {
+            return;
+        }
+        let done = self.thread.wait();
+        if let Some(meta) = self.completion_meta.take() {
+            drop(meta.surface);
+            renderer.finish_deferred_surface_submit(
+                meta.lum_copied,
+                meta.occlusion_queries,
+                meta.tail,
+                done.submit_ms,
+                0.0,
             );
         }
         self.in_flight = false;
@@ -120,11 +135,12 @@ impl PipelinedSubmit {
             return;
         };
         self.completion_meta = Some(CompletionMeta {
+            surface: pending.surface,
             lum_copied: pending.lum_copied,
             occlusion_queries: pending.occlusion_queries,
             tail: pending.tail,
         });
-        self.thread.submit(pending.cmds, pending.surface);
+        self.thread.submit(pending.cmds);
         self.in_flight = true;
     }
 

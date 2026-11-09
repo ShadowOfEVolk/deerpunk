@@ -27,6 +27,10 @@ puffin_http = { version = "0.17", optional = true }
 name = "mesh_batch"
 harness = false
 
+[[bench]]
+name = "chunk_vis"
+harness = false
+
 [features]
 tracy = ["dep:tracy-client"]
 puffin = ["dep:puffin", "dep:puffin_http"]

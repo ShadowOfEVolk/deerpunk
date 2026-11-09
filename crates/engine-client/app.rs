@@ -204,6 +204,14 @@ impl App {
         self.window.size()
     }
 
+    /// Minimized, hidden, or a zero drawable. The swapchain will not yield a frame.
+    pub fn is_hidden(&self) -> bool {
+        let flags = self.window.window_flags();
+        let minimized = sdl2::sys::SDL_WindowFlags::SDL_WINDOW_MINIMIZED as u32;
+        let hidden = sdl2::sys::SDL_WindowFlags::SDL_WINDOW_HIDDEN as u32;
+        flags & (minimized | hidden) != 0 || self.window.drawable_size() == (0, 0)
+    }
+
     /// Backing-store / drawable size in physical pixels (swapchain, wgpu).
     pub fn framebuffer_size(&self) -> (u32, u32) {
         self.window.drawable_size()
@@ -214,12 +222,6 @@ impl App {
         let (lw, lh) = self.window.size();
         let (dw, dh) = self.window.drawable_size();
         (dw as f32 / lw.max(1) as f32, dh as f32 / lh.max(1) as f32)
-    }
-
-    /// SDL mouse `x`/`y` (window client / points) → framebuffer pixels for UI hit-testing.
-    pub fn pointer_to_framebuffer(&self, x: f32, y: f32) -> (f32, f32) {
-        let (sx, sy) = self.content_scale();
-        (x * sx, y * sy)
     }
 
     pub fn set_title(&mut self, title: &str) {

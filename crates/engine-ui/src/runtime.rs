@@ -317,6 +317,14 @@ impl UiRuntime {
         }
     }
 
+    /// Layout scale: CSS `px`/`dp` become `ratio` context pixels. Context size stays in framebuffer pixels.
+    pub fn set_dp_ratio(&self, ratio: f32) {
+        if self.ctx.is_null() || !(ratio > 0.0) {
+            return;
+        }
+        unsafe { ffi::rmlui_context_set_dp_ratio(self.ctx, ratio) };
+    }
+
     pub fn mouse_move(&self, x: i32, y: i32) {
         if !self.ctx.is_null() {
             unsafe { ffi::rmlui_process_mouse_move(self.ctx, x, y) };
@@ -657,25 +665,25 @@ pub unsafe extern "C" fn rust_render_geometry(
     positions: *const f32,
     colours: *const u8,
     texcoords: *const f32,
+    num_vertices: c_int,
     indices: *const i32,
     num_indices: c_int,
     tx: f32,
     ty: f32,
     texture: usize,
 ) {
-    if positions.is_null() || colours.is_null() || indices.is_null() || num_indices <= 0 {
+    if positions.is_null() || colours.is_null() || indices.is_null() || num_indices <= 0 || num_vertices <= 0 {
         return;
     }
     let n = num_indices as usize;
-    // positions length unknown; use max index
+    let nv = num_vertices as usize;
     let idx = std::slice::from_raw_parts(indices, n);
-    let max_v = idx.iter().copied().max().unwrap_or(0) as usize + 1;
-    let pos = std::slice::from_raw_parts(positions, max_v * 2);
-    let col = std::slice::from_raw_parts(colours, max_v * 4);
+    let pos = std::slice::from_raw_parts(positions, nv * 2);
+    let col = std::slice::from_raw_parts(colours, nv * 4);
     let uv = if texcoords.is_null() {
         &[][..]
     } else {
-        std::slice::from_raw_parts(texcoords, max_v * 2)
+        std::slice::from_raw_parts(texcoords, nv * 2)
     };
     with_geom(|r| r.draw_indexed(pos, col, uv, idx, tx, ty, texture));
 }

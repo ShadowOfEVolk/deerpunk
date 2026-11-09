@@ -174,10 +174,7 @@ fn cull_octree_frustum_draws<M>(
 fn cull_mesh_linear(draws: &[MeshDraw], cam: &CullCamera, frustum: &Frustum, out: &mut Vec<u32>) {
     out.clear();
     for (i, d) in draws.iter().enumerate() {
-        if !render_layer_visible(d.layer_mask, cam.layer_mask) {
-            continue;
-        }
-        if frustum.intersects_aabb(&d.world_bounds) {
+        if mesh_draw_visible(d, cam, frustum) {
             out.push(i as u32);
         }
     }
@@ -208,6 +205,13 @@ pub fn visible_skinned_indices_pre_culled(
     out.clear();
     out.extend(0..n as u32);
     (n as u32, n as u32)
+}
+
+fn mesh_draw_visible(d: &MeshDraw, cam: &CullCamera, frustum: &Frustum) -> bool {
+    if !render_layer_visible(d.layer_mask, cam.layer_mask) {
+        return false;
+    }
+    d.skip_vis || frustum.intersects_aabb(&d.world_bounds)
 }
 
 fn cull_mesh_octree(
@@ -311,6 +315,9 @@ pub fn cull_mesh_indices(
                 scratch.keys_scratch.reserve(len);
             }
             for (i, d) in draws.iter().enumerate() {
+                if d.skip_vis {
+                    continue;
+                }
                 scratch
                     .keys_scratch
                     .push((mesh_cull_key(d, i), d.world_bounds));
@@ -330,6 +337,11 @@ pub fn cull_mesh_indices(
             &scratch.id_to_index,
             &mut scratch.visible_mesh,
         );
+        for (i, d) in draws.iter().enumerate() {
+            if d.skip_vis && render_layer_visible(d.layer_mask, cam.layer_mask) {
+                scratch.visible_mesh.push(i as u32);
+            }
+        }
     }
     scratch.cached_mesh_draw_len = len;
     (len as u32, scratch.visible_mesh.len() as u32)

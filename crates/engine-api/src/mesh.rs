@@ -125,6 +125,8 @@ pub struct MeshApi {
     mark_dirty_fn: Option<MeshMarkDirtyFn>,
     register_allocator_fn: Option<MeshRegisterAllocatorFn>,
     release_fn: Option<extern "C" fn(*mut u8, usize)>,
+    pin_fn: Option<extern "C" fn(*mut u8, usize)>,
+    unpin_fn: Option<extern "C" fn(*mut u8, usize)>,
     content_id_fn: Option<extern "C" fn(*mut u8, usize) -> u64>,
 }
 
@@ -150,6 +152,8 @@ impl MeshApi {
             register_allocator_fn: resolve(r, "v1:mesh:register_allocator")
                 .map(|p| unsafe { std::mem::transmute(p) }),
             release_fn: resolve(r, "v1:mesh:release").map(|p| unsafe { std::mem::transmute(p) }),
+            pin_fn: resolve(r, "v1:mesh:pin").map(|p| unsafe { std::mem::transmute(p) }),
+            unpin_fn: resolve(r, "v1:mesh:unpin").map(|p| unsafe { std::mem::transmute(p) }),
             content_id_fn: resolve(r, "v1:mesh:content_id")
                 .map(|p| unsafe { std::mem::transmute(p) }),
         }
@@ -615,6 +619,27 @@ impl MeshApi {
             }
         }
         mark(self.ctx, handle.0) != 0
+    }
+
+    /// Keep the registry slot and the GPU upload for a mesh the game owns
+    /// (not `Mesh3D`). Pair with [`Self::unpin`] when that owner drops the handle.
+    pub fn pin(&self, handle: MeshHandle) {
+        if !handle.is_valid() {
+            return;
+        }
+        if let Some(f) = self.pin_fn {
+            f(self.ctx, handle.0);
+        }
+    }
+
+    /// Inverse of [`Self::pin`].
+    pub fn unpin(&self, handle: MeshHandle) {
+        if !handle.is_valid() {
+            return;
+        }
+        if let Some(f) = self.unpin_fn {
+            f(self.ctx, handle.0);
+        }
     }
 
     pub fn content_id(&self, handle: MeshHandle) -> u64 {

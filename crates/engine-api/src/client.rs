@@ -20,6 +20,11 @@ type DebugAabbFn = extern "C" fn(
     f32,
     f32,
 ) -> i32;
+pub use deerpunk_engine_common::mesh_submit::{MeshSubmit, MeshSubmitBin, MeshSubmitBinset};
+
+/// Old name for a single bin. Prefer [`MeshSubmitBin`].
+pub type MeshSubmitRange = MeshSubmitBin;
+
 type SubmitMeshFn = extern "C" fn(
     *mut u8,
     u64,
@@ -34,6 +39,21 @@ type SubmitMeshFn = extern "C" fn(
     u32,
     u8,
 ) -> i32;
+type SubmitFn = extern "C" fn(*mut u8, *const MeshSubmit) -> i32;
+type VisPlanesFn = extern "C" fn(*mut u8, *mut f32) -> i32;
+type SubmitMeshRangesFn = extern "C" fn(
+    *mut u8,
+    u64,
+    u64,
+    u32,
+    u32,
+    u32,
+    *const f32,
+    *const f32,
+    *const f32,
+    *const MeshSubmitRange,
+    u32,
+) -> i32;
 
 pub struct ClientApi {
     ctx: *mut u8,
@@ -41,6 +61,9 @@ pub struct ClientApi {
     scene_time_fn: SceneTimeFn,
     debug_aabb_fn: DebugAabbFn,
     submit_mesh_fn: SubmitMeshFn,
+    submit_mesh_ranges_fn: SubmitMeshRangesFn,
+    submit_fn: SubmitFn,
+    vis_planes_fn: VisPlanesFn,
 }
 
 unsafe impl Send for ClientApi {}
@@ -54,7 +77,32 @@ impl ClientApi {
             scene_time_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:scene_time")) },
             debug_aabb_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:debug_aabb")) },
             submit_mesh_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:submit_mesh")) },
+            submit_mesh_ranges_fn: unsafe {
+                std::mem::transmute(resolve(r, "v1:client:submit_mesh_ranges"))
+            },
+            submit_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:submit")) },
+            vis_planes_fn: unsafe { std::mem::transmute(resolve(r, "v1:client:vis_planes")) },
         }
+    }
+
+    /// Six clip planes from the extracted camera, `(nx, ny, nz, d)` each.
+    /// `None` when no camera was extracted; treat every chunk as visible.
+    pub fn vis_planes(&self) -> Option<[[f32; 4]; 6]> {
+        let mut raw = [0.0f32; 24];
+        if (self.vis_planes_fn)(self.ctx, raw.as_mut_ptr()) == 0 {
+            return None;
+        }
+        let mut planes = [[0.0f32; 4]; 6];
+        for i in 0..6 {
+            planes[i].copy_from_slice(&raw[i * 4..i * 4 + 4]);
+        }
+        Some(planes)
+    }
+
+    /// Queue every binset in `desc`. The model matrix is built once.
+    /// Bounds are rebuilt only when the mesh handle changes.
+    pub fn submit(&self, desc: &MeshSubmit) -> bool {
+        (self.submit_fn)(self.ctx, desc) == 0
     }
 
     /// Append a static mesh to the current `renderer.prepare` draw list.
@@ -86,6 +134,38 @@ impl ClientApi {
             first_index,
             index_count,
             face,
+        ) == 0
+    }
+
+    /// One bin: shared mesh, material, and transform, many index spans.
+    /// Mesh lookup and the model matrix run once. Empty `index_count` spans are skipped.
+    pub fn submit_mesh_ranges(
+        &self,
+        entity: u64,
+        mesh: u64,
+        material: u32,
+        uniform_aux: u32,
+        layer_mask: u32,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+        ranges: &[MeshSubmitRange],
+    ) -> bool {
+        if ranges.is_empty() {
+            return false;
+        }
+        (self.submit_mesh_ranges_fn)(
+            self.ctx,
+            entity,
+            mesh,
+            material,
+            uniform_aux,
+            layer_mask,
+            position.as_ptr(),
+            rotation.as_ptr(),
+            scale.as_ptr(),
+            ranges.as_ptr(),
+            ranges.len() as u32,
         ) == 0
     }
 

@@ -110,6 +110,8 @@ void rmlui_document_dispatch_event(rmlui_handle_t doc, const char* event_type);
 int rmlui_context_update(rmlui_handle_t ctx);
 void rmlui_context_render(rmlui_handle_t ctx);
 void rmlui_context_set_dimensions(rmlui_handle_t ctx, int w, int h);
+/** CSS px / dp scale. 1 = one layout px per context pixel. */
+void rmlui_context_set_dp_ratio(rmlui_handle_t ctx, float ratio);
 
 void rmlui_process_mouse_move(rmlui_handle_t ctx, int x, int y);
 void rmlui_process_mouse_button_down(rmlui_handle_t ctx, int button);

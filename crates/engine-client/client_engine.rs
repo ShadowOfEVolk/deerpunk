@@ -85,6 +85,8 @@ pub struct ClientEngine {
     ui_fps: i32,
     ui_accum: f32,
     ui_screen: (u32, u32),
+    /// Last `SetDensityIndependentPixelRatio` (framebuffer px per window point).
+    ui_dp: f32,
     ui_mouse: Option<(i32, i32)>,
     ui_has_frame: bool,
     draw_ui: bool,
@@ -112,6 +114,8 @@ pub struct ClientEngine {
     /// [`SceneGeometry`] for `renderer.prepare`. Null outside that phase.
     prepare_scene: *mut deerpunk_engine_renderer::SceneGeometry,
     prepare_added: bool,
+    /// `projection * view` of the first extracted camera. Used by `vis_planes`.
+    prepare_view_proj: Option<glam::Mat4>,
     /// Host/game fills each frame; copied into [`RenderSnapshot::debug_draw`].
     pending_debug_draw: DebugDraw,
     /// Shader registry — loaded .wgsl variants, cached by (path, defines).
@@ -151,7 +155,10 @@ pub struct ClientEngine {
     /// Gamelib overlays merged into frame debug draw (block outline, etc.).
     game_debug: DebugDraw,
     pipelined_submit: Option<PipelinedSubmit>,
+    /// After `SurfaceOccluded` / `Timeout`, do not touch the swapchain again until this instant.
+    surface_retry_at: std::time::Instant,
     /// [`cl_render_thread`]: 0 = sync submit/present, 1 = async submit on `deerpunk-submit`.
+    /// Present always stays on this thread.
     render_pipeline_mode: usize,
 }
 
@@ -193,6 +200,7 @@ impl ClientEngine {
             ui_fps: 30,
             ui_accum: 0.0,
             ui_screen: (0, 0),
+            ui_dp: 0.0,
             ui_mouse: None,
             ui_has_frame: false,
             draw_ui: true,
@@ -209,6 +217,7 @@ impl ClientEngine {
             time: 0.0,
             prepare_systems: Vec::new(),
             prepare_scene: std::ptr::null_mut(),
+            prepare_view_proj: None,
             prepare_added: false,
             pending_debug_draw: DebugDraw::new(),
             shader_registry,
@@ -239,6 +248,7 @@ impl ClientEngine {
             camera_compose_scratch: Vec::new(),
             game_debug: DebugDraw::new(),
             pipelined_submit: None,
+            surface_retry_at: std::time::Instant::now(),
             render_pipeline_mode: 0,
         }
     }
@@ -385,13 +395,36 @@ impl ClientEngine {
         self.console_open = open;
     }
 
-    pub fn mesh_lifecycle_adopt_chunk(
+    /// Game-owned mesh (not `Mesh3D`): keep the registry slot and the GPU upload.
+    pub fn mesh_pin_handle(
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
-        entity: u64,
+        handle: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
     ) {
-        self.mesh_lifecycle
-            .adopt_chunk(meshes, &self.world, &mut self.renderer, entity);
+        let Some(mesh) = meshes.get(handle) else {
+            return;
+        };
+        let content = mesh.content_id();
+        let alloc = mesh.allocator_id;
+        meshes.attach(handle);
+        if content != 0 {
+            self.renderer.mesh_retain(content, alloc);
+        }
+    }
+
+    /// Drop one game-owned mesh pin. Reads `content_id` before the slot can be freed.
+    pub fn mesh_unpin_handle(
+        &mut self,
+        meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
+        handle: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+    ) {
+        if let Some(mesh) = meshes.get(handle) {
+            let content = mesh.content_id();
+            if content != 0 {
+                self.renderer.mesh_release(content);
+            }
+        }
+        meshes.detach(handle);
     }
 
     pub fn mesh_adopt_entity(
@@ -565,9 +598,7 @@ impl ClientEngine {
         let h = height.max(1);
         deerpunk_engine_common::frame::set_frame_size(w, h);
         self.renderer.resize_framebuffer(w, h);
-        if let Some(ui) = self.ui.as_ref() {
-            ui.resize(w, h);
-        }
+        self.apply_ui_viewport(w, h);
         log::info!("[client] window resized to {w}x{h}");
     }
 
@@ -578,7 +609,10 @@ impl ClientEngine {
                 let (w, h) = self.app.framebuffer_size();
                 self.resize_window(w, h);
             }
-            FrameError::SurfaceOccluded | FrameError::SurfaceTimeout => {}
+            FrameError::SurfaceOccluded | FrameError::SurfaceTimeout => {
+                self.surface_retry_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(100);
+            }
             FrameError::SurfaceValidation => {
                 log::warn!("[client] surface validation error — reconfiguring");
                 let (w, h) = self.app.framebuffer_size();
@@ -899,6 +933,10 @@ impl ClientEngine {
             log::error!("[client] UiRuntime failed — no UI this session");
             return;
         }
+        let dp = self.ui_content_scale();
+        ui.set_dp_ratio(dp);
+        self.ui_screen = (w, h);
+        self.ui_dp = dp;
         self.ui = Some(ui);
     }
 
@@ -975,7 +1013,26 @@ impl ClientEngine {
         }
         extract_gpu.post_ms = post_start.elapsed().as_secs_f32() * 1000.0;
         self.renderer.note_extract_gpu_stats(extract_gpu);
+        self.prepare_view_proj = scene.cameras.first().map(|c| {
+            c.projection_matrix(aspect) * c.view_matrix()
+        });
         scene
+    }
+
+    /// Write the six clip planes of the extracted camera. `false` when there is no camera.
+    pub fn write_vis_planes(&self, out: &mut [f32; 24]) -> bool {
+        let Some(view_proj) = self.prepare_view_proj else {
+            return false;
+        };
+        let r0 = view_proj.row(0);
+        let r1 = view_proj.row(1);
+        let r2 = view_proj.row(2);
+        let r3 = view_proj.row(3);
+        let planes = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2];
+        for (i, plane) in planes.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&plane.to_array());
+        }
+        true
     }
 
     /// Register a system that runs after extract and before camera snapshots.
@@ -1026,6 +1083,7 @@ impl ClientEngine {
         index_count: u32,
         face: u8,
     ) -> bool {
+        let _zone = deerpunk_engine_renderer::gamelib_profile::zone_scope("prepare.mesh_submit");
         if self.prepare_scene.is_null() || !mesh.is_valid() || layer_mask == 0 || index_count == 0 {
             return false;
         }
@@ -1048,41 +1106,231 @@ impl ClientEngine {
             &self.renderer.gpu.device,
             &self.renderer.gpu.queue,
         );
+        self.push_mesh_draws(
+            entity,
+            mesh,
+            layer_mask,
+            uniform_aux,
+            material_id,
+            texture,
+            normal,
+            orm,
+            shader_id,
+            position,
+            rotation,
+            scale,
+            cpu.bounds_min,
+            cpu.bounds_max,
+            false,
+            std::iter::once((first_index, index_count, face)),
+        )
+    }
+
+    /// Queue every binset in `desc`. Matrix once; bounds only when `mesh` changes.
+    pub fn submit(
+        &mut self,
+        meshes: &deerpunk_engine_common::resource::MeshRegistry,
+        desc: &deerpunk_engine_common::mesh_submit::MeshSubmit,
+    ) -> bool {
+        let _zone = deerpunk_engine_renderer::gamelib_profile::zone_scope("prepare.mesh_submit");
+        if self.prepare_scene.is_null()
+            || desc.layer_mask == 0
+            || desc.binset_count == 0
+            || desc.binsets.is_null()
+            || desc.bins.is_null()
+        {
+            return false;
+        }
+        let binsets = unsafe { std::slice::from_raw_parts(desc.binsets, desc.binset_count as usize) };
+        let bins = unsafe { std::slice::from_raw_parts(desc.bins, desc.bin_count as usize) };
+        let position = desc.position;
+        let rotation = desc.rotation;
+        let scale = desc.scale;
+        let mut any = false;
+        let mut cached_mesh = deerpunk_engine_common::resource::mesh_handle::MeshHandle::INVALID;
+        let mut bounds_min = [0.0f32; 3];
+        let mut bounds_max = [0.0f32; 3];
+        for set in binsets {
+            if set.bin_count == 0 || set.material == 0 {
+                continue;
+            }
+            let start = set.bin_start as usize;
+            let end = start.saturating_add(set.bin_count as usize);
+            if end > bins.len() {
+                continue;
+            }
+            let mesh = deerpunk_engine_common::resource::mesh_handle::MeshHandle(set.mesh as usize);
+            if mesh != cached_mesh {
+                let Some(cpu) = meshes.get(mesh) else {
+                    continue;
+                };
+                bounds_min = cpu.bounds_min;
+                bounds_max = cpu.bounds_max;
+                cached_mesh = mesh;
+            }
+            let material = deerpunk_engine_common::material::MaterialHandle(set.material);
+            let Some(entry) = self.material_store.get(material) else {
+                continue;
+            };
+            if entry.shader == 0 {
+                continue;
+            }
+            let texture = entry.albedo;
+            let normal = entry.normal;
+            let orm = entry.orm;
+            let shader_id = entry.shader;
+            let material_id = self.material_store.resolve_gpu(
+                material,
+                &mut self.renderer.material_allocator,
+                &self.renderer.gpu.device,
+                &self.renderer.gpu.queue,
+            );
+            let pushed = self.push_mesh_draws(
+                desc.entity,
+                mesh,
+                desc.layer_mask,
+                set.uniform_aux,
+                material_id,
+                texture,
+                normal,
+                orm,
+                shader_id,
+                position,
+                rotation,
+                scale,
+            bounds_min,
+            bounds_max,
+            desc.skip_vis != 0,
+            bins[start..end]
+                    .iter()
+                    .map(|b| (b.first_index, b.index_count, b.face))
+                    .filter(|(_, count, _)| *count != 0),
+            );
+            any |= pushed;
+        }
+        any
+    }
+
+    /// Same as [`Self::submit_mesh`] for many index spans of one mesh.
+    /// Lookup, GPU material, model matrix, and world bounds run once.
+    pub fn submit_mesh_ranges(
+        &mut self,
+        meshes: &deerpunk_engine_common::resource::MeshRegistry,
+        entity: u64,
+        mesh: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+        material: deerpunk_engine_common::material::MaterialHandle,
+        uniform_aux: u32,
+        layer_mask: u32,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+        ranges: impl Iterator<Item = (u32, u32, u8)>,
+    ) -> bool {
+        let _zone = deerpunk_engine_renderer::gamelib_profile::zone_scope("prepare.mesh_submit");
+        if self.prepare_scene.is_null() || !mesh.is_valid() || layer_mask == 0 {
+            return false;
+        }
+        let Some(cpu) = meshes.get(mesh) else {
+            return false;
+        };
+        let Some(entry) = self.material_store.get(material) else {
+            return false;
+        };
+        if entry.shader == 0 {
+            return false;
+        }
+        let texture = entry.albedo;
+        let normal = entry.normal;
+        let orm = entry.orm;
+        let shader_id = entry.shader;
+        let material_id = self.material_store.resolve_gpu(
+            material,
+            &mut self.renderer.material_allocator,
+            &self.renderer.gpu.device,
+            &self.renderer.gpu.queue,
+        );
+        self.push_mesh_draws(
+            entity,
+            mesh,
+            layer_mask,
+            uniform_aux,
+            material_id,
+            texture,
+            normal,
+            orm,
+            shader_id,
+            position,
+            rotation,
+            scale,
+            cpu.bounds_min,
+            cpu.bounds_max,
+            false,
+            ranges.filter(|(_, count, _)| *count != 0),
+        )
+    }
+
+    fn push_mesh_draws(
+        &mut self,
+        entity: u64,
+        mesh: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+        layer_mask: u32,
+        uniform_aux: u32,
+        material_id: u32,
+        texture: deerpunk_engine_renderer::snapshot::MeshTexture,
+        normal: deerpunk_engine_renderer::snapshot::MeshTexture,
+        orm: deerpunk_engine_renderer::snapshot::MeshTexture,
+        shader_id: deerpunk_engine_renderer::snapshot::ShaderId,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        scale: [f32; 3],
+        bounds_min: [f32; 3],
+        bounds_max: [f32; 3],
+        skip_vis: bool,
+        ranges: impl Iterator<Item = (u32, u32, u8)>,
+    ) -> bool {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::from_array(scale),
             glam::Quat::from_xyzw(rotation[0], rotation[1], rotation[2], rotation[3]),
             glam::Vec3::from_array(position),
         );
         let local = deerpunk_engine_renderer::Aabb::from_min_max(
-            glam::Vec3::from_array(cpu.bounds_min),
-            glam::Vec3::from_array(cpu.bounds_max),
+            glam::Vec3::from_array(bounds_min),
+            glam::Vec3::from_array(bounds_max),
         );
         let world_bounds = local.transform(model);
-        let draw = deerpunk_engine_renderer::snapshot::MeshDraw {
-            mesh,
-            model_mat: model.to_cols_array_2d(),
-            layer_mask,
-            batchable: true,
-            material_id,
-            texture,
-            normal,
-            orm,
-            sun_dir: [0.0, 0.0, 1.0, 0.0],
-            ambient: [0.0; 4],
-            shader_id,
-            lightmap_gpu: 0,
-            first_index,
-            index_count,
-            face,
-            world_bounds,
-            entity_id: entity,
-            uniform_aux,
-        };
-        unsafe {
-            (*self.prepare_scene).mesh_draws.push(draw);
+        let model_mat = model.to_cols_array_2d();
+        let mut any = false;
+        for (first_index, index_count, face) in ranges {
+            let draw = deerpunk_engine_renderer::snapshot::MeshDraw {
+                mesh,
+                model_mat,
+                layer_mask,
+                batchable: true,
+                material_id,
+                texture,
+                normal,
+                orm,
+                sun_dir: [0.0, 0.0, 1.0, 0.0],
+                ambient: [0.0; 4],
+                shader_id,
+                lightmap_gpu: 0,
+                first_index,
+                index_count,
+                face,
+                world_bounds,
+                entity_id: entity,
+                skip_vis,
+                uniform_aux,
+            };
+            unsafe {
+                (*self.prepare_scene).mesh_draws.push(draw);
+            }
+            any = true;
         }
-        self.prepare_added = true;
-        true
+        if any {
+            self.prepare_added = true;
+        }
+        any
     }
 
     pub fn bone_buffer_alloc(&mut self, bone_count: usize) -> BoneBufferHandle {
@@ -1236,14 +1484,40 @@ impl ClientEngine {
         }
     }
 
+    /// Framebuffer pixels per window point. RmlUi takes one ratio; use the larger axis.
+    fn ui_content_scale(&self) -> f32 {
+        let (sx, sy) = self.app.content_scale();
+        sx.max(sy).max(1.0)
+    }
+
+    /// Keep the HUD context in framebuffer pixels and scale CSS `px` by the window DPI.
+    fn apply_ui_viewport(&mut self, w: u32, h: u32) {
+        let dp = self.ui_content_scale();
+        let size_changed = self.ui_screen != (w, h);
+        let dp_changed = self.ui_dp != dp;
+        if !size_changed && !dp_changed {
+            return;
+        }
+        self.ui_screen = (w, h);
+        self.ui_dp = dp;
+        if let Some(ui) = self.ui.as_ref() {
+            if size_changed {
+                ui.resize(w, h);
+            }
+            if dp_changed {
+                ui.set_dp_ratio(dp);
+            }
+        }
+    }
+
     fn flush_ui(&mut self, w: u32, h: u32) {
         let latch = std::mem::take(&mut self.ui_latch);
-        let resize = self.ui_screen != (w, h);
-        if resize {
-            self.ui_screen = (w, h);
-        }
+        self.apply_ui_viewport(w, h);
+        // `Input` is already framebuffer pixels, the same space as the RmlUi context.
+        // `dp` only scales CSS px inside that context; multiplying the cursor by it
+        // pushes hits down and to the right of the drawn control.
         let (mx, my) = self.input.mouse_position();
-        let mouse = (mx as i32, my as i32);
+        let mouse = (mx.round() as i32, my.round() as i32);
         let mouse_moved = self.ui_mouse != Some(mouse);
         if mouse_moved {
             self.ui_mouse = Some(mouse);
@@ -1252,9 +1526,6 @@ impl ClientEngine {
             let Some(ui) = self.ui.as_ref() else {
                 return;
             };
-            if resize {
-                ui.resize(w, h);
-            }
             if mouse_moved {
                 ui.mouse_move(mouse.0, mouse.1);
             }
@@ -1531,6 +1802,19 @@ impl ClientEngine {
 
     pub fn set_pipelined_submit(&mut self, enabled: bool) {
         self.set_render_pipeline(if enabled { 1 } else { 0 });
+    }
+
+    /// Window minimized or the last acquire was occluded. Do not call `present` or `get_current_texture`.
+    pub fn should_skip_gpu(&self) -> bool {
+        self.app.is_hidden() || std::time::Instant::now() < self.surface_retry_at
+    }
+
+    /// Submit may still be in flight. Drop the drawable instead of presenting it.
+    pub fn discard_pending_present(&mut self) {
+        let Some(ps) = self.pipelined_submit.as_mut() else {
+            return;
+        };
+        ps.discard_and_complete(&mut self.renderer);
     }
 
     pub fn pipelined_submit_wait(&mut self) {

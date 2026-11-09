@@ -37,6 +37,7 @@ fn test_scene_two_cameras() -> RenderScene {
         face: 0,
         world_bounds: chunk,
         entity_id: 1,
+        skip_vis: false,
         uniform_aux: 0,
     });
     geo.mesh_draws.push(MeshDraw {
@@ -57,6 +58,7 @@ fn test_scene_two_cameras() -> RenderScene {
         face: 0,
         world_bounds: hand,
         entity_id: 2,
+        skip_vis: false,
         uniform_aux: 0,
     });
     geo.sky = Some(SkyDraw {

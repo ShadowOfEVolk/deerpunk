@@ -452,12 +452,14 @@ impl UiPass {
                     continue;
                 };
                 if let Some([x, y, sw, sh]) = batch.scissor {
-                    pass.set_scissor_rect(
-                        x.max(0) as u32,
-                        y.max(0) as u32,
-                        sw.max(0) as u32,
-                        sh.max(0) as u32,
-                    );
+                    let x0 = x.clamp(0, w as i32) as u32;
+                    let y0 = y.clamp(0, h as i32) as u32;
+                    let x1 = (x + sw).clamp(0, w as i32) as u32;
+                    let y1 = (y + sh).clamp(0, h as i32) as u32;
+                    if x1 <= x0 || y1 <= y0 {
+                        continue;
+                    }
+                    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
                 } else {
                     pass.set_scissor_rect(0, 0, w, h);
                 }

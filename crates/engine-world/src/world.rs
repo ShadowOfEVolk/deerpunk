@@ -119,7 +119,20 @@ unsafe extern "C-unwind" fn callback_bridge(it: *mut sys::ecs_iter_t) {
 }
 
 /// Gamelib callback for [`World::register_progress_system`].
-pub type ProgressSystemFn = extern "C" fn(*mut c_void);
+///
+/// Flecs invokes it once per matching table. `entities`, `fields`, and `sizes`
+/// are valid only for that call. `fields[term]` is the component column for
+/// query term `term` (the order of the query string). Row `i` is
+/// `fields[term] + i * sizes[term]` when the column is an owned array.
+pub type ProgressSystemFn = extern "C" fn(
+    entities: *const EntityId,
+    count: u32,
+    fields: *const *const c_void,
+    field_count: u32,
+    sizes: *const usize,
+    dt: f32,
+    user_data: *mut c_void,
+);
 
 struct ProgressSystemSlot {
     run: ProgressSystemFn,
@@ -136,7 +149,31 @@ unsafe extern "C-unwind" fn progress_system_bridge(it: *mut sys::ecs_iter_t) {
             return;
         }
         let slot = &*(it_ref.ctx as *const ProgressSystemSlot);
-        (slot.run)(slot.user_data);
+        if it_ref.count <= 0 {
+            return;
+        }
+        let field_count = it_ref.field_count.max(0) as usize;
+        let mut fields = [std::ptr::null::<c_void>(); 32];
+        let mut sizes = [0usize; 32];
+        let n = field_count.min(fields.len());
+        for i in 0..n {
+            let index = i as i8;
+            // `ecs_field_w_size` aborts when `size` is 0. Tags and unset fields stay null.
+            let size = sys::ecs_field_size(it, index);
+            sizes[i] = size;
+            if size != 0 {
+                fields[i] = sys::ecs_field_w_size(it, size, index);
+            }
+        }
+        (slot.run)(
+            it_ref.entities,
+            it_ref.count as u32,
+            fields.as_ptr(),
+            n as u32,
+            sizes.as_ptr(),
+            it_ref.delta_time,
+            slot.user_data,
+        );
     }
 }
 

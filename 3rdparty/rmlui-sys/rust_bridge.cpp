@@ -25,13 +25,11 @@ void RustRenderProxy::RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Ve
     const size_t n = g->vertices.size();
     const size_t ni = g->indices.size();
 
-    static constexpr size_t MAX_V = 4096;
-    float positions[MAX_V * 2];
-    unsigned char colours[MAX_V * 4];
-    float texcoords[MAX_V * 2];
-    const size_t copy_n = n < MAX_V ? n : MAX_V;
+    std::vector<float> positions(n * 2);
+    std::vector<unsigned char> colours(n * 4);
+    std::vector<float> texcoords(n * 2);
 
-    for (size_t i = 0; i < copy_n; i++) {
+    for (size_t i = 0; i < n; i++) {
         positions[i * 2] = v[i].position.x;
         positions[i * 2 + 1] = v[i].position.y;
         colours[i * 4] = v[i].colour[0];
@@ -41,7 +39,7 @@ void RustRenderProxy::RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Ve
         texcoords[i * 2] = v[i].tex_coord.x;
         texcoords[i * 2 + 1] = v[i].tex_coord.y;
     }
-    rust_render_geometry(h, positions, colours, texcoords, idx, (int)ni, translation.x, translation.y, (uintptr_t)texture);
+    rust_render_geometry(h, positions.data(), colours.data(), texcoords.data(), (int)n, idx, (int)ni, translation.x, translation.y, (uintptr_t)texture);
 }
 
 Rml::TextureHandle RustRenderProxy::LoadTexture(Rml::Vector2i& dims, const Rml::String& source) {

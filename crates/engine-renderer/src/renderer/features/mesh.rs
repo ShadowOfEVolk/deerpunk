@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use bytemuck::Zeroable;
 use deerpunk_engine_common::frame::{frame_height, frame_width};
 use deerpunk_engine_common::material::{ShaderId, VertexLayoutSpec};
-use glam::Vec3;
 use wgpu::util::DeviceExt;
 
 use crate::asset_inventory::{AssetEntry, AssetKind, ASSET_ID_MESH};
@@ -100,24 +99,6 @@ fn static_mesh_pipeline_key(shaders: &ShaderRegistry, shader_id: u32) -> MeshPip
     )
 }
 
-fn mesh_draw_is_transparent(shaders: &ShaderRegistry, md: &crate::snapshot::MeshDraw) -> bool {
-    shaders
-        .get(md.shader_id)
-        .is_some_and(|d| d.mesh_transparent())
-}
-
-/// Squared distance from camera to draw bounds (center). Used for back-to-front transparent order.
-fn mesh_draw_depth_sq(md: &crate::snapshot::MeshDraw, camera_pos: [f32; 3]) -> f32 {
-    let cam = Vec3::from_array(camera_pos);
-    if md.world_bounds.is_valid() {
-        cam.distance_squared(md.world_bounds.center())
-    } else {
-        let m = md.model_mat;
-        let origin = Vec3::new(m[3][0], m[3][1], m[3][2]);
-        cam.distance_squared(origin)
-    }
-}
-
 fn hash_batch_draw(mut h: u64, md: &crate::snapshot::MeshDraw) -> u64 {
     h = h.wrapping_mul(31).wrapping_add(md.shader_id as u64);
     h = h.wrapping_mul(31).wrapping_add(md.material_id as u64);
@@ -181,45 +162,156 @@ fn mesh_batch_fingerprint(meshes: &MeshDrawListView<'_>) -> u64 {
     h | 1
 }
 
-struct DrawSortKey {
-    transparent: u8,
-    queue: u32,
-    shader_id: u32,
-    material_id: u32,
-    texture: u32,
-    normal: u32,
-    orm: u32,
-    depth_sq: f32,
+/// Same scratch the renderer keeps across frames. The bench writes the plan back,
+/// which is what `encode_static_mesh_pass` does after `static_batch_plan`.
+#[doc(hidden)]
+pub struct StaticBatchPlanBench {
+    opaque_count: usize,
+    order: Vec<usize>,
+    groups: HashMap<MeshBatchKey, Vec<usize>>,
+    for_index: Vec<Option<MeshBatchKey>>,
+    pairs: Vec<(MeshBatchKey, u32)>,
 }
 
-fn draw_sort_key(shaders: &ShaderRegistry, md: &crate::snapshot::MeshDraw, camera_pos: [f32; 3]) -> DrawSortKey {
-    let def = shaders.get(md.shader_id);
-    DrawSortKey {
-        transparent: def.is_some_and(|d| d.mesh_transparent()) as u8,
-        queue: def.map(|d| d.mesh_queue()).unwrap_or(0),
-        shader_id: md.shader_id,
-        material_id: md.material_id,
-        texture: md.texture.0,
-        normal: md.normal.0,
-        orm: md.orm.0,
-        depth_sq: mesh_draw_depth_sq(md, camera_pos),
+impl StaticBatchPlanBench {
+    pub fn new() -> Self {
+        Self {
+            opaque_count: 0,
+            order: Vec::new(),
+            groups: HashMap::new(),
+            for_index: Vec::new(),
+            pairs: Vec::new(),
+        }
+    }
+
+    /// One `static_batch_plan` frame. Every draw is treated as opaque and batchable.
+    pub fn frame(&mut self, draws: &[crate::snapshot::MeshDraw], camera: [f32; 3]) -> u64 {
+        let _ = camera;
+        let (order, groups, for_index) = run_static_batch_plan(
+            &mut self.opaque_count,
+            &mut self.order,
+            &mut self.groups,
+            &mut self.for_index,
+            &mut self.pairs,
+            draws.len(),
+            |i| &draws[i],
+            true,
+            |_, _| true,
+        );
+        let groups_n = groups.len() as u64;
+        self.order = order;
+        self.groups = groups;
+        self.for_index = for_index;
+        groups_n
     }
 }
 
-fn cmp_draw_sort_key(a: &DrawSortKey, b: &DrawSortKey) -> Ordering {
-    a.transparent.cmp(&b.transparent).then_with(|| {
-        if a.transparent == 1 {
-            b.depth_sq.partial_cmp(&a.depth_sq).unwrap_or(Ordering::Equal)
-        } else {
-            Ordering::Equal
+fn submission_key_ord(
+    for_index: &[Option<MeshBatchKey>],
+    draw: &crate::snapshot::MeshDraw,
+    index: usize,
+) -> (u32, u32, u32, u32, u32) {
+    if let Some(key) = for_index[index] {
+        return (
+            key.shader_id,
+            key.material_id,
+            key.texture,
+            key.normal,
+            key.orm,
+        );
+    }
+    (
+        draw.shader_id,
+        draw.material_id,
+        draw.texture.0,
+        draw.normal.0,
+        draw.orm.0,
+    )
+}
+
+fn run_static_batch_plan<'a>(
+    opaque_count: &mut usize,
+    stored_order: &mut Vec<usize>,
+    stored_groups: &mut HashMap<MeshBatchKey, Vec<usize>>,
+    stored_for_index: &mut Vec<Option<MeshBatchKey>>,
+    pairs: &mut Vec<(MeshBatchKey, u32)>,
+    len: usize,
+    draw: impl Fn(usize) -> &'a crate::snapshot::MeshDraw,
+    batching: bool,
+    visible: impl Fn(usize, &crate::snapshot::MeshDraw) -> bool,
+) -> (
+    Vec<usize>,
+    HashMap<MeshBatchKey, Vec<usize>>,
+    Vec<Option<MeshBatchKey>>,
+) {
+    let mut groups = std::mem::take(stored_groups);
+    for bucket in groups.values_mut() {
+        bucket.clear();
+    }
+    pairs.clear();
+    let mut for_index = std::mem::take(stored_for_index);
+    for_index.clear();
+    for_index.resize(len, None);
+
+    let mut order = std::mem::take(stored_order);
+    order.clear();
+
+    for i in 0..len {
+        let md = draw(i);
+        if !batching || !md.batchable || !visible(i, md) {
+            order.push(i);
+            continue;
         }
-    })
-    .then_with(|| a.queue.cmp(&b.queue))
-    .then_with(|| a.shader_id.cmp(&b.shader_id))
-    .then_with(|| a.material_id.cmp(&b.material_id))
-    .then_with(|| a.texture.cmp(&b.texture))
-    .then_with(|| a.normal.cmp(&b.normal))
-    .then_with(|| a.orm.cmp(&b.orm))
+        pairs.push((
+            MeshBatchKey {
+                shader_id: md.shader_id,
+                lm_surface: false,
+                material_id: md.material_id,
+                texture: md.texture.0,
+                normal: md.normal.0,
+                orm: md.orm.0,
+                lightmap_gpu: 0,
+            },
+            i as u32,
+        ));
+    }
+    pairs.sort_unstable_by(|a, b| {
+        a.0.shader_id
+            .cmp(&b.0.shader_id)
+            .then(a.0.material_id.cmp(&b.0.material_id))
+            .then(a.0.texture.cmp(&b.0.texture))
+            .then(a.0.normal.cmp(&b.0.normal))
+            .then(a.0.orm.cmp(&b.0.orm))
+            .then(a.0.lightmap_gpu.cmp(&b.0.lightmap_gpu))
+    });
+    let mut run = 0usize;
+    while run < pairs.len() {
+        let key = pairs[run].0;
+        let mut end = run + 1;
+        while end < pairs.len() && pairs[end].0 == key {
+            end += 1;
+        }
+        if end - run < 2 {
+            order.push(pairs[run].1 as usize);
+        } else {
+            let bucket = groups.entry(key).or_default();
+            bucket.clear();
+            for pair in &pairs[run..end] {
+                let i = pair.1 as usize;
+                for_index[i] = Some(key);
+                bucket.push(i);
+            }
+            order.push(pairs[run].1 as usize);
+        }
+        run = end;
+    }
+    pairs.clear();
+    order.sort_unstable_by(|&a, &b| {
+        submission_key_ord(&for_index, draw(a), a).cmp(&submission_key_ord(&for_index, draw(b), b))
+    });
+    *opaque_count = order.len();
+
+    (order, groups, for_index)
 }
 
 use crate::draw_list::{MeshDrawListView, SkinnedDrawListView};
@@ -575,7 +667,7 @@ impl Renderer {
         !occlusion_active || self.mesh_occlusion.draw_visible_skinned(index, sd)
     }
 
-    /// Opaque then transparent static draws. Lightmap arrays are not bound.
+    /// Opaque static draws. Skinned meshes are a separate pass. Lightmap arrays are not bound.
     pub(in crate::renderer) fn encode_static_mesh_pass(
         &mut self,
         ctx: &mut FrameCtx<'_>,
@@ -620,9 +712,6 @@ impl Renderer {
             for &i in &draw_order {
                 let md = meshes.get(i);
                 if !self.static_draw_visible(occlusion_active, i, md) {
-                    continue;
-                }
-                if !self.draw_transparent && mesh_draw_is_transparent(ctx.shaders, md) {
                     continue;
                 }
                 if let Some(key) = batch_for_index[i] {
@@ -675,81 +764,29 @@ impl Renderer {
     ) {
         render_scope!("static_batch_plan");
         let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
-        let batch_fp = if occlusion_active {
-            0
+        let len = meshes.len();
+        let visible: Vec<bool> = if occlusion_active {
+            (0..len)
+                .map(|i| {
+                    let md = meshes.get(i);
+                    self.static_draw_visible(true, i, md)
+                })
+                .collect()
         } else {
-            mesh_batch_fingerprint(&meshes)
+            Vec::new()
         };
-        if batch_fp == self.mesh_batch_fp && self.mesh_batch_for_index.len() == meshes.len() {
-            let mut order = std::mem::take(&mut self.mesh_batch_order);
-            let opaque = self.mesh_batch_opaque_count.min(order.len());
-            let camera_pos = ctx.snapshot.camera_pos;
-            order[opaque..].sort_unstable_by(|&a, &b| {
-                mesh_draw_depth_sq(meshes.get(b), camera_pos)
-                    .partial_cmp(&mesh_draw_depth_sq(meshes.get(a), camera_pos))
-                    .unwrap_or(Ordering::Equal)
-            });
-            return (
-                order,
-                std::mem::take(&mut self.mesh_batch_groups),
-                std::mem::take(&mut self.mesh_batch_for_index),
-            );
-        }
-
-        let camera_pos = ctx.snapshot.camera_pos;
-        let mut sort_keys: Vec<DrawSortKey> = Vec::with_capacity(meshes.len());
-        for i in 0..meshes.len() {
-            sort_keys.push(draw_sort_key(ctx.shaders, meshes.get(i), camera_pos));
-        }
-        self.mesh_draw_order.clear();
-        self.mesh_draw_order.extend(0..meshes.len());
-        self.mesh_draw_order.sort_unstable_by(|&a, &b| {
-            cmp_draw_sort_key(&sort_keys[a], &sort_keys[b])
-                .then_with(|| meshes.get(a).texture.0.cmp(&meshes.get(b).texture.0))
-        });
-        let draw_order = std::mem::take(&mut self.mesh_draw_order);
-        self.mesh_batch_opaque_count = draw_order
-            .iter()
-            .position(|&i| sort_keys[i].transparent == 1)
-            .unwrap_or(draw_order.len());
-        let mut batch_groups: HashMap<MeshBatchKey, Vec<usize>> = HashMap::new();
-        let mut batch_for_index = vec![None; meshes.len()];
-        for &i in &draw_order {
-            let md = meshes.get(i);
-            if !self.mesh_draw_batching
-                || !md.batchable
-                || !self.static_draw_visible(occlusion_active, i, md)
-                || sort_keys[i].transparent == 1
-            {
-                continue;
-            }
-            let Some(def) = ctx.shaders.get(md.shader_id) else {
-                continue;
-            };
-            if def.uses_skinned_mesh_vertex() {
-                continue;
-            }
-            let key = MeshBatchKey {
-                shader_id: md.shader_id,
-                lm_surface: false,
-                material_id: md.material_id,
-                texture: md.texture.0,
-                normal: md.normal.0,
-                orm: md.orm.0,
-                lightmap_gpu: 0,
-            };
-            batch_for_index[i] = Some(key);
-            batch_groups.entry(key).or_default().push(i);
-        }
-        for group in batch_groups.values() {
-            if group.len() < 2 {
-                for &i in group {
-                    batch_for_index[i] = None;
-                }
-            }
-        }
-        self.mesh_batch_fp = batch_fp;
-        (draw_order, batch_groups, batch_for_index)
+        let batching = self.mesh_draw_batching;
+        run_static_batch_plan(
+            &mut self.mesh_batch_opaque_count,
+            &mut self.mesh_batch_order,
+            &mut self.mesh_batch_groups,
+            &mut self.mesh_batch_for_index,
+            &mut self.mesh_batch_pairs,
+            len,
+            |i| meshes.get(i),
+            batching,
+            |i, _| visible.is_empty() || visible[i],
+        )
     }
 
     pub(in crate::renderer) fn build_static_mdi(
