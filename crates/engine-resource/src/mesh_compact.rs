@@ -84,6 +84,27 @@ pub fn push_compact_vertex(
     out.extend_from_slice(&encode_light_tile_u32(block_light, sky_light, atlas_tile).to_le_bytes());
 }
 
+/// Same 20-byte layout as [`push_compact_vertex`], but `rgba` is written as-is.
+/// Overlay meshes store the mask index in the alpha byte (`1..=15`).
+#[allow(clippy::too_many_arguments)]
+pub fn push_compact_vertex_rgba(
+    out: &mut Vec<u8>,
+    position: [f32; 3],
+    uv: [f32; 2],
+    rgba: [u8; 4],
+    block_light: f32,
+    sky_light: f32,
+    atlas_tile: u16,
+) {
+    debug_assert_eq!(out.len() % COMPACT_CHUNK_VERTEX_STRIDE as usize, 0);
+    let w = encode_position_u20x3(position);
+    out.extend_from_slice(&w[0].to_le_bytes());
+    out.extend_from_slice(&w[1].to_le_bytes());
+    out.extend_from_slice(&rgba);
+    out.extend_from_slice(&encode_uv_packed_u16x2(uv).to_le_bytes());
+    out.extend_from_slice(&encode_light_tile_u32(block_light, sky_light, atlas_tile).to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
