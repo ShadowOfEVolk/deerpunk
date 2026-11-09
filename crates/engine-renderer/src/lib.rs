@@ -94,7 +94,6 @@ pub use mesh_allocator::{
 pub use mesh_gpu_pool::MeshGpuPool;
 pub use octree::PersistentOctree;
 pub use prepare::{run_prepare_systems, PrepareDrawList};
-pub use render_graph::{GraphError, Node, NodeContext, RenderGraph, ResId, Resource, TexturePool};
 pub use render_profile::{
     FrameDrawAccum, FrameSpeedsHud, GraphNodeTiming, MeshEncodeStats, MeshShaderBin,
     RenderFrameProfile, SceneExtractGpuStats,
@@ -103,8 +102,8 @@ pub use renderer::{
     FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, HOST_UI_ENABLED,
 };
 pub use snapshot::{
-    cam_features, rgba_u8, rgba_u8_4, CameraDefinition, CameraRenderGraph, CameraRenderSnapshot,
-    CullOptions, Instance, MeshTexture, PointLightDraw, RenderScene, RenderSnapshot, RenderTarget,
+    cam_features, rgba_u8, rgba_u8_4, CameraDefinition, CameraRenderSnapshot, CullOptions,
+    Instance, MeshTexture, PointLightDraw, RenderScene, RenderSnapshot, RenderTarget,
     SceneGeometry, Shape, SkyDraw, TexSel,
 };
 pub use text_util::{

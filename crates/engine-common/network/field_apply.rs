@@ -124,6 +124,7 @@ pub fn stream_in_field_snapshot(
 
 pub fn apply_field(world: &World, entity: EntityId, field: PropertyId, value: &FieldValue) {
     let _ = apply_field_ex(world, None, None, None, entity, field, value);
+    super::prefab_rep::mark_replication_dirty(entity);
 }
 
 pub fn apply_field_ex(
@@ -241,7 +242,11 @@ pub fn apply_memory_at(
     wire: WireKind,
     value: &FieldValue,
 ) -> bool {
-    apply_memory_field(world, entity, component_id, offset, wire, value)
+    let ok = apply_memory_field(world, entity, component_id, offset, wire, value);
+    if ok {
+        super::prefab_rep::mark_replication_dirty(entity);
+    }
+    ok
 }
 
 fn apply_memory_field(

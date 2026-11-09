@@ -525,7 +525,7 @@ impl Renderer {
         let lightmap_flag = 0u32;
 
         self.ensure_mesh_uniform_slots(draw_count as u64);
-        for palette in &ctx.snapshot.bone_palettes {
+        for palette in ctx.snapshot.bone_palettes.iter() {
             self.ensure_skinned_bone_bind_group(palette.handle, &palette.matrices);
         }
 
@@ -1153,13 +1153,13 @@ impl Renderer {
         pass.set_bind_group(3, &self.lights_bgs[self.frame_uniform_ring as usize], &[]);
         crate::bind_log::group(3, "lights");
 
-        let count = SkinnedDrawListView::new(ctx.snapshot, ctx.geometry).len();
+        // One view for the whole pass; draws are read by reference, not cloned.
+        let skinned = SkinnedDrawListView::new(ctx.snapshot, ctx.geometry);
+        let count = skinned.len();
         let mut last_shader: Option<ShaderId> = None;
         for j in 0..count {
-            let sd = SkinnedDrawListView::new(ctx.snapshot, ctx.geometry)
-                .get(j)
-                .clone();
-            if !self.skinned_draw_visible(occlusion_active, j, &sd) {
+            let sd = skinned.get(j);
+            if !self.skinned_draw_visible(occlusion_active, j, sd) {
                 continue;
             }
             if !self.draw_transparent
@@ -1885,8 +1885,14 @@ impl Renderer {
                 grow_attempts <= 8,
                 "mesh pool growth failed (vert_count={vert_count} idx_count={idx_count})"
             );
-            let vert_cap = vert_count.saturating_add(vert_count / 4).max(256 * 1024);
-            let idx_cap = idx_count.saturating_add(idx_count / 4).max(512 * 1024);
+            let vert_cap = crate::mesh_allocator::slab_size_class(
+                vert_count,
+                crate::mesh_allocator::MIN_SLAB_VERT_CAP,
+            );
+            let idx_cap = crate::mesh_allocator::slab_size_class(
+                idx_count,
+                crate::mesh_allocator::MIN_SLAB_IDX_CAP,
+            );
             let buffer_id = self
                 .mesh_pool
                 .add(&self.gpu.device, vert_cap, idx_cap, stride);

@@ -551,8 +551,6 @@ pub struct Renderer {
     scene_ambient: [f32; 4],
     /// Voxel distance fog (gamelib `set_scene_fog` → `LightsUniform._pad`).
     scene_fog: [f32; 2],
-    /// Forward frame pass graph (HDR → surface).
-    forward_graph: crate::render_graph::RenderGraph,
 
     /// Last frame CPU encode breakdown (`r_speeds`).
     last_profile: RenderFrameProfile,
@@ -1272,7 +1270,7 @@ impl Renderer {
             })
         };
 
-        let mesh_pool = crate::mesh_allocator::MeshBufferPool::new(256 * 1024, 512 * 1024);
+        let mesh_pool = crate::mesh_allocator::MeshBufferPool::new();
         let mut mesh_allocators: Vec<Box<dyn crate::mesh_allocator::MeshAllocator>> = Vec::new();
         // Allocator id 0 = default built-in slab allocator.
         mesh_allocators.push(Box::new(crate::mesh_allocator::SlabMeshAllocator::new()));
@@ -1386,7 +1384,6 @@ impl Renderer {
             scene_sun_dir,
             scene_ambient,
             scene_fog,
-            forward_graph: crate::frame::graph::build_forward_graph(),
             last_profile: RenderFrameProfile::default(),
             pending_extract_ms: 0.0,
             pending_prep_ms: 0.0,
@@ -1524,15 +1521,11 @@ impl Renderer {
         self.depth_pool.get(&target).unwrap().view.clone()
     }
 
-    pub(crate) fn forward_graph_mut(&mut self) -> &mut crate::render_graph::RenderGraph {
-        &mut self.forward_graph
-    }
-
     /// Forward graph topology for `r_speeds` (node order = GPU queue order).
     pub fn forward_graph_describe(
         &self,
     ) -> Vec<(&'static str, Vec<&'static str>, Vec<&'static str>)> {
-        self.forward_graph.describe_nodes()
+        crate::render_graph::describe_nodes()
     }
 
     /// Set scene-level directional + ambient lighting.
@@ -1674,7 +1667,6 @@ impl Renderer {
         self.ensure_hdr_texture(w, h);
         // Drop all per-target depth textures so they recreate at the new size on next use.
         self.depth_pool.clear();
-        self.forward_graph_mut().pool_mut().clear();
         self.postfx.invalidate_size();
         self.offscreen = None;
         self.skinned_mesh_globals_bgs.clear();

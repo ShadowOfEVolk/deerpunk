@@ -77,7 +77,7 @@ Prepare time is split in the profile: `prep_ui_ms`, `prep_snapshot_ms`, `prep_cu
 
 **Where:** `Renderer::encode_frame` → `frame/executor::run_frame_graph`.
 
-One command encoder runs nodes **in registration order** (forward graph, not a full DAG scheduler):
+One command encoder runs the typed forward passes **in declaration order** (`render_graph::FORWARD_PASSES`; a fixed pass list, not a DAG scheduler):
 
 ```mermaid
 flowchart LR
@@ -109,7 +109,7 @@ flowchart LR
 | **luminance** | Placeholder / skipped in current build |
 | **tonemap_ui** | Exposure, bloom, grain, UI composite → **swapchain** |
 
-External graph resources: **HDR color**, **depth**, **surface**.
+Views live outside the pass list: **HDR color** and **surface** come from `FrameCtx`, **depth** from the per-camera depth pool (`Renderer::ensure_depth`).
 
 ---
 

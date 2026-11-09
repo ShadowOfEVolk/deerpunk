@@ -1,10 +1,37 @@
 //! Prefab-driven replication wire packets (SVC payloads without command byte).
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 use super::field_path::{Cursor, FieldValue, PropertyId};
 use super::net_field::PropertyStorage;
 use super::prefab_net_registry::PrefabNetId;
 use super::protocol::SVC;
 use crate::scene::EntityDef;
+use crate::world::EntityId;
+
+/// Entities with replicated-field writes since the last server hot-delta emit.
+/// Marked at the field-write choke points (Flecs `OnSet` observer on the server,
+/// `field_apply` writes) and drained once per server tick by the server
+/// hot-delta emitter.
+static REPLICATION_DIRTY: std::sync::LazyLock<Mutex<HashSet<EntityId>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Mark `entity` for a hot-delta re-check on the next server replication tick (O(1)).
+pub fn mark_replication_dirty(entity: EntityId) {
+    REPLICATION_DIRTY
+        .lock()
+        .expect("replication dirty set lock poisoned")
+        .insert(entity);
+}
+
+/// Entities marked dirty since the last call; clears the marks.
+pub fn take_replication_dirty() -> HashSet<EntityId> {
+    std::mem::take(
+        &mut *REPLICATION_DIRTY
+            .lock()
+            .expect("replication dirty set lock poisoned"),
+    )
+}
 
 /// Spawn a prefab on the client. `net_id == 0` → not a NetworkEntity (e.g. worldspawn).
 #[derive(Clone, Debug)]

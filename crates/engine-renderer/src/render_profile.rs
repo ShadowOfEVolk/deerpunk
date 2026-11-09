@@ -194,7 +194,7 @@ pub struct RenderFrameProfile {
     pub mesh_gpu_uploads: u32,
     /// Draws that reused an already-uploaded mesh.
     pub mesh_gpu_cached: u32,
-    /// Forward [`crate::render_graph::RenderGraph`] node timings (registration order).
+    /// Forward render-graph pass timings ([`crate::render_graph::FORWARD_PASSES`] order).
     pub graph_nodes: Vec<GraphNodeTiming>,
     pub total_encode_ms: f32,
 

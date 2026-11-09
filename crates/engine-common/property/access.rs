@@ -94,10 +94,12 @@ pub fn write(
     }
 
     if field_apply::apply_field_ex(world, None, None, None, entity, id, &value) {
+        crate::network::mark_replication_dirty(entity);
         return Ok(());
     }
 
     if write_memory_from_desc(world, entity, &desc.storage, &value) {
+        crate::network::mark_replication_dirty(entity);
         Ok(())
     } else {
         Err(PropertyError::WriteFailed)

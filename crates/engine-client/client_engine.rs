@@ -1719,25 +1719,20 @@ impl ClientEngine {
                 }
             }
             deerpunk_engine_renderer::gamelib_profile::zone_end();
-            let post_idx = 0usize;
-            deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.clone");
-            let cameras = self.camera_compose_scratch.clone();
-            let post_snap = cameras[post_idx].clone();
-            let geometry_owned = scene.as_ref().map(|s| s.geometry.clone());
-            deerpunk_engine_renderer::gamelib_profile::zone_end();
+            // Take the compose scratch (rebuilt from scratch next frame) instead of
+            // cloning every snapshot; the post camera is just `cameras[0]`, and the
+            // scene geometry is borrowed straight from the caller's `RenderScene`.
+            let cameras = std::mem::take(&mut self.camera_compose_scratch);
             self.render_surface_frame(
                 &cameras,
-                &post_snap,
-                geometry_owned.as_ref(),
+                &cameras[0],
+                scene.map(|s| &s.geometry),
                 game_frame_fn,
                 game_frame_ctx,
                 delta_time,
             );
-            deerpunk_engine_renderer::gamelib_profile::zone_begin("client.tick.present.drop");
-            drop(cameras);
-            drop(post_snap);
-            drop(geometry_owned);
-            deerpunk_engine_renderer::gamelib_profile::zone_end();
+            // Hand the Vec back so next frame reuses its allocation.
+            self.camera_compose_scratch = cameras;
             rendered_surface = true;
         }
         self.renderer

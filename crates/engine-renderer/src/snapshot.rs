@@ -271,11 +271,11 @@ pub struct RenderSnapshot {
     /// Indices into frame [`SceneGeometry::mesh_draws`] when [`Self::frustum_culled`] + encode has geometry.
     pub mesh_geometry_indices: Vec<u32>,
     pub skinned_geometry_indices: Vec<u32>,
-    pub bone_palettes: Vec<BonePaletteUpload>,
+    pub bone_palettes: std::sync::Arc<[BonePaletteUpload]>,
     /// Террейн со сплат-маппингом.
     pub terrain_splat_draws: Vec<TerrainSplatDraw>,
     /// Forward point lights (capped by renderer).
-    pub point_lights: Vec<PointLightDraw>,
+    pub point_lights: std::sync::Arc<[PointLightDraw]>,
     /// Фоновое небо (если задано — рисуется перед 3D-сценой).
     pub sky: Option<SkyDraw>,
     /// Debug-примитивы (линии, сферы, текст) — рисуются поверх 3D-сцены.
@@ -306,9 +306,9 @@ impl RenderSnapshot {
             skinned_mesh_draws: Vec::new(),
             mesh_geometry_indices: Vec::new(),
             skinned_geometry_indices: Vec::new(),
-            bone_palettes: Vec::new(),
+            bone_palettes: Vec::new().into(),
             terrain_splat_draws: Vec::new(),
-            point_lights: Vec::new(),
+            point_lights: Vec::new().into(),
             sky: None,
             debug_draw: Vec::new(),
             game_time: 0.0,
@@ -520,22 +520,6 @@ impl CameraDefinition {
     }
 }
 
-/// Render graph привязанный к камере. Перестраивается при dirty flag.
-pub struct CameraRenderGraph {
-    pub graph: crate::render_graph::RenderGraph,
-    pub dirty: bool,
-}
-
-impl CameraRenderGraph {
-    pub fn new(graph: crate::render_graph::RenderGraph) -> Self {
-        Self { graph, dirty: true }
-    }
-
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-}
-
 /// One forward point light for the frame.
 #[derive(Clone, Copy, Debug)]
 pub struct PointLightDraw {
@@ -581,8 +565,8 @@ pub struct CameraRenderSnapshot {
     pub visible_skinned: Vec<u32>,
     /// If false, use full `geometry.*` draw lists (culling off).
     pub frustum_culled: bool,
-    pub bone_palettes: Vec<BonePaletteUpload>,
-    pub point_lights: Vec<PointLightDraw>,
+    pub bone_palettes: std::sync::Arc<[BonePaletteUpload]>,
+    pub point_lights: std::sync::Arc<[PointLightDraw]>,
     pub sky: Option<SkyDraw>,
     /// Scene-level clear color (driven by sky compositor). Used when
     /// [`color_load`] is [`ColorLoad::Clear`].
@@ -665,6 +649,12 @@ impl RenderScene {
         scratch.reset_build_timing();
         out.clear();
         out.reserve(self.cameras.len());
+        // Shared per frame (refcounted): every camera snapshot points at the same
+        // palettes/lights instead of cloning the vectors per camera.
+        let bone_palettes: std::sync::Arc<[BonePaletteUpload]> =
+            std::sync::Arc::from(self.geometry.bone_palettes.as_slice());
+        let point_lights: std::sync::Arc<[PointLightDraw]> =
+            std::sync::Arc::from(self.geometry.point_lights.as_slice());
         for (cam_idx, cam) in self.cameras.iter().enumerate() {
             let view = cam.view_matrix();
             let projection = cam.projection_matrix(aspect);
@@ -755,8 +745,8 @@ impl RenderScene {
                 visible_mesh,
                 visible_skinned,
                 frustum_culled,
-                bone_palettes: self.geometry.bone_palettes.clone(),
-                point_lights: self.geometry.point_lights.clone(),
+                bone_palettes: bone_palettes.clone(),
+                point_lights: point_lights.clone(),
                 sky: self.geometry.sky,
                 clear: self.clear,
                 color_load: cam.color_load,

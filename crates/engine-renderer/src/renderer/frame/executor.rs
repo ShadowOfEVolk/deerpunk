@@ -1,22 +1,11 @@
-//! Forward frame: [`crate::render_graph::RenderGraph::execute_on_encoder`] + pass dispatch.
-
-use std::ffi::c_void;
+//! Forward frame: typed dispatch of [`crate::render_graph::FORWARD_PASSES`].
 
 use crate::frame::context::FrameCtx;
 use crate::frame::scope::{self, Phase};
-use crate::render_graph::NodeContext;
+use crate::render_graph::{ForwardPass, FORWARD_PASSES};
 use crate::render_profile::{lap_ms, GraphNodeTiming};
 use crate::renderer::Renderer;
 use crate::snapshot::cam_features;
-
-/// Per-frame payload in [`NodeContext::user_data`] (raw pointers avoid graph + pass borrow split).
-pub struct GraphFrameUserData {
-    pub renderer: *mut Renderer,
-    pub ctx: *mut FrameCtx<'static>,
-    pub sprite_pipeline: *const wgpu::RenderPipeline,
-    pub hud_vp: [[f32; 4]; 4],
-    pub phase: crate::frame::scope::Phase,
-}
 
 fn push_graph_timing(
     ctx: &mut FrameCtx<'_>,
@@ -32,23 +21,21 @@ fn push_graph_timing(
     });
 }
 
-pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
-    if nc.user_data.is_null() {
-        return;
-    }
-    let state = unsafe { &mut *(nc.user_data as *mut GraphFrameUserData) };
-    let renderer = unsafe { &mut *state.renderer };
-    let ctx = unsafe { &mut *state.ctx };
-    let sprite_pipeline = unsafe { &*state.sprite_pipeline };
-    let hud_vp = state.hud_vp;
-
-    let name = nc.node_name;
+/// Execute one forward pass against the renderer / frame context directly.
+fn run_forward_pass(
+    pass: ForwardPass,
+    r: &mut Renderer,
+    ctx: &mut FrameCtx<'_>,
+    encoder: &mut wgpu::CommandEncoder,
+    sprite_pipeline: &wgpu::RenderPipeline,
+    hud_vp: [[f32; 4]; 4],
+    phase: Phase,
+) {
+    let name = pass.name();
     let lap_start = *ctx.lap;
     let mut skipped = false;
 
-    let phase = state.phase;
-
-    if !scope::node_enabled(name, phase) {
+    if !scope::node_enabled(pass, phase) {
         skipped = true;
         let _ = lap_ms(ctx.lap);
         push_graph_timing(ctx, name, lap_start, skipped);
@@ -63,74 +50,71 @@ pub fn dispatch_forward_node(nc: &mut NodeContext<'_>) {
         };
     }
 
-    match name {
-        "upload_prep" => {
+    match pass {
+        ForwardPass::UploadPrep => {
             render_scope!("render/upload_prep");
-            renderer.pass_upload_prep(ctx);
+            r.pass_upload_prep(ctx);
         }
-        "sky" => {
+        ForwardPass::Sky => {
             render_scope!("render/sky");
-            if renderer.draws_sky()
+            if r.draws_sky()
                 && ctx.snapshot.pass_mask & cam_features::SKY != 0
                 && ctx.snapshot.sky.is_some()
             {
-                renderer.pass_sky_and_clouds(ctx, nc.encoder);
+                r.pass_sky_and_clouds(ctx, encoder);
             } else {
                 skipped = true;
                 let _ = lap_ms(ctx.lap);
             }
         }
-        "clear_hdr" => {
+        ForwardPass::ClearHdr => {
             render_scope!("render/clear_hdr");
             // Clear HDR only when this camera declares a color clear AND sky did not
             // already clear (sky pass clears to the scene clear color itself).
             let clears_color =
                 ctx.snapshot.color_load == deerpunk_engine_common::components::ColorLoad::Clear;
-            let sky_cleared = renderer.draws_sky()
+            let sky_cleared = r.draws_sky()
                 && ctx.snapshot.pass_mask & cam_features::SKY != 0
                 && ctx.snapshot.sky.is_some();
             if clears_color && !sky_cleared {
-                renderer.pass_clear_hdr_no_sky(ctx, nc.encoder);
+                r.pass_clear_hdr_no_sky(ctx, encoder);
             } else {
                 skipped = true;
                 let _ = lap_ms(ctx.lap);
             }
         }
-        "sprites_3d" => {
+        ForwardPass::Sprites3d => {
             render_scope!("render/sprites_3d");
-            renderer.pass_sprites_3d(ctx, nc.encoder, sprite_pipeline);
+            r.pass_sprites_3d(ctx, encoder, sprite_pipeline);
         }
-        "mesh" => {
+        ForwardPass::Mesh => {
             render_scope!("render/mesh");
-            renderer.pass_mesh(ctx, nc.encoder);
+            r.pass_mesh(ctx, encoder);
         }
-        "debug" => {
+        ForwardPass::Debug => {
             render_scope!("render/debug");
             if ctx.snapshot.pass_mask & cam_features::DEBUG != 0 {
-                renderer.pass_debug_lines(ctx, nc.encoder);
+                r.pass_debug_lines(ctx, encoder);
             } else {
                 skipped = true;
                 let _ = lap_ms(ctx.lap);
             }
         }
-        "hud" => {
+        ForwardPass::Hud => {
             render_scope!("render/hud");
-            renderer.pass_hud(ctx, nc.encoder, sprite_pipeline, hud_vp);
+            r.pass_hud(ctx, encoder, sprite_pipeline, hud_vp);
         }
-        "tonemap_ui" => {
+        ForwardPass::TonemapUi => {
             render_scope!("render/tonemap_ui");
-            renderer.pass_tonemap_and_ui(ctx, nc.encoder);
-        }
-        _ => {
-            skipped = true;
-            let _ = lap_ms(ctx.lap);
+            r.pass_tonemap_and_ui(ctx, encoder);
         }
     }
 
     push_graph_timing(ctx, name, lap_start, skipped);
 }
 
-/// Run the persistent forward graph (single frame encoder, external HDR/depth/surface views).
+/// Run the forward pass list in declaration order on the frame encoder
+/// (HDR / surface views come from `FrameCtx`).
 pub fn run_frame_graph(
     r: &mut Renderer,
     ctx: &mut FrameCtx<'_>,
@@ -141,21 +125,9 @@ pub fn run_frame_graph(
 ) {
     // Depth is owned by the per-camera depth pool, not the graph. Passes fetch their
     // depth view from `Renderer::ensure_depth(snapshot.depth.target, w, h)`.
-
-    // SAFETY: `user` lives for this call; graph nodes only run synchronously on this thread.
-    let mut user = GraphFrameUserData {
-        renderer: r as *mut Renderer,
-        ctx: unsafe { std::mem::transmute(ctx) },
-        sprite_pipeline: sprite_pipeline as *const wgpu::RenderPipeline,
-        hud_vp,
-        phase,
-    };
-    let user_ptr = &mut user as *mut GraphFrameUserData as *mut c_void;
-
-    let device = r.gpu.device.clone();
-    let queue = r.gpu.queue.clone();
-    r.forward_graph_mut()
-        .execute_registered(&device, &queue, encoder, user_ptr);
+    for pass in FORWARD_PASSES {
+        run_forward_pass(pass, r, ctx, encoder, sprite_pipeline, hud_vp, phase);
+    }
 }
 
 fn format_res_list(ids: &[&str]) -> String {
@@ -166,7 +138,7 @@ fn format_res_list(ids: &[&str]) -> String {
     }
 }
 
-/// Lines for `r_speeds` render-graph section (registration queue + I/O + ms).
+/// Lines for `r_speeds` render-graph section (pass queue + I/O + ms).
 pub fn format_graph_speeds_lines(
     profile: &crate::render_profile::RenderFrameProfile,
     node_specs: &[(&'static str, Vec<&'static str>, Vec<&'static str>)],

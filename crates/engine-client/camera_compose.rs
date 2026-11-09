@@ -1,5 +1,6 @@
 //! CPU-side camera stack: cull, gather, compose packing.
 
+use deerpunk_engine_common::components::render_layer::render_layer_visible;
 use deerpunk_engine_renderer::snapshot::{
     cam_features, CameraRenderSnapshot, RenderScene, RenderSnapshot,
 };
@@ -26,8 +27,8 @@ pub fn pack_surface_camera(
     };
     out.frustum_culled = cam.frustum_culled;
     out.cull_stats = cam.cull_stats;
-    out.bone_palettes.clone_from(&cam.bone_palettes);
-    out.point_lights.clone_from(&cam.point_lights);
+    out.bone_palettes = cam.bone_palettes.clone();
+    out.point_lights = cam.point_lights.clone();
     out.instances.clear();
     out.hud.clear();
     out.mesh_draws.clear();
@@ -39,7 +40,26 @@ pub fn pack_surface_camera(
         out.skinned_geometry_indices
             .clone_from(&cam.visible_skinned);
     } else {
-        scene.gather_visible_draws(cam, &mut out.mesh_draws, &mut out.skinned_mesh_draws);
+        // No frustum cull: emit indices for every layer-visible draw instead of
+        // cloning the draws. The renderer resolves them through the geometry.
+        out.mesh_geometry_indices.extend(
+            scene
+                .geometry
+                .mesh_draws
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| render_layer_visible(d.layer_mask, cam.layer_mask))
+                .map(|(i, _)| i as u32),
+        );
+        out.skinned_geometry_indices.extend(
+            scene
+                .geometry
+                .skinned_mesh_draws
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| render_layer_visible(d.layer_mask, cam.layer_mask))
+                .map(|(i, _)| i as u32),
+        );
     }
     out.terrain_splat_draws.clear();
     if cam.pass_mask & cam_features::TERRAIN != 0 {

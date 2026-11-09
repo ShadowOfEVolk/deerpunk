@@ -28,10 +28,10 @@ pub use packet_log::{
     should_log_in, should_log_out, should_log_svc, svc_label,
 };
 pub use prefab_net_registry::{PrefabNetId, PrefabNetRegistry};
+pub use prefab_rep::{mark_replication_dirty, take_replication_dirty};
 pub use prefab_rep::{NetDeltaRpc, NetDestroyRpc, PrefabDefRpc, SpawnPrefabRpc};
 pub use stream_components::build_stream_in_components;
 pub use stream_rep::{StreamEntityUpdate, StreamInRpc, StreamOutRpc, StreamUpdateBatchRpc};
-
 // Flat re-exports (existing call sites use `common::network::protocol`, etc.)
 pub use deerpunk_engine_network::lan;
 pub use deerpunk_engine_network::loopback;

@@ -11,8 +11,11 @@ pub struct MeshDrawListView<'a> {
 
 impl<'a> MeshDrawListView<'a> {
     pub fn new(snap: &'a RenderSnapshot, geo: Option<&'a SceneGeometry>) -> Self {
-        if snap.frustum_culled {
-            if let Some(geo) = geo {
+        // Geometry indices are authoritative whenever the encode side has geometry
+        // (frustum-culled and non-culled pack both fill them). Owned vecs remain
+        // the fallback for snapshots encoded without scene geometry.
+        if let Some(geo) = geo {
+            if !snap.mesh_geometry_indices.is_empty() {
                 return Self {
                     geo: Some(geo),
                     owned: &[],
@@ -52,8 +55,8 @@ pub struct SkinnedDrawListView<'a> {
 
 impl<'a> SkinnedDrawListView<'a> {
     pub fn new(snap: &'a RenderSnapshot, geo: Option<&'a SceneGeometry>) -> Self {
-        if snap.frustum_culled {
-            if let Some(geo) = geo {
+        if let Some(geo) = geo {
+            if !snap.skinned_geometry_indices.is_empty() {
                 return Self {
                     geo: Some(geo),
                     owned: &[],
