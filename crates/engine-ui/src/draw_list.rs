@@ -26,6 +26,8 @@ pub struct UiGeometryBuilder {
     released: Vec<u32>,
     next_tex: u32,
     white: u32,
+    /// True once the white fallback texture has been delivered in a frame.
+    white_shipped: bool,
     scissor: Option<[i32; 4]>,
     scissor_on: bool,
     /// Pending texture uploads only (cleared when frame is taken).
@@ -62,6 +64,7 @@ impl UiGeometryBuilder {
             white,
             scissor: None,
             scissor_on: false,
+            white_shipped: false,
             pending_uploads: pending,
         }
     }
@@ -79,6 +82,19 @@ impl UiGeometryBuilder {
         self.pending_uploads.clear();
     }
 
+    /// Hand the white fallback texture out with the first delivered frame.
+    /// It is seeded into `pending_uploads` at construction, but `begin_frame`
+    /// wipes that before the first take — so untextured draws (panel fills,
+    /// borders) would otherwise reference a texture that never ships.
+    /// `take_frame` includes it exactly once per stream.
+    pub fn ship_white_once(&mut self) {
+        if !self.white_shipped {
+            if let Some(w) = self.textures.get(&self.white).cloned() {
+                self.pending_uploads.insert(self.white, w);
+            }
+        }
+    }
+
     /// `None` when this render produced the same draws and no new GPU resources.
     pub fn take_frame_if_changed(&mut self) -> Option<UiFrame> {
         let changed = !self.pending_meshes.is_empty()
@@ -91,7 +107,10 @@ impl UiGeometryBuilder {
             return None;
         }
         self.last_draws.clone_from(&self.draws);
-        Some(self.take_frame())
+        self.ship_white_once();
+        let frame = self.take_frame();
+        self.white_shipped = true;
+        Some(frame)
     }
 
     fn take_frame(&mut self) -> UiFrame {

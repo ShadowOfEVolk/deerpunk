@@ -76,11 +76,10 @@ impl UiFrame {
         }
         self.released_meshes.extend(next.released_meshes);
         let released_meshes = self.released_meshes.clone();
-        self.meshes
-            .retain(|m| !released_meshes.contains(&m.id));
+        self.meshes.retain(|m| !released_meshes.contains(&m.id));
         self.draws = next.draws;
         for (id, upload) in next.textures {
- self.textures.insert(id, upload);
+            self.textures.insert(id, upload);
         }
         for id in &next.released {
             self.textures.remove(id);
@@ -151,4 +150,4 @@ mod tests {
         assert!(a.meshes.is_empty(), "released-before-upload nets out");
         assert_eq!(a.released_meshes, vec![7]);
     }
- }
+}

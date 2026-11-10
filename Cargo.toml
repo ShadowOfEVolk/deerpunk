@@ -40,7 +40,7 @@ name = "deerpunk"
 path = "src/main.rs"
 
 [features]
-default = ["full"]
+default = ["full-kira"]
 full = ["deerpunk-engine-host/full"]
 full-kira = ["deerpunk-engine-host/full-kira"]
 tracy = ["deerpunk-engine-host/tracy", "deerpunk-engine-renderer/tracy"]

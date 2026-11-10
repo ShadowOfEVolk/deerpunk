@@ -271,6 +271,7 @@ impl UiRuntime {
             };
         }
 
+
         let name = CString::new(context_name).unwrap_or_else(|_| CString::new("main").unwrap());
         let ctx = unsafe { ffi::rmlui_context_create(name.as_ptr()) };
         if ctx.is_null() {

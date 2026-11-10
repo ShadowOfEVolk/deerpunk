@@ -748,6 +748,7 @@ dependencies = [
  "crossbeam-channel",
  "deerpunk-engine-common",
  "deerpunk-engine-ffi",
+ "deerpunk-engine-particles",
  "deerpunk-engine-renderer",
  "deerpunk-engine-server",
  "deerpunk-ui",
@@ -836,6 +837,7 @@ dependencies = [
  "deerpunk-engine-common",
  "deerpunk-engine-ffi",
  "deerpunk-engine-macro",
+ "deerpunk-engine-particles",
  "deerpunk-engine-renderer",
  "deerpunk-engine-server",
  "deerpunk-inspector-protocol",
@@ -872,8 +874,11 @@ name = "deerpunk-engine-particles"
 version = "0.1.0"
 dependencies = [
  "deerpunk-engine-common",
+ "deerpunk-engine-resource",
  "glam 0.33.3",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

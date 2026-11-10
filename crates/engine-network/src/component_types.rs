@@ -13,9 +13,8 @@ impl ComponentType {
             _ => None,
         }
     }
-    
+
     pub fn to_id(self) -> u16 {
         self as u16
     }
 }
-

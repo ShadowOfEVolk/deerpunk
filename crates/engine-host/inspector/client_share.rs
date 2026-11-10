@@ -60,9 +60,7 @@ impl ClientInspectShare {
     /// Inspector thread: current rows snapshot (clone of the `Arc`).
     pub(crate) fn rows(&self) -> Option<(f32, Arc<Vec<ClientEntityRow>>)> {
         let guard = self.rows.lock().unwrap();
-        guard
-            .as_ref()
-            .map(|s| (s.time_secs, Arc::clone(&s.rows)))
+        guard.as_ref().map(|s| (s.time_secs, Arc::clone(&s.rows)))
     }
 
     /// Inspector thread: enqueue a component-detail request; returns its seq.

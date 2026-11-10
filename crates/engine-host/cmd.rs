@@ -175,7 +175,7 @@ impl CmdSystem {
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
-    fn client_engine_mut(
+    pub(crate) fn client_engine_mut(
         &self,
     ) -> Option<&mut deerpunk_engine_client::client_engine::ClientEngine> {
         if self.client_engine.is_null() {

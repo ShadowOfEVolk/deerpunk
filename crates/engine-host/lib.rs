@@ -27,6 +27,8 @@ mod mesh_upload;
 pub mod move_state;
 mod net_console;
 mod net_tick;
+mod particles_net;
+mod particles_spawn;
 mod physics_trace;
 pub mod schedule;
 mod server_thread;
@@ -357,6 +359,7 @@ impl Host {
         binds::Binds::register_commands(&mut self.cmd);
         move_state::register_commands(&mut self.cmd);
         net_console::register_commands(&mut self.cmd);
+        crate::particles_net::register_commands(&mut self.cmd);
         self.register_internal_components();
         if let Err(e) = self.server_mut().initialize(gamedir) {
             log::error!("[host] server_engine.initialize: {e}");
@@ -478,8 +481,10 @@ impl Host {
         // Poll even without a server engine (main menu): the inspector
         // accepts connections there; world RPCs reply with an error until
         // a map is loaded.
-        let ctx = self.server_engine.as_mut().map(|engine| {
-            inspector::InspectorRpcCtx {
+        let ctx = self
+            .server_engine
+            .as_mut()
+            .map(|engine| inspector::InspectorRpcCtx {
                 world: &engine.world,
                 resources,
                 time_secs,
@@ -488,8 +493,7 @@ impl Host {
                 server_rep: &engine.rep,
                 #[cfg(any(feature = "client", feature = "full"))]
                 client_engine: None,
-            }
-        });
+            });
         self.inspector.poll(ctx);
     }
 
@@ -535,6 +539,7 @@ impl Host {
         binds::Binds::register_commands(&mut self.cmd);
         move_state::register_commands(&mut self.cmd);
         net_console::register_commands(&mut self.cmd);
+        crate::particles_net::register_commands(&mut self.cmd);
         #[cfg(any(feature = "client", feature = "full"))]
         demo_console::register_commands(&mut self.cmd);
         self.cmd.set_cmdline(std::env::args().collect());
@@ -588,6 +593,8 @@ impl Host {
                 let backend: Box<dyn deerpunk_engine_client::AudioBackend> =
                     Box::new(deerpunk_engine_client::NullAudio);
                 client.set_audio_backend(backend, &gamedir, &self.resources);
+                // Engine particle effects: `<gamedir>/particles/*.json`.
+                client.init_particles_catalog(&gamedir);
             }
             self.rebind_cmd_refs();
         }
@@ -684,6 +691,7 @@ impl Host {
             w.component_init::<Worldspawn>();
             w.component_init::<MapKv>();
             w.component_init::<Collider>();
+            w.component_init::<ParticleEmitter>();
         };
         if let Some(engine) = self.server_engine.as_ref() {
             register(&engine.world);
@@ -1207,7 +1215,10 @@ impl Host {
             share.publish_rows(self.time_secs, rows);
         }
         while let Some((seq, entity)) = share.take_pending() {
-            let ent = world.inspect_entities().into_iter().find(|e| e.id == entity);
+            let ent = world
+                .inspect_entities()
+                .into_iter()
+                .find(|e| e.id == entity);
             let value = match ent {
                 None => serde_json::json!({ "_error": "entity not found" }),
                 Some(ent) => {
@@ -1217,10 +1228,8 @@ impl Host {
                         .inspect_entity_all_components(ent.id)
                         .iter()
                         .map(|slug| {
-                            serde_json::to_value(inspector::component_snapshot(
-                                world, ent.id, slug,
-                            ))
-                            .unwrap_or(serde_json::Value::Null)
+                            serde_json::to_value(inspector::component_snapshot(world, ent.id, slug))
+                                .unwrap_or(serde_json::Value::Null)
                         })
                         .collect();
                     serde_json::json!({
@@ -1394,7 +1403,7 @@ impl Host {
     }
 
     /// Play-phase replication to all clients in **play** (UDP + local channel).
-    fn deliver_s2c_broadcast(&mut self, packets: &[Vec<u8>]) {
+    pub(crate) fn deliver_s2c_broadcast(&mut self, packets: &[Vec<u8>]) {
         if packets.is_empty() {
             return;
         }
@@ -1914,7 +1923,24 @@ impl Host {
                 deerpunk_ui::set_client_in_game(true);
                 log::info!("[net] init done → play");
             }
+            SVC::ParticlesEmit => self.apply_particles_emit_packet(packet),
         }
+    }
+
+    /// Client post-net-apply dispatch: spawn the burst in the local sim.
+    #[cfg(any(feature = "client", feature = "full"))]
+    fn apply_particles_emit_packet(&mut self, packet: &[u8]) {
+        let Some((_cmd, payload)) = packet.split_first() else {
+            return;
+        };
+        let Some(rpc) = particles_net::ParticlesEmitRpc::decode(payload) else {
+            log::warn!("[net] ParticlesEmit decode failed");
+            return;
+        };
+        let Some(client) = self.client_engine.as_mut() else {
+            return;
+        };
+        client.spawn_particles_burst(&rpc.effect, rpc.pos, rpc.vel, &rpc.payload);
     }
 
     /// Record (if active) then [`Self::parse_server_message`].
@@ -2153,9 +2179,15 @@ impl Host {
             let mut scene = {
                 let _g = system_profiler::scope("frame.extract");
                 let extract_start = std::time::Instant::now();
-                let (client, registry) = self.split_client_registry();
-                let mut scene =
-                    client.extract_scene_view(registry, view_ent, early_cull, draw_world);
+                let client = self.client_engine.as_mut().unwrap();
+                let registry = &mut self.mesh_registry;
+                let mut scene = client.extract_scene_view(
+                    registry,
+                    &self.resources,
+                    view_ent,
+                    early_cull,
+                    draw_world,
+                );
                 scene.cull = deerpunk_engine_client::render_sync::frustum_cull_options(&self.cvar);
                 let extract_ms = extract_start.elapsed().as_secs_f32() * 1000.0;
                 self.client_engine

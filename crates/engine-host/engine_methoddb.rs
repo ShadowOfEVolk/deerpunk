@@ -1911,6 +1911,68 @@ impl crate::Host {
     }
 }
 
+#[methoddb::namespace(name = "v1:particles", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    /// Spawn a burst of an engine catalog effect on the client.
+    /// `payload_json` is a serialized `SpawnPayload` (`{}` = template defaults);
+    /// plain serializable so the net layer can forward it verbatim.
+    #[methoddb::bind(name = "spawn_burst")]
+    pub fn api_particles_spawn_burst(
+        &mut self,
+        effect: &str,
+        x: f32,
+        y: f32,
+        z: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        payload_json: &str,
+    ) -> u32 {
+        self.spawn_particles_burst(effect, [x, y, z], [vx, vy, vz], payload_json)
+    }
+
+    /// Emit a particle burst from the **server** to all play-phase clients
+    /// (svc `emit_particles`). Same payload JSON convention as `spawn_burst`.
+    #[methoddb::bind(name = "emit")]
+    pub fn api_particles_emit(
+        &mut self,
+        effect: &str,
+        x: f32,
+        y: f32,
+        z: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        payload_json: &str,
+    ) -> u32 {
+        let payload: deerpunk_engine_particles::SpawnPayload = if payload_json.trim().is_empty() {
+            Default::default()
+        } else {
+            match serde_json::from_str(payload_json) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("[particles] emit '{effect}': bad payload json: {e}");
+                    return 0;
+                }
+            }
+        };
+        self.particles_emit(effect, [x, y, z], [vx, vy, vz], &payload);
+        1
+    }
+
+    /// Register the world raycast hook used by `collide_world` affectors.
+    /// Called from the client particle tick; `user_data` is passed through
+    /// verbatim and must stay alive (no drop callback).
+    #[methoddb::bind(name = "set_world_collider")]
+    pub fn api_particles_set_world_collider(
+        &mut self,
+        raycast: crate::particles_spawn::ParticleRaycastFn,
+        user_data: *mut c_void,
+    ) -> u32 {
+        self.set_particles_world_collider(raycast, user_data)
+    }
+}
+
 #[methoddb::namespace(name = "v1:mesh", on_host, scope = ["client", "server"])]
 impl crate::Host {
     #[methoddb::bind(name = "create")]

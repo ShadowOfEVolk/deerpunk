@@ -107,6 +107,26 @@ pub enum PropDefault {
     Texture(String),
 }
 
+/// Alpha output mode for a pass. Parsed from `#@shader blend=...`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    /// Standard alpha blending (`src-alpha, 1-src-alpha`). Mesh default.
+    #[default]
+    Alpha,
+    /// Additive (`one, one`) — bright particles, glows.
+    Additive,
+}
+
+impl BlendMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "alpha" | "" => Some(Self::Alpha),
+            "additive" => Some(Self::Additive),
+            _ => None,
+        }
+    }
+}
+
 /// Shader-level metadata, extracted from `#@shader` line(s).
 #[derive(Clone, Debug, Default)]
 pub struct ShaderMeta {
@@ -116,6 +136,8 @@ pub struct ShaderMeta {
     pub queue: u32,
     /// Skinned mesh opaque: group 0 includes a bone palette (`mesh_skinned` layout).
     pub skinned: bool,
+    /// Alpha output mode (`blend=additive` for particles/glows).
+    pub blend: BlendMode,
     /// Optional `#@vertex` mesh channel list (see [`super::vertex_layout`]).
     pub vertex_layout: Option<super::vertex_layout::VertexLayoutSpec>,
     /// Property declarations, in source order.

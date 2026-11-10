@@ -33,6 +33,8 @@ pub enum SVC {
     StreamUpdate = 12,
     /// Last processed client `UserCmd::sequence` (`UserCmdAckRpc`).
     UserCmdAck = 13,
+    /// One-shot particle burst (`ParticlesEmitRpc`, host `particles_emit`).
+    ParticlesEmit = 14,
 }
 
 impl SVC {
@@ -52,6 +54,7 @@ impl SVC {
             11 => Some(Self::StreamOut),
             12 => Some(Self::StreamUpdate),
             13 => Some(Self::UserCmdAck),
+            14 => Some(Self::ParticlesEmit),
             _ => None,
         }
     }

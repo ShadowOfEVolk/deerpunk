@@ -2,9 +2,12 @@
 name = "deerpunk-engine-particles"
 version = "0.1.0"
 edition = "2021"
-description = "CPU billboard particle sim + mesh batch (game-agnostic)"
+description = "Generic CPU billboard particle sim + JSON effect format (game-agnostic engine backend)"
 
 [dependencies]
 deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-resource = { path = "../engine-resource" }
 glam = "0.33"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

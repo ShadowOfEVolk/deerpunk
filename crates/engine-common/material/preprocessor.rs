@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::material::shader_meta::{
-    PropDefault, PropertyKind, RenderPass, ShaderMeta, ShaderPropertyMeta,
+    BlendMode, PropDefault, PropertyKind, RenderPass, ShaderMeta, ShaderPropertyMeta,
 };
 
 /// Error during shader preprocessing.
@@ -448,6 +448,10 @@ fn parse_shader_line(rest: &str, meta: &mut ShaderMeta) -> Result<(), ShaderErro
                 "skinned" => {
                     meta.skinned = matches!(val.trim(), "1" | "true" | "yes");
                 }
+                "blend" => {
+                    meta.blend = BlendMode::parse(val)
+                        .ok_or_else(|| ShaderError::UnknownShaderKey(format!("blend={val}")))?;
+                }
                 _ => return Err(ShaderError::UnknownShaderKey(key.to_string())),
             }
         }
@@ -666,5 +670,29 @@ fn main() {}
             .unwrap();
         let expect = dir.join("shaders").canonicalize().unwrap();
         assert_eq!(base, expect);
+    }
+}
+
+#[cfg(test)]
+mod particle_shader_tests {
+    use super::*;
+
+    /// Engine internal particle shader parses, resolves its includes, and
+    /// declares the transparent + additive + 40-byte particle layout.
+    #[test]
+    fn particle_billboard_shader_meta() {
+        let src = crate::resource::internal_asset("shaders/particles/billboard.wgsl")
+            .expect("internal particle shader embedded");
+        let out =
+            ShaderPreprocessor::process_at(src, &[], Some(Path::new("/"))).expect("preprocess");
+        assert_eq!(out.meta.pass, Some(RenderPass::MeshTransparent));
+        assert_eq!(out.meta.blend, BlendMode::Additive);
+        let layout = out.meta.vertex_layout.expect("#@vertex layout declared");
+        assert_eq!(
+            layout.stride, 40,
+            "position f3 + uv f2 + atlas_rect f4 + color unorm8x4"
+        );
+        assert!(out.wgsl.contains("vs_main"));
+        assert!(out.wgsl.contains("dither_keep"), "Bayer include expanded");
     }
 }

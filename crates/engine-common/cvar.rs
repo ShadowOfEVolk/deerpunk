@@ -40,7 +40,10 @@ impl CvarSystem {
     pub fn shutdown(&self) {
         self.values.write().expect("cvars write lock").clear();
         self.flags.write().expect("cvars flags lock").clear();
-        self.overrides.write().expect("cvars overrides lock").clear();
+        self.overrides
+            .write()
+            .expect("cvars overrides lock")
+            .clear();
     }
 
     pub fn set(&self, name: &str, value: &str) -> bool {

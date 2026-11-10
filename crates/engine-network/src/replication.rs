@@ -6,6 +6,7 @@ pub struct NetworkField {
 }
 
 pub trait NetworkComponent {
-    fn declare_fields() -> &'static [NetworkField] where Self: Sized;
+    fn declare_fields() -> &'static [NetworkField]
+    where
+        Self: Sized;
 }
-

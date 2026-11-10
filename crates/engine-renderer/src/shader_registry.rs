@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use deerpunk_engine_common::material::{
-    RenderPass, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
+    shader_meta::BlendMode, RenderPass, ShaderMeta, ShaderPreprocessor, VertexLayoutSpec,
 };
 
 use crate::shader_fallback::ERROR_MESH_WGSL;
@@ -231,6 +231,11 @@ impl ShaderDef {
     /// `#@shader pass=mesh_transparent` — alpha blend, depth write off.
     pub fn mesh_transparent(&self) -> bool {
         self.meta.pass == Some(RenderPass::MeshTransparent)
+    }
+
+    /// `#@shader blend=additive` — additive instead of alpha blending.
+    pub fn additive_blend(&self) -> bool {
+        self.meta.blend == BlendMode::Additive
     }
 
     pub fn mesh_queue(&self) -> u32 {

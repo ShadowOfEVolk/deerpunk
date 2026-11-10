@@ -47,6 +47,7 @@ impl Host {
         if self.server_engine.is_none() {
             return;
         }
+        crate::particles_net::drain_pending_sv_emits(self);
         self.drain_pending_net_cmds();
         self.tick_lan();
         let slots = self.server_mut().players.slots();

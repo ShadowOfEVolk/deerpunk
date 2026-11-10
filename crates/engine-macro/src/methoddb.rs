@@ -183,6 +183,7 @@ enum AbiType {
     ConstSpawnPrefabOptsPtr,
     ScheduleSystemFn,
     WorldProgressSystemFn,
+    ParticleRaycastFn,
 }
 
 fn path_last_ident(path: &syn::Path) -> Option<&Ident> {
@@ -370,6 +371,13 @@ fn classify_ty(ty: &Type) -> syn::Result<AbiType> {
                 .any(|i| i == "WorldProgressSystemFn")
             {
                 Ok(AbiType::WorldProgressSystemFn)
+            } else if path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .any(|i| i == "ParticleRaycastFn")
+            {
+                Ok(AbiType::ParticleRaycastFn)
             } else {
                 Err(syn::Error::new_spanned(ty, "unsupported type for methoddb bind"))
             }
@@ -744,6 +752,20 @@ fn generate_tramp(
                         f32,
                         *mut std::ffi::c_void,
                     )
+                });
+                rust_args.push(quote! { #cb });
+                arg_idx += 1;
+            }
+            AbiType::ParticleRaycastFn => {
+                let cb = format_ident!("__arg{}", arg_idx);
+                ffi_params.push(quote! {
+                    #cb: extern "C-unwind" fn(
+                        *const f32,
+                        *const f32,
+                        f32,
+                        *mut f32,
+                        *mut std::ffi::c_void,
+                    ) -> i32
                 });
                 rust_args.push(quote! { #cb });
                 arg_idx += 1;

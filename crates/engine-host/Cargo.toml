@@ -8,6 +8,7 @@ path = "lib.rs"
 
 [dependencies]
 deerpunk-engine-common = { path = "../engine-common" }
+deerpunk-engine-particles = { path = "../engine-particles" }
 deerpunk-engine-api = { path = "../engine-api" }
 deerpunk-engine-ffi = { path = "../engine-ffi" }
 deerpunk-engine-server = { path = "../engine-server" }
@@ -33,7 +34,7 @@ crossbeam-channel = "0.5"
 parking_lot = "0.12"
 
 [features]
-default = ["full"]
+default = ["full-kira"]
 dedicated-server = []
 audio-fmod = ["deerpunk-engine-client-fmod"]
 audio-kira = ["deerpunk-engine-client-kira"]
@@ -42,6 +43,7 @@ client = [
     "deerpunk-ui",
     "deerpunk-engine-renderer",
 ]
+# FMOD backend (opt-in, requires the FMOD SDK); kira is the default.
 full = ["client", "audio-fmod"]
 full-kira = ["client", "audio-kira"]
 tracy = ["deerpunk-engine-renderer/tracy"]

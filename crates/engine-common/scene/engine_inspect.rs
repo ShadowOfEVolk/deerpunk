@@ -186,7 +186,9 @@ fn dump_draw_material(world: &World, entity: EntityId, comp: ComponentId) -> Res
 }
 
 fn dump_prefab_id(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
-    let p = world.get::<PrefabId>(entity, comp).ok_or("PrefabId missing")?;
+    let p = world
+        .get::<PrefabId>(entity, comp)
+        .ok_or("PrefabId missing")?;
     Ok(json!({ "id": p.id }))
 }
 

@@ -447,6 +447,12 @@ impl ResourceManager {
         if let Some(id) = opts.loader {
             return id.to_string();
         }
+        // Non-file URI schemes with a registered loader win over extension
+        // rules — e.g. `internal://…wgsl` must hit the internal loader, not
+        // the gamedir shader loader picked by the `.wgsl` extension below.
+        if protocol != "file" && inner.loaders.contains_key(protocol) {
+            return protocol.to_string();
+        }
         if file_extension(path).as_deref() == Some("bsp") && inner.loaders.contains_key("bsp") {
             return "bsp".to_string();
         }

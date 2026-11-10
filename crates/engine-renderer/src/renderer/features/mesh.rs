@@ -1383,6 +1383,7 @@ impl Renderer {
         vertex_layout: &VertexLayoutSpec,
         skinned_vertex: bool,
         transparent: bool,
+        additive: bool,
     ) -> wgpu::RenderPipeline {
         let shader = self
             .gpu
@@ -1427,7 +1428,22 @@ impl Renderer {
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
                         blend: if transparent {
-                            Some(wgpu::BlendState::ALPHA_BLENDING)
+                            Some(if additive {
+                                wgpu::BlendState {
+                                    color: wgpu::BlendComponent {
+                                        src_factor: wgpu::BlendFactor::One,
+                                        dst_factor: wgpu::BlendFactor::One,
+                                        operation: wgpu::BlendOperation::Add,
+                                    },
+                                    alpha: wgpu::BlendComponent {
+                                        src_factor: wgpu::BlendFactor::One,
+                                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                        operation: wgpu::BlendOperation::Add,
+                                    },
+                                }
+                            } else {
+                                wgpu::BlendState::ALPHA_BLENDING
+                            })
                         } else {
                             None
                         },
@@ -1488,6 +1504,7 @@ impl Renderer {
                 def.mesh_vertex_layout(),
                 skinned,
                 transparent,
+                def.additive_blend(),
             );
             self.shader_mesh_pipelines.insert(key, p);
         }

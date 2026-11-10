@@ -114,7 +114,10 @@ impl SoundPlayRpc {
     }
 
     pub fn decode(payload: &[u8]) -> Option<Self> {
-        let mut c = Cursor { data: payload, pos: 0 };
+        let mut c = Cursor {
+            data: payload,
+            pos: 0,
+        };
         Some(Self {
             sound_id: c.u32()?,
             flags: c.u8()?,

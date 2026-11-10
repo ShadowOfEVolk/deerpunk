@@ -290,7 +290,11 @@ impl Inspector {
                         .unwrap_or("client entity not found");
                     if client
                         .socket
-                        .send_text(&proto::err(&pending.request_id, proto::ERR_ENTITY_NOT_FOUND, msg))
+                        .send_text(&proto::err(
+                            &pending.request_id,
+                            proto::ERR_ENTITY_NOT_FOUND,
+                            msg,
+                        ))
                         .is_err()
                     {
                         disconnected.push(id);
@@ -585,10 +589,9 @@ fn collection_list(col_id: &str, ctx: &InspectorRpcCtx<'_>) -> Value {
             })
         }
         "prefabs" => {
-            let classnames =
-                deerpunk_engine_common::scene::PrefabManager::list_disk_classnames(
-                    &ctx.resources.base_dir(),
-                );
+            let classnames = deerpunk_engine_common::scene::PrefabManager::list_disk_classnames(
+                &ctx.resources.base_dir(),
+            );
             let mut seen: HashMap<u32, String> = HashMap::new();
             let mut items: Vec<Value> = Vec::new();
             for classname in classnames {
@@ -689,7 +692,11 @@ fn collection_list(col_id: &str, ctx: &InspectorRpcCtx<'_>) -> Value {
     }
 }
 
-pub(crate) fn component_snapshot(world: &World, entity: u64, slug: &str) -> proto::ComponentSnapshot {
+pub(crate) fn component_snapshot(
+    world: &World,
+    entity: u64,
+    slug: &str,
+) -> proto::ComponentSnapshot {
     if let Some((schema, data)) = world.inspect_component_fields(entity, slug) {
         let schema = if schema.is_null() { None } else { Some(schema) };
         return proto::component_data(slug, schema, data);

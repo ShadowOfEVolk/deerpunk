@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::components::{NetworkEntity, ParentComponent, PrefabId, prefab_id_for};
+use crate::components::{prefab_id_for, NetworkEntity, ParentComponent, PrefabId};
 use crate::network::field_path::{FieldValue, NetFieldId};
 use crate::resource::{MeshRegistry, ResourceManager};
 use crate::world::{EntityId, World};

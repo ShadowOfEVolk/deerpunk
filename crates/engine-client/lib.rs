@@ -38,6 +38,7 @@ pub mod gamelib_ui;
 pub mod infobox;
 pub mod mesh_alloc_debug;
 pub mod mesh_lifecycle;
+pub mod particles;
 pub mod render_extractor;
 pub mod render_thread;
 pub mod scene;

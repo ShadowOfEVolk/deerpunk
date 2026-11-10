@@ -66,6 +66,7 @@ pub fn svc_label(cmd: u8) -> &'static str {
         Some(SVC::StreamOut) => "SVC::StreamOut",
         Some(SVC::StreamUpdate) => "SVC::StreamUpdate",
         Some(SVC::UserCmdAck) => "SVC::UserCmdAck",
+        Some(SVC::ParticlesEmit) => "SVC::ParticlesEmit",
         None => "SVC::?",
     }
 }

@@ -123,6 +123,10 @@ pub struct ClientEngine {
     pub material_store: MaterialStore,
     mesh_lifecycle: MeshGpuLifecycle,
     pub bone_buffers: BoneBufferPool,
+    /// Engine particle backend (catalog, pool, shared meshes per texture group).
+    pub particles: crate::particles::ParticleFx,
+    /// Frame dt from the last `tick_world` (particles tick inside extract).
+    particle_dt: f32,
     /// Shared fallback mesh (stable `content_id`, retained on GPU).
     fallback_mesh: Arc<Mesh>,
     /// In-game `~` console — keyboard routed to Nuklear before render.
@@ -216,6 +220,8 @@ impl ClientEngine {
             material_store,
             mesh_lifecycle,
             bone_buffers,
+            particles: crate::particles::ParticleFx::new(),
+            particle_dt: 0.0,
             fallback_mesh,
             console_open: false,
             dll: None,
@@ -487,8 +493,156 @@ impl ClientEngine {
     /// Single client [`ecs_progress`] for this frame (after net apply, before gamelib `pre_render`).
     pub fn tick_world(&mut self, dt: f32) {
         deerpunk_engine_renderer::gamelib_profile::zone_begin("client.ecs.simulate");
+        self.particle_dt = dt.max(0.0);
         self.world.simulate(dt.max(0.0));
         deerpunk_engine_renderer::gamelib_profile::zone_end();
+    }
+
+    // --- Engine particles ---
+
+    /// Load `<gamedir>/particles/*.json` into the client catalog (host init).
+    pub fn init_particles_catalog(&mut self, gamedir: &std::path::Path) {
+        self.particles.load_catalog(gamedir);
+    }
+
+    /// Register a game custom affector (before catalog load).
+    pub fn register_particles_custom_affector(
+        &mut self,
+        type_name: impl Into<String>,
+        f: std::sync::Arc<dyn deerpunk_engine_particles::CustomAffector>,
+    ) {
+        self.particles.register_custom_affector(type_name, f);
+    }
+
+    /// Register the world query hook used by `collide_world` affectors.
+    pub fn set_particles_world_collider(
+        &mut self,
+        collider: std::sync::Arc<dyn deerpunk_engine_particles::WorldCollider>,
+    ) {
+        self.particles.set_world_collider(collider);
+    }
+
+    /// Spawn a burst. Plain-data payload; safe to call from a wire/svc handler.
+    pub fn spawn_particles_burst(
+        &mut self,
+        effect: &str,
+        pos: [f32; 3],
+        base_vel: [f32; 3],
+        payload: &deerpunk_engine_particles::SpawnPayload,
+    ) {
+        self.particles.spawn_burst(effect, pos, base_vel, payload);
+    }
+
+    /// Camera position for billboard orientation: lowest-order camera entity.
+    pub fn particle_camera_pos(&mut self) -> glam::Vec3 {
+        let t_id = self.world.component_init::<deerpunk_engine_common::components::TransformComponent>();
+        let c_id = self.world.component_init::<deerpunk_engine_common::components::CameraComponent>();
+        let q = self.world.query_prepare_ids(&[t_id, c_id]);
+        let mut pos = glam::Vec3::ZERO;
+        if let Some(batches) = self.world.query_batches(q) {
+            'outer: for batch in batches {
+                let ts = unsafe {
+                    std::slice::from_raw_parts(
+                        batch.columns[0] as *const deerpunk_engine_common::components::TransformComponent,
+                        batch.count,
+                    )
+                };
+                for t in ts.iter() {
+                    pos = t.position;
+                    break 'outer;
+                }
+            }
+        }
+        self.world.query_release(q);
+        pos
+    }
+
+    /// Simulate + rebuild particle meshes. Called from `extract_scene_view`.
+    fn tick_particles(
+        &mut self,
+        meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
+        resources: &ResourceManager,
+        dt: f32,
+        camera_pos: glam::Vec3,
+    ) {
+        let state = &mut self.particles;
+        let world = &mut self.world;
+        let material_store = &mut self.material_store;
+        let renderer = &mut self.renderer;
+        let shader_registry = &mut self.shader_registry;
+
+        // Phase 1: simulate (bursts, stream emitters, integration).
+        let live_tex = crate::particles::simulate(state, world, dt);
+        crate::particles::hide_drained_groups(state, world, &live_tex);
+
+        // Phase 2+3: per texture group — material, draw entity, mesh rebuild.
+        for tex_uri in live_tex {
+            let group_idx = state.group_for(&tex_uri);
+            // If the draw entity was destroyed (scene flush / map teardown),
+            // drop the group so the next frame recreates entity + mesh.
+            {
+                let m3 = world.component_init::<deerpunk_engine_common::components::Mesh3D>();
+                let dead = state.groups[group_idx]
+                    .entity
+                    .is_some_and(|e| !world.has(e, m3));
+                if dead {
+                    if let Some(h) = state.groups[group_idx].mesh.take() {
+                        meshes.detach(h);
+                    }
+                    state.groups[group_idx].entity = None;
+                    state.groups[group_idx].material = None;
+                }
+            }
+            // Material: engine particle shader + this texture (lazy, cached).
+            let material = {
+                let group = &state.groups[group_idx];
+                match group.material {
+                    Some(h) => Some(h),
+                    None => {
+                        let json = crate::particles::ParticleFx::group_material_json(&tex_uri);
+                        match deerpunk_engine_common::material::MaterialAsset::from_json(&json) {
+                            Ok(asset) => {
+                                let debug_path = format!("internal://particles/{tex_uri}");
+                                match material_store.create_from_asset_with_gpu(
+                                    &debug_path,
+                                    &asset,
+                                    resources,
+                                    renderer,
+                                    shader_registry,
+                                ) {
+                                    Ok(h) => {
+                                        log::info!("[particles] material ready '{tex_uri}'");
+                                        Some(h)
+                                    }
+                                    Err(e) => {
+                                        log::error!("[particles] material '{tex_uri}': {e}");
+                                        None
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("[particles] material json '{tex_uri}': {e}");
+                                None
+                            }
+                        }
+                    }
+                }
+            };
+            crate::particles::ensure_group_draw(state, group_idx, world, material);
+            crate::particles::ensure_group_mesh(state, group_idx, world, meshes);
+            // GPU pool retention is dropped by `mesh_lifecycle_reset` (map load /
+            // disconnect). The particle group owns its mesh, so re-retain here;
+            // `MeshGpuPool::retain` is refcounted, guarded to once per retained id.
+            if let Some(h) = state.groups[group_idx].mesh {
+                if let Some(mesh) = meshes.get(h) {
+                    let content_id = mesh.content_id();
+                    if !renderer.mesh_gpu_pool().is_retained(content_id) {
+                        renderer.mesh_retain(content_id, mesh.allocator_id);
+                    }
+                }
+            }
+            crate::particles::rebuild_group_mesh(state, group_idx, world, meshes, camera_pos);
+        }
     }
 
     pub fn refresh_stream_meshes(
@@ -945,14 +1099,16 @@ impl ClientEngine {
     pub fn extract_scene(
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
+        resources: &ResourceManager,
     ) -> RenderScene {
-        self.extract_scene_view(meshes, None, true, true)
+        self.extract_scene_view(meshes, resources, None, true, true)
     }
 
     /// Extract with optional view entity (server `SetView` net pawn).
     pub fn extract_scene_view(
         &mut self,
         meshes: &mut deerpunk_engine_common::resource::MeshRegistry,
+        resources: &ResourceManager,
         view_entity: Option<u64>,
         early_cull: bool,
         draw_world: bool,
@@ -969,6 +1125,13 @@ impl ClientEngine {
             let sync_stats = ext.sync_world_transforms(&mut self.world);
             extract_gpu.sync_world_ms = sync_start.elapsed().as_secs_f32() * 1000.0;
             extract_gpu.sync_world_unchanged = sync_stats.unchanged;
+        }
+        {
+            // Engine particles: simulate + rebuild shared meshes before extraction
+            // so fresh vertex data is drawn the same frame.
+            let _z = deerpunk_engine_renderer::gamelib_profile::zone_scope("extract.particles");
+            let camera_pos = self.particle_camera_pos();
+            self.tick_particles(meshes, resources, self.particle_dt, camera_pos);
         }
         let mut scene = self
             .extractor
