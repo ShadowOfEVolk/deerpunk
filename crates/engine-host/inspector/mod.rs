@@ -83,12 +83,25 @@ struct PendingGet {
     since: Instant,
 }
 
+/// `cliententities.list` request awaiting the client world's fresh rows
+/// (one frame hop, same as [`PendingGet`]).
+struct PendingList {
+    request_id: Value,
+    /// Snapshot generation at queue time; the reply waits for a publish
+    /// newer than this so it never serves a pre-request snapshot.
+    wait_gen: u64,
+    since: Instant,
+}
+
 /// Max age of an in-flight `cliententities.get` before it errors out.
 const PENDING_GET_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct ClientState {
     socket: WsConnection,
     pending_get: Option<PendingGet>,
+    /// Latest list request only: a second `list` while one is pending
+    /// overwrites it, so the superseded request id gets no reply.
+    pending_list: Option<PendingList>,
 }
 
 struct ActiveInspector {
@@ -203,6 +216,7 @@ impl Inspector {
                             ClientState {
                                 socket: ws,
                                 pending_get: None,
+                                pending_list: None,
                             },
                         );
                     }
@@ -216,10 +230,8 @@ impl Inspector {
             }
         }
 
-        // Main thread only rebuilds client rows while a consumer listens.
-        if let Some(share) = &self.client_share {
-            share.set_want_rows(!insp.clients.is_empty());
-        }
+        // Client rows are request-driven: an RPC asks via `share.request_rows()`
+        // and the main thread rebuilds the snapshot on its next pump.
         let client_share = self.client_share.clone();
 
         let mut disconnected = Vec::new();
@@ -240,6 +252,7 @@ impl Inspector {
                             &insp.collections,
                             client_share.as_deref(),
                             &mut client.pending_get,
+                            &mut client.pending_list,
                         ) {
                             Ok(msgs) => {
                                 for m in msgs {
@@ -329,6 +342,53 @@ impl Inspector {
             }
         }
 
+        // Deliver deferred `cliententities.list` replies once the main thread
+        // published a fresh snapshot (same timeout cap as `get`).
+        for (&id, client) in insp.clients.iter_mut() {
+            let Some(pending) = client.pending_list.as_ref() else {
+                continue;
+            };
+            let Some(share) = client_share.as_ref() else {
+                continue;
+            };
+            let fresh = share.rows_gen() > pending.wait_gen;
+            match (fresh, share.rows()) {
+                (true, Some((time, rows))) => {
+                    let entities = rows_value(&rows);
+                    if client
+                        .socket
+                        .send_text(&proto::ok(
+                            &pending.request_id,
+                            json!({
+                                "time": time,
+                                "count": entities.len(),
+                                "entities": entities,
+                            }),
+                        ))
+                        .is_err()
+                    {
+                        disconnected.push(id);
+                    }
+                    client.pending_list = None;
+                }
+                _ if pending.since.elapsed() >= PENDING_GET_TIMEOUT => {
+                    if client
+                        .socket
+                        .send_text(&proto::err(
+                            &pending.request_id,
+                            proto::ERR_INTERNAL,
+                            "client world did not answer rows request",
+                        ))
+                        .is_err()
+                    {
+                        disconnected.push(id);
+                    }
+                    client.pending_list = None;
+                }
+                _ => {}
+            }
+        }
+
         for id in disconnected {
             insp.clients.remove(&id);
         }
@@ -341,6 +401,7 @@ fn handle_message(
     collections: &[proto::CollectionDescriptor],
     client_share: Option<&ClientInspectShare>,
     deferred_get: &mut Option<PendingGet>,
+    deferred_list: &mut Option<PendingList>,
 ) -> Result<Vec<String>, String> {
     if line.is_empty() {
         return Ok(Vec::new());
@@ -376,7 +437,7 @@ fn handle_message(
     // snapshot, so it also works at the main menu / on dedicated servers.
     if let Some((col_id, action)) = method.rsplit_once('.') {
         if col_id == "cliententities" {
-            return client_entities_rpc(action, &id, &params, client_share, deferred_get);
+            return client_entities_rpc(action, &id, &params, client_share, deferred_get, deferred_list);
         }
     }
 
@@ -472,48 +533,58 @@ fn fmod_events(ctx: &InspectorRpcCtx<'_>) -> Vec<FmodEventSnap> {
     }
 }
 
+/// Entity rows as JSON (same shape the immediate list reply used to have).
+fn rows_value(rows: &[ClientEntityRow]) -> Vec<Value> {
+    rows.iter()
+        .map(|e| {
+            let mut row = json!({
+                "index": e.id,
+                "name": e.name,
+            });
+            let obj = row.as_object_mut().expect("entity row object");
+            if let Some(prefab_id) = e.prefab_id {
+                obj.insert("prefabId".into(), json!(prefab_id));
+            }
+            if let Some(position) = e.position {
+                obj.insert("position".into(), json!(position));
+            }
+            row
+        })
+        .collect::<Vec<Value>>()
+}
+
 /// `cliententities.list` / `cliententities.get` served from the main-thread
-/// share; `get` defers its reply by one frame (command hop to the main thread).
+/// share; both defer their reply by one frame (command hop to the main
+/// thread): the RPC asks for rows via `share.request_rows()` and a later poll
+/// answers from the fresh snapshot.
 fn client_entities_rpc(
     action: &str,
     id: &Value,
     params: &Value,
     client_share: Option<&ClientInspectShare>,
     deferred_get: &mut Option<PendingGet>,
+    deferred_list: &mut Option<PendingList>,
 ) -> Result<Vec<String>, String> {
     match action {
         "list" => {
-            let (time, entities) = match client_share.and_then(|s| s.rows()) {
-                Some((time, rows)) => (
-                    time,
-                    rows.iter()
-                        .map(|e| {
-                            let mut row = json!({
-                                "index": e.id,
-                                "name": e.name,
-                            });
-                            let obj = row.as_object_mut().expect("entity row object");
-                            if let Some(prefab_id) = e.prefab_id {
-                                obj.insert("prefabId".into(), json!(prefab_id));
-                            }
-                            if let Some(position) = e.position {
-                                obj.insert("position".into(), json!(position));
-                            }
-                            row
-                        })
-                        .collect::<Vec<Value>>(),
-                ),
-                // No client world data (dedicated server, or no client yet).
-                None => (0.0, Vec::new()),
+            let Some(share) = client_share else {
+                // No client world (dedicated server, or client features
+                // disabled): answer immediately with an empty list.
+                return Ok(vec![proto::ok(
+                    id,
+                    json!({ "time": 0.0, "count": 0, "entities": [] }),
+                )]);
             };
-            Ok(vec![proto::ok(
-                id,
-                json!({
-                    "time": time,
-                    "count": entities.len(),
-                    "entities": entities,
-                }),
-            )])
+            share.request_rows();
+            // Latest list request wins; a superseded request id gets no reply.
+            *deferred_list = Some(PendingList {
+                request_id: id.clone(),
+                wait_gen: share.rows_gen(),
+                since: Instant::now(),
+            });
+            // Reply is sent from a later poll once the main thread publishes
+            // the fresh snapshot.
+            Ok(Vec::new())
         }
         "get" => {
             let Some(share) = client_share else {
@@ -530,6 +601,8 @@ fn client_entities_rpc(
                     "missing index",
                 )]);
             };
+            // Ask for a fresh snapshot first so repeated gets stay current.
+            share.request_rows();
             let known = share
                 .rows()
                 .map(|(_, rows)| rows.iter().any(|e| e.id == index))

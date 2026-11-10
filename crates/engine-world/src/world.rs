@@ -1117,6 +1117,55 @@ impl World {
         out
     }
 
+    /// Snapshot of a **single** game entity by id, same filtering as
+    /// [`World::inspect_entities`] (skips flecs builtins and entities that own
+    /// no engine/gamelib component). Returns `None` when the entity is not
+    /// alive or has no game components.
+    pub fn inspect_entity(&self, entity: EntityId) -> Option<InspectEntity> {
+        unsafe {
+            if !sys::ecs_is_alive(self.inner, entity) {
+                return None;
+            }
+
+            let mut raw_parts: Vec<String> = Vec::new();
+            let type_ptr = sys::ecs_get_type(self.inner, entity);
+            if !type_ptr.is_null() {
+                let tp = sys::ecs_type_str(self.inner, type_ptr);
+                if !tp.is_null() {
+                    let s = CStr::from_ptr(tp).to_string_lossy().into_owned();
+                    if let Some(free_fn) = sys::ecs_os_api.free_ {
+                        free_fn(tp as *mut std::ffi::c_void);
+                    }
+                    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                        raw_parts.push(part.to_string());
+                    }
+                }
+            }
+
+            let components: Vec<String> = raw_parts
+                .iter()
+                .filter(|p| is_game_component_token(p) || self.inspect.contains(p))
+                .cloned()
+                .collect();
+            if components.is_empty() {
+                return None;
+            }
+
+            let name_ptr = sys::ecs_get_name(self.inner, entity);
+            let name = if name_ptr.is_null() {
+                format!("0x{entity:x}")
+            } else {
+                CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+            };
+
+            Some(InspectEntity {
+                id: entity,
+                name,
+                components,
+            })
+        }
+    }
+
     /// Every game component token on one entity (no whitelist filtering).
     ///
     /// Skips flecs pairs like `(Identifier,Name)` and `flecs.*` builtins, so

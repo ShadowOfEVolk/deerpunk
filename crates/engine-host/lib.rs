@@ -599,7 +599,17 @@ impl Host {
             self.rebind_cmd_refs();
         }
 
-        // Descriptors early; WS starts after gamelibs + `.rc` / stuffcmds (see `start_inspector`).
+        stdin_cmd::start();
+
+        log::info!("Engine initialized");
+    }
+
+    /// Start inspector WS using current cvars (after configs / stuffcmds).
+    pub fn start_inspector(&mut self) {
+        // Runtime/definition descriptors must live on the Host that owns the
+        // listening inspector: on listen clients that is the server-thread
+        // Host (`finish_server_dll_startup`), not the main-thread Host that
+        // ran `initialize`, so register right before the bind.
         self.inspector
             .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
                 id: "assets".into(),
@@ -658,13 +668,6 @@ impl Host {
                 id_field: "index".into(),
                 nested_in: None,
             });
-        stdin_cmd::start();
-
-        log::info!("Engine initialized");
-    }
-
-    /// Start inspector WS using current cvars (after configs / stuffcmds).
-    pub fn start_inspector(&mut self) {
         // Force queued CLI overrides (`--inspector-*`) over config.cfg values.
         self.cvar.apply_overrides();
         let port = self
@@ -1173,6 +1176,11 @@ impl Host {
             if let Some(client) = self.client_engine.as_mut() {
                 client.tick_world(delta_time);
             }
+        }
+
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            let _g = system_profiler::scope("client.inspector");
             // Refresh inspector client-world data (rows + pending detail gets).
             self.pump_client_inspector();
         }
@@ -1192,6 +1200,8 @@ impl Host {
 
     /// Main thread: publish client-world rows for the inspector and answer
     /// queued `cliententities.get` detail requests (one-frame command hop).
+    /// Rows are rebuilt only when an RPC asked for them (`take_rows_request`),
+    /// so idle frames cost one atomic load.
     #[cfg(any(feature = "client", feature = "full"))]
     fn pump_client_inspector(&mut self) {
         let Some(share) = self.client_inspector_share.as_ref() else {
@@ -1201,7 +1211,7 @@ impl Host {
             return;
         };
         let world = &client.world;
-        if share.want_rows() {
+        if share.take_rows_request() {
             let rows: Vec<inspector::ClientEntityRow> = world
                 .inspect_entities()
                 .into_iter()
@@ -1215,10 +1225,8 @@ impl Host {
             share.publish_rows(self.time_secs, rows);
         }
         while let Some((seq, entity)) = share.take_pending() {
-            let ent = world
-                .inspect_entities()
-                .into_iter()
-                .find(|e| e.id == entity);
+            // Fetch the single entity by id instead of scanning the whole world.
+            let ent = world.inspect_entity(entity);
             let value = match ent {
                 None => serde_json::json!({ "_error": "entity not found" }),
                 Some(ent) => {
