@@ -12,6 +12,20 @@ unsafe impl Sync for EngineApiMethod {}
 
 inventory::collect!(EngineApiMethod);
 
+/// Facade-side (`ctx = "server"`) trampolines. Kept out of
+/// [`EngineApiMethod`] so the host MethodDB table — and the inspector
+/// `methoddb` collection — stays byte-identical; the server DLL's resolver
+/// overrides these names in its own table.
+pub struct EngineApiServerMethod {
+    pub name: &'static str,
+    pub callback: *const (),
+}
+
+unsafe impl Send for EngineApiServerMethod {}
+unsafe impl Sync for EngineApiServerMethod {}
+
+inventory::collect!(EngineApiServerMethod);
+
 pub struct MethodDB {
     pub hashmap: HashMap<&'static str, *const ()>,
 }
@@ -43,6 +57,17 @@ impl MethodDB {
             hashmap.insert(method.name, method.callback);
         }
         Self { hashmap }
+    }
+
+    /// Table for the simulation-thread facade ctx: host tramps for everything,
+    /// overridden by `ctx = "server"` tramps where the server DLL must talk to
+    /// the facade instead of the main-thread Host.
+    pub fn new_facade() -> Self {
+        let mut db = Self::new();
+        for method in inventory::iter::<EngineApiServerMethod> {
+            db.hashmap.insert(method.name, method.callback);
+        }
+        db
     }
 
     pub fn into_resolver(self) -> extern "C" fn(*const u8, usize) -> *const () {

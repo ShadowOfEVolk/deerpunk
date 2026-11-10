@@ -5,17 +5,23 @@ use std::sync::Mutex;
 use deerpunk_engine_common::network::ClientSessionPhase;
 
 use crate::cmd::CommandRegistration;
-use crate::connect_auth;
 use crate::lan;
 use crate::net;
 use crate::Host;
 
-enum PendingNetCmd {
+pub(crate) enum PendingNetCmd {
     Listen(Option<u16>),
     Connect(String),
     NetDisconnect,
     LanRefresh,
     LanStop,
+}
+
+/// Drain the queued net console commands (main client host + sim thread both
+/// call this; on listen clients the main host wins the race and forwards
+/// `listen` / `net_disconnect` to the sim thread as commands).
+pub(crate) fn take_pending() -> Vec<PendingNetCmd> {
+    std::mem::take(&mut *PENDING.lock().unwrap())
 }
 
 static PENDING: Mutex<Vec<PendingNetCmd>> = Mutex::new(Vec::new());
@@ -51,79 +57,24 @@ pub fn register_commands(cmd: &mut crate::cmd::CmdSystem) {
 
 impl Host {
     pub(crate) fn drain_pending_net_cmds(&mut self) {
-        let cmds = std::mem::take(&mut *PENDING.lock().unwrap());
-        for cmd in cmds {
-            // Simulation-thread host has no client_engine; only server-side net ops apply.
-            #[cfg(any(feature = "client", feature = "full"))]
-            if self.server_engine.is_some() && self.client_engine.is_none() {
-                match cmd {
-                    PendingNetCmd::Listen(port_opt) => {
-                        let port = port_opt.unwrap_or_else(|| {
-                            self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16
-                        });
-                        self.cvar.set_or_create("sv_port", &port.to_string());
-                        let addr = format!("0.0.0.0:{port}")
-                            .parse()
-                            .unwrap_or_else(|_| ([0, 0, 0, 0], net::DEFAULT_PORT).into());
-                        match connect_auth::load_or_create_private_key(self.fs.gamedir()) {
-                            Ok(key) => match self.server_mut().network.listen(addr, key) {
-                                Ok(()) => {
-                                    println!("[net] listening on {addr} (secure)");
-                                    self.start_lan_advertiser(port);
-                                }
-                                Err(e) => println!("[net] listen failed: {e}"),
-                            },
-                            Err(e) => println!("[net] netcode.key: {e}"),
-                        }
-                    }
-                    PendingNetCmd::NetDisconnect => {
-                        self.disconnect_all_net();
-                        self.server_mut().slots_play.clear();
-                        self.server_mut().lan_advertiser = None;
-                        println!("[net] net_disconnect (server thread)");
-                    }
-                    _ => {}
-                }
-                continue;
-            }
+        for cmd in take_pending() {
             match cmd {
                 PendingNetCmd::Listen(port_opt) => {
                     let port = port_opt.unwrap_or_else(|| {
                         self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16
                     });
                     self.cvar.set_or_create("sv_port", &port.to_string());
-                    #[cfg(any(feature = "client", feature = "full"))]
-                    if self.server_engine.is_none() {
-                        if let Some(st) = &self.server_thread {
-                            st.send(crate::server_thread::ServerThreadCmd::SetEnabled(true));
-                            println!("[net] listen on server thread (port {port})");
-                            continue;
-                        }
-                    }
-                    let addr = format!("0.0.0.0:{port}")
-                        .parse()
-                        .unwrap_or_else(|_| ([0, 0, 0, 0], net::DEFAULT_PORT).into());
-                    match connect_auth::load_or_create_private_key(self.fs.gamedir()) {
-                        Ok(key) => match self.server_mut().network.listen(addr, key) {
-                            Ok(()) => {
-                                println!("[net] listening on {addr} (secure)");
-                                self.start_lan_advertiser(port);
-                            }
-                            Err(e) => println!("[net] listen failed: {e}"),
-                        },
-                        Err(e) => println!("[net] netcode.key: {e}"),
+                    // Enable + auto-listen + LAN advertise happen on the sim
+                    // thread (main console never touches server net state).
+                    if let Some(st) = &self.server_thread {
+                        st.send(crate::server_thread::ServerThreadCmd::SetEnabled(true));
+                        println!("[net] listen on server thread (port {port})");
                     }
                 }
                 PendingNetCmd::Connect(addr_s) => {
                     match net::parse_addr(&addr_s, net::DEFAULT_PORT) {
                         Ok(addr) => {
-                            let port = self
-                                .server_engine
-                                .as_ref()
-                                .and_then(|e| e.network.listen_port())
-                                .unwrap_or_else(|| {
-                                    self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16
-                                });
+                            let port = self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
                             #[cfg(any(feature = "client", feature = "full"))]
                             if self.client_engine.is_some()
                                 && self.listen_server_enabled()
@@ -133,9 +84,7 @@ impl Host {
                                 self.connect_to_server_inprocess();
                                 continue;
                             }
-                            if self.server_engine.as_ref().is_some_and(|e| e.enabled)
-                                || self.listen_server_enabled()
-                            {
+                            if self.listen_server_enabled() {
                                 self.set_server_enabled(false);
                             }
                             #[cfg(any(feature = "client", feature = "full"))]
@@ -156,18 +105,6 @@ impl Host {
                 }
                 PendingNetCmd::NetDisconnect => {
                     self.disconnect_all_net();
-                    #[cfg(any(feature = "client", feature = "full"))]
-                    {
-                        self.client_engine.as_mut().unwrap().join_phase = ClientSessionPhase::Idle;
-                        self.flush_client_scene();
-                        deerpunk_ui::set_client_in_game(false);
-                    }
-                    if let Some(engine) = self.server_engine.as_mut() {
-                        engine.slots_play.clear();
-                        engine.lan_advertiser = None;
-                    } else if let Some(st) = &self.server_thread {
-                        st.send(crate::server_thread::ServerThreadCmd::SetEnabled(false));
-                    }
                     println!("[net] net_disconnect");
                 }
                 PendingNetCmd::LanRefresh =>

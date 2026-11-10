@@ -7,11 +7,21 @@ use syn::{
     Type,
 };
 
+/// Which engine context a namespace's trampolines dereference `engine` as.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CtxKind {
+    /// Main-thread [`crate::Host`] (default).
+    Host,
+    /// Simulation-thread [`crate::server_ctx::ServerThreadCtx`] facade.
+    ServerThread,
+}
+
 struct NamespaceAttr {
     name: LitStr,
     host_field: Option<Ident>,
     on_host: bool,
     scope_flags: u32,
+    ctx: CtxKind,
 }
 
 fn parse_scope_flags(expr: &Expr) -> syn::Result<u32> {
@@ -55,6 +65,7 @@ impl Parse for NamespaceAttr {
         let mut host_field: Option<Ident> = None;
         let mut on_host = false;
         let mut scope_flags: Option<u32> = None;
+        let mut ctx = CtxKind::Host;
 
         let nested: Punctuated<Meta, Token![,]> = input.parse_terminated(Meta::parse, Token![,])?;
         for meta in nested {
@@ -76,6 +87,24 @@ impl Parse for NamespaceAttr {
                 Meta::NameValue(nv) if nv.path.is_ident("scope") => {
                     scope_flags = Some(parse_scope_flags(&nv.value)?);
                 }
+                Meta::NameValue(nv) if nv.path.is_ident("ctx") => {
+                    if let Expr::Lit(expr_lit) = &nv.value {
+                        if let syn::Lit::Str(s) = &expr_lit.lit {
+                            ctx = match s.value().as_str() {
+                                "host" => CtxKind::Host,
+                                "server" => CtxKind::ServerThread,
+                                other => {
+                                    return Err(syn::Error::new_spanned(
+                                        s,
+                                        format!(
+                                            "unknown ctx `{other}` (expected \"host\" or \"server\")"
+                                        ),
+                                    ));
+                                }
+                            };
+                        }
+                    }
+                }
                 Meta::Path(p) if p.is_ident("on_host") => on_host = true,
                 _ => {}
             }
@@ -85,6 +114,12 @@ impl Parse for NamespaceAttr {
             return Err(syn::Error::new(
                 input.span(),
                 "use `host_field = \"cmd\"` or `on_host` for `impl Host`",
+            ));
+        }
+        if ctx == CtxKind::ServerThread && host_field.is_some() {
+            return Err(syn::Error::new(
+                input.span(),
+                "ctx = \"server\" namespaces bind methods on ServerThreadCtx directly (no host_field)",
             ));
         }
 
@@ -98,6 +133,7 @@ impl Parse for NamespaceAttr {
                     "missing `scope = [\"server\", \"client\"]` (or a subset)",
                 )
             })?,
+            ctx,
         })
     }
 }
@@ -467,6 +503,14 @@ fn generate_tramp(
         "__methoddb_tramp_{}",
         full_name.replace([':', '.'], "_")
     );
+    // Server-ctx tramps register in a separate collector so the host MethodDB
+    // table (and the inspector `methoddb` JSON) stays byte-identical; the
+    // facade table overrides the same names with these tramps.
+    let tramp_ident = if ns.ctx == CtxKind::ServerThread {
+        format_ident!("__methoddb_server_tramp_{}", full_name.replace([':', '.'], "_"))
+    } else {
+        tramp_ident
+    };
     let rust_method = &method.sig.ident;
     let scope_flags = ns.scope_flags;
     let receiver = method.sig.receiver().ok_or_else(|| {
@@ -812,13 +856,23 @@ fn generate_tramp(
         }
     }
 
-    let host_ref = if self_mut {
+    let host_ref = if ns.ctx == CtxKind::ServerThread {
+        // Simulation-thread facade: the server DLL's ctx is a
+        // ServerThreadCtx, never the main-thread Host.
+        if self_mut {
+            quote! { let ctx = unsafe { &mut *(engine as *mut crate::server_ctx::ServerThreadCtx) }; }
+        } else {
+            quote! { let ctx = unsafe { &*(engine as *const crate::server_ctx::ServerThreadCtx) }; }
+        }
+    } else if self_mut {
         quote! { let host = unsafe { &mut *(engine as *mut crate::Host) }; }
     } else {
         quote! { let host = unsafe { &*(engine as *const crate::Host) }; }
     };
 
-    let invoke = if ns.on_host {
+    let invoke = if ns.ctx == CtxKind::ServerThread {
+        quote! { ctx.#rust_method(#(#rust_args,)*) }
+    } else if ns.on_host {
         quote! { host.#rust_method(#(#rust_args,)*) }
     } else {
         let field = ns.host_field.as_ref().expect("host_field");
@@ -858,6 +912,27 @@ fn generate_tramp(
         _ => quote! { i32 },
     };
 
+    let inventory_submit = if ns.ctx == CtxKind::ServerThread {
+        quote! {
+            ::inventory::submit! {
+                crate::engine_api::engine_api::EngineApiServerMethod {
+                    name: #full_name,
+                    callback: #tramp_ident as *const (),
+                }
+            }
+        }
+    } else {
+        quote! {
+            ::inventory::submit! {
+                crate::engine_api::engine_api::EngineApiMethod {
+                    name: #full_name,
+                    callback: #tramp_ident as *const (),
+                    flags: #scope_flags,
+                }
+            }
+        }
+    };
+
     Ok(quote! {
         #[doc(hidden)]
         #[allow(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
@@ -867,13 +942,7 @@ fn generate_tramp(
             #return_stmt
         }
 
-        ::inventory::submit! {
-            crate::engine_api::engine_api::EngineApiMethod {
-                name: #full_name,
-                callback: #tramp_ident as *const (),
-                flags: #scope_flags,
-            }
-        }
+        #inventory_submit
     })
 }
 

@@ -24,7 +24,8 @@ impl CallbackSystem {
     }
 }
 
-// Gamelib registers on the server thread; user_data lifetime is gamelib-owned.
+// Gamelib registers via `v1:schedule:add_system` on the host; user_data
+// lifetime is gamelib-owned.
 unsafe impl Send for CallbackSystem {}
 
 impl System for CallbackSystem {

@@ -1,12 +1,17 @@
 //! WebSocket inspector (deerpunk-inspector-protocol).
-//! Polled non-blocking from [`Host::frame`] — same thread as the server world.
+//! Polled non-blocking from [`Host::frame`] on the main thread; server-world
+//! collections (`serverentities`, `players`) are served from snapshots the
+//! sim thread publishes into [`ServerInspectShare`] (request flag → thread
+//! builds → later poll replies, 2s cap, latest-wins). `cliententities` reads
+//! the client world synchronously — same thread.
 
 // Not ARCHIVE: one-off `--inspector-port` CLI overrides must not permanently
 // redirect the inspector port in the user's saved config.
 deerpunk_engine_common::cvar_def!(
     "sv_inspector_port",
     "9000",
-    "WebSocket port for deerpunk-inspector (0 = disabled)."
+    "WebSocket inspector port (0 = disabled).",
+    deerpunk_engine_common::cvar_def::ARCHIVE
 );
 deerpunk_engine_common::cvar_def!(
     "sv_inspector_host",
@@ -14,10 +19,12 @@ deerpunk_engine_common::cvar_def!(
     "Bind address for inspector WS (e.g. 127.0.0.1 or 0.0.0.0)."
 );
 
-mod client_share;
+mod server_share;
 mod ws;
 
-pub(crate) use client_share::{ClientEntityRow, ClientInspectShare};
+pub(crate) use server_share::ServerInspectShare;
+
+pub(crate) use ws::{WsConnection, WsIncoming};
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -32,22 +39,28 @@ use serde_json::{json, Value};
 
 use deerpunk_engine_common::resource::ResourceManager;
 
+#[cfg(any(feature = "client", feature = "full"))]
+use deerpunk_engine_client::client_engine::ClientEngine;
+
 use crate::system_profiler;
-use deerpunk_engine_server::players::PlayerConnections;
 
-use ws::{WsConnection, WsIncoming};
+/// One `cliententities.list` row (same shape as the server-side row).
+pub(crate) struct ClientEntityRow {
+    pub(crate) id: u64,
+    pub(crate) name: String,
+    pub(crate) prefab_id: Option<u32>,
+    pub(crate) position: Option<[f32; 3]>,
+}
 
-/// Read-only host slice for inspector RPC (avoids borrowing `Host` + `Inspector` together).
+/// Read-only main-thread slice for inspector RPC (avoids borrowing `Host` +
+/// `Inspector` together). Server-world data flows through `server` snapshots.
 pub struct InspectorRpcCtx<'a> {
-    pub world: &'a World,
     pub resources: &'a ResourceManager,
     pub time_secs: f32,
-    pub players: &'a PlayerConnections,
-    pub server_net: &'a deerpunk_engine_server::ServerNet,
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    pub server_rep: &'a deerpunk_engine_server::network::ServerPrefabReplication,
     #[cfg(any(feature = "client", feature = "full"))]
-    pub client_engine: Option<&'a deerpunk_engine_client::client_engine::ClientEngine>,
+    pub client_engine: Option<&'a ClientEngine>,
+    /// Server-world snapshots published by the sim thread.
+    pub server: &'a ServerInspectShare,
 }
 
 const MAX_REQUESTS_PER_FRAME: usize = 64;
@@ -76,32 +89,44 @@ pub struct FmodEventSnap {
     pub params: Vec<String>,
 }
 
-/// Component-detail request awaiting the client world's answer (one frame hop).
+/// `serverentities`/`players` detail request awaiting the sim thread's answer
+/// (deferred share hop; same 2s cap the client rows used).
 struct PendingGet {
     request_id: Value,
     seq: u64,
     since: Instant,
+    /// ERR message when the reply carries `_error` (e.g. "player not found").
+    not_found_msg: &'static str,
 }
 
-/// `cliententities.list` request awaiting the client world's fresh rows
-/// (one frame hop, same as [`PendingGet`]).
+/// `serverentities`/`players` list request awaiting a fresh snapshot
+/// (latest-wins: a second list supersedes the queued request id).
 struct PendingList {
     request_id: Value,
     /// Snapshot generation at queue time; the reply waits for a publish
     /// newer than this so it never serves a pre-request snapshot.
     wait_gen: u64,
     since: Instant,
+    /// "server world did not answer …" timeout text.
+    timeout_what: &'static str,
 }
 
-/// Max age of an in-flight `cliententities.get` before it errors out.
+/// Max age of an in-flight deferred request before it errors out.
 const PENDING_GET_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct ClientState {
     socket: WsConnection,
-    pending_get: Option<PendingGet>,
-    /// Latest list request only: a second `list` while one is pending
-    /// overwrites it, so the superseded request id gets no reply.
-    pending_list: Option<PendingList>,
+    pending_entities_list: Option<PendingList>,
+    pending_players_list: Option<PendingList>,
+    pending_entities_get: Option<PendingGet>,
+    pending_players_get: Option<PendingPlayersGet>,
+}
+
+struct PendingPlayersGet {
+    request_id: Value,
+    index: u64,
+    wait_gen: u64,
+    since: Instant,
 }
 
 struct ActiveInspector {
@@ -115,8 +140,6 @@ struct ActiveInspector {
 pub struct Inspector {
     extra_collections: Vec<proto::CollectionDescriptor>,
     active: Option<ActiveInspector>,
-    /// Client-world data published by the main thread (server-thread Host only).
-    client_share: Option<Arc<ClientInspectShare>>,
 }
 
 impl Inspector {
@@ -124,13 +147,7 @@ impl Inspector {
         Self {
             extra_collections: Vec::new(),
             active: None,
-            client_share: None,
         }
-    }
-
-    /// Install the client-world share (server-thread Host, from `server_main`).
-    pub fn set_client_share(&mut self, share: Arc<ClientInspectShare>) {
-        self.client_share = Some(share);
     }
 
     pub fn is_running(&self) -> bool {
@@ -215,8 +232,10 @@ impl Inspector {
                             id,
                             ClientState {
                                 socket: ws,
-                                pending_get: None,
-                                pending_list: None,
+                                pending_entities_list: None,
+                                pending_players_list: None,
+                                pending_entities_get: None,
+                                pending_players_get: None,
                             },
                         );
                     }
@@ -230,9 +249,8 @@ impl Inspector {
             }
         }
 
-        // Client rows are request-driven: an RPC asks via `share.request_rows()`
-        // and the main thread rebuilds the snapshot on its next pump.
-        let client_share = self.client_share.clone();
+        // Server snapshots come from the sim thread share (request-driven).
+        let server_share = ctx.as_ref().map(|c| c.server);
 
         let mut disconnected = Vec::new();
         let mut responses: Vec<(u64, String)> = Vec::new();
@@ -246,14 +264,8 @@ impl Inspector {
                 match client.socket.read_incoming() {
                     Ok(WsIncoming::Text(text)) => {
                         budget -= 1;
-                        match handle_message(
-                            text.trim(),
-                            ctx.as_ref(),
-                            &insp.collections,
-                            client_share.as_deref(),
-                            &mut client.pending_get,
-                            &mut client.pending_list,
-                        ) {
+                        match handle_message(text.trim(), ctx.as_ref(), &insp.collections, client)
+                        {
                             Ok(msgs) => {
                                 for m in msgs {
                                     responses.push((id, m));
@@ -287,20 +299,88 @@ impl Inspector {
             }
         }
 
-        // Deliver deferred `cliententities.get` replies (one-frame command hop).
+        let Some(share) = server_share else {
+            for id in disconnected {
+                insp.clients.remove(&id);
+            }
+            return;
+        };
+
+        // Deliver deferred `serverentities` list replies once the sim thread
+        // published a fresh snapshot (latest-wins, 2s cap).
         for (&id, client) in insp.clients.iter_mut() {
-            let Some(pending) = client.pending_get.as_ref() else {
+            let Some(pending) = client.pending_entities_list.as_ref() else {
                 continue;
             };
-            let detail = client_share
-                .as_ref()
-                .and_then(|s| s.poll_detail(pending.seq));
+            let fresh = share.entities_snapshot().map(|(g, _)| g > pending.wait_gen);
+            match (fresh, share.entities_snapshot()) {
+                (Some(true), Some((_, value))) => {
+                    if client.socket.send_text(&proto::ok(&pending.request_id, (*value).clone())).is_err() {
+                        disconnected.push(id);
+                    }
+                    client.pending_entities_list = None;
+                }
+                _ if pending.since.elapsed() >= PENDING_GET_TIMEOUT => {
+                    if client
+                        .socket
+                        .send_text(&proto::err(
+                            &pending.request_id,
+                            proto::ERR_INTERNAL,
+                            pending.timeout_what,
+                        ))
+                        .is_err()
+                    {
+                        disconnected.push(id);
+                    }
+                    client.pending_entities_list = None;
+                }
+                _ => {}
+            }
+        }
+
+        // Same for `players` list replies.
+        for (&id, client) in insp.clients.iter_mut() {
+            let Some(pending) = client.pending_players_list.as_ref() else {
+                continue;
+            };
+            let fresh = share.players_snapshot().map(|(g, _)| g > pending.wait_gen);
+            match (fresh, share.players_snapshot()) {
+                (Some(true), Some((_, value))) => {
+                    if client.socket.send_text(&proto::ok(&pending.request_id, (*value).clone())).is_err() {
+                        disconnected.push(id);
+                    }
+                    client.pending_players_list = None;
+                }
+                _ if pending.since.elapsed() >= PENDING_GET_TIMEOUT => {
+                    if client
+                        .socket
+                        .send_text(&proto::err(
+                            &pending.request_id,
+                            proto::ERR_INTERNAL,
+                            pending.timeout_what,
+                        ))
+                        .is_err()
+                    {
+                        disconnected.push(id);
+                    }
+                    client.pending_players_list = None;
+                }
+                _ => {}
+            }
+        }
+
+        // Deferred `serverentities` detail replies (single in-flight request).
+        for (&id, client) in insp.clients.iter_mut() {
+            let Some(pending) = client.pending_entities_get.as_ref() else {
+                continue;
+            };
+            let detail = share.poll_detail(pending.seq);
             match detail {
                 Some(Value::Object(o)) if o.contains_key("_error") => {
                     let msg = o
                         .get("_error")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("client entity not found");
+                        .unwrap_or(pending.not_found_msg);
                     if client
                         .socket
                         .send_text(&proto::err(
@@ -312,7 +392,7 @@ impl Inspector {
                     {
                         disconnected.push(id);
                     }
-                    client.pending_get = None;
+                    client.pending_entities_get = None;
                 }
                 Some(value) => {
                     if client
@@ -322,7 +402,7 @@ impl Inspector {
                     {
                         disconnected.push(id);
                     }
-                    client.pending_get = None;
+                    client.pending_entities_get = None;
                 }
                 None if pending.since.elapsed() >= PENDING_GET_TIMEOUT => {
                     if client
@@ -330,62 +410,55 @@ impl Inspector {
                         .send_text(&proto::err(
                             &pending.request_id,
                             proto::ERR_INTERNAL,
-                            "client world did not answer detail request",
+                            "server world did not answer detail request",
                         ))
                         .is_err()
                     {
                         disconnected.push(id);
                     }
-                    client.pending_get = None;
+                    client.pending_entities_get = None;
                 }
                 None => {}
             }
         }
 
-        // Deliver deferred `cliententities.list` replies once the main thread
-        // published a fresh snapshot (same timeout cap as `get`).
+        // Deferred `players` get: find the slot in a fresh players snapshot.
         for (&id, client) in insp.clients.iter_mut() {
-            let Some(pending) = client.pending_list.as_ref() else {
+            let Some(pending) = client.pending_players_get.as_ref() else {
                 continue;
             };
-            let Some(share) = client_share.as_ref() else {
-                continue;
+            let fresh = share.players_snapshot().map(|(g, _)| g > pending.wait_gen);
+            let reply = match (fresh, share.players_snapshot()) {
+                (Some(true), Some((_, value))) => {
+                    let found = value
+                        .get("players")
+                        .and_then(|v| v.as_array())
+                        .and_then(|arr| {
+                            arr.iter()
+                                .find(|v| v.get("index").and_then(|i| i.as_u64()) == Some(pending.index))
+                        })
+                        .cloned();
+                    Some(match found {
+                        Some(p) => proto::ok(&pending.request_id, p),
+                        None => proto::err(
+                            &pending.request_id,
+                            proto::ERR_ENTITY_NOT_FOUND,
+                            "player not found",
+                        ),
+                    })
+                }
+                _ if pending.since.elapsed() >= PENDING_GET_TIMEOUT => Some(proto::err(
+                    &pending.request_id,
+                    proto::ERR_INTERNAL,
+                    "server world did not answer players request",
+                )),
+                _ => None,
             };
-            let fresh = share.rows_gen() > pending.wait_gen;
-            match (fresh, share.rows()) {
-                (true, Some((time, rows))) => {
-                    let entities = rows_value(&rows);
-                    if client
-                        .socket
-                        .send_text(&proto::ok(
-                            &pending.request_id,
-                            json!({
-                                "time": time,
-                                "count": entities.len(),
-                                "entities": entities,
-                            }),
-                        ))
-                        .is_err()
-                    {
-                        disconnected.push(id);
-                    }
-                    client.pending_list = None;
+            if let Some(msg) = reply {
+                if client.socket.send_text(&msg).is_err() {
+                    disconnected.push(id);
                 }
-                _ if pending.since.elapsed() >= PENDING_GET_TIMEOUT => {
-                    if client
-                        .socket
-                        .send_text(&proto::err(
-                            &pending.request_id,
-                            proto::ERR_INTERNAL,
-                            "client world did not answer rows request",
-                        ))
-                        .is_err()
-                    {
-                        disconnected.push(id);
-                    }
-                    client.pending_list = None;
-                }
-                _ => {}
+                client.pending_players_get = None;
             }
         }
 
@@ -395,13 +468,77 @@ impl Inspector {
     }
 }
 
+/// `serverentities.*` / `players.*` — deferred through [`ServerInspectShare`]
+/// (the server world lives on the sim thread). Reply JSON shapes unchanged.
+fn server_collection_rpc(
+    col_id: &str,
+    action: &str,
+    id: &Value,
+    params: &Value,
+    share: &ServerInspectShare,
+    client: &mut ClientState,
+) -> Result<Vec<String>, String> {
+    match action {
+        "list" => {
+            if col_id == "serverentities" {
+                share.request_entities();
+                client.pending_entities_list = Some(PendingList {
+                    request_id: id.clone(),
+                    wait_gen: share.gen_now(),
+                    since: Instant::now(),
+                    timeout_what: "server world did not answer entities list",
+                });
+            } else {
+                share.request_players();
+                client.pending_players_list = Some(PendingList {
+                    request_id: id.clone(),
+                    wait_gen: share.gen_now(),
+                    since: Instant::now(),
+                    timeout_what: "server world did not answer players list",
+                });
+            }
+            // Reply is sent from a later poll once the sim thread publishes.
+            Ok(Vec::new())
+        }
+        "get" => {
+            let Some(index) = params.get("index").and_then(|v| v.as_u64()) else {
+                return Ok(vec![proto::err(id, proto::ERR_INVALID_PARAMS, "missing index")]);
+            };
+            if col_id == "serverentities" {
+                // Ask for a fresh rows snapshot first so repeated gets stay
+                // current; the detail itself is a single in-flight request.
+                share.request_entities();
+                let seq = share.request_detail(index);
+                client.pending_entities_get = Some(PendingGet {
+                    request_id: id.clone(),
+                    seq,
+                    since: Instant::now(),
+                    not_found_msg: "entity not found",
+                });
+            } else {
+                share.request_players();
+                client.pending_players_get = Some(PendingPlayersGet {
+                    request_id: id.clone(),
+                    index,
+                    wait_gen: share.gen_now(),
+                    since: Instant::now(),
+                });
+            }
+            Ok(Vec::new())
+        }
+        _ => Ok(vec![proto::err(
+            id,
+            proto::ERR_METHOD_NOT_FOUND,
+            format!("unknown method: {col_id}.{action}"),
+        )]),
+    }
+}
+
 fn handle_message(
     line: &str,
     ctx: Option<&InspectorRpcCtx<'_>>,
     collections: &[proto::CollectionDescriptor],
-    client_share: Option<&ClientInspectShare>,
-    deferred_get: &mut Option<PendingGet>,
-    deferred_list: &mut Option<PendingList>,
+    client: &mut ClientState,
 ) -> Result<Vec<String>, String> {
     if line.is_empty() {
         return Ok(Vec::new());
@@ -433,16 +570,33 @@ fn handle_message(
         return Ok(Vec::new());
     };
 
-    // `cliententities` needs no server world: rows come from the main-thread
-    // snapshot, so it also works at the main menu / on dedicated servers.
-    if let Some((col_id, action)) = method.rsplit_once('.') {
-        if col_id == "cliententities" {
-            return client_entities_rpc(action, &id, &params, client_share, deferred_get, deferred_list);
-        }
+    let Some((col_id, action)) = method.rsplit_once('.') else {
+        return Ok(vec![proto::err(
+            &id,
+            proto::ERR_METHOD_NOT_FOUND,
+            format!("unknown method: {method}"),
+        )]);
+    };
+
+    // `cliententities` reads the client world through the RPC ctx, so it also
+    // works at the main menu (world off). Server-world collections defer
+    // through the share (sim thread); they need a ctx to carry the share.
+    if col_id == "cliententities" {
+        return client_entities_rpc(action, &id, &params, ctx);
+    }
+    if col_id == "serverentities" || col_id == "players" {
+        let Some(ctx) = ctx else {
+            return Ok(vec![proto::err(
+                &id,
+                proto::ERR_INTERNAL,
+                "world not running (load a map first)",
+            )]);
+        };
+        return server_collection_rpc(col_id, action, &id, &params, ctx.server, client);
     }
 
-    // World-dependent RPCs need a running server; the session handshake
-    // above still works at the main menu so clients can connect early.
+    // World-independent RPCs work at the main menu; world-dependent ones
+    // reply with an error until a map is loaded.
     let Some(ctx) = ctx else {
         return Ok(vec![proto::err(
             &id,
@@ -451,19 +605,17 @@ fn handle_message(
         )]);
     };
 
-    if let Some((col_id, action)) = method.rsplit_once('.') {
-        let known = collections.iter().any(|c| c.id == col_id);
-        if known {
-            return match action {
-                "list" => Ok(vec![proto::ok(&id, collection_list(col_id, ctx))]),
-                "get" => Ok(vec![collection_get(col_id, &id, &params, ctx)]),
-                _ => Ok(vec![proto::err(
-                    &id,
-                    proto::ERR_METHOD_NOT_FOUND,
-                    format!("unknown method: {method}"),
-                )]),
-            };
-        }
+    let known = collections.iter().any(|c| c.id == col_id);
+    if known {
+        return match action {
+            "list" => Ok(vec![proto::ok(&id, collection_list(col_id, ctx))]),
+            "get" => Ok(vec![collection_get(col_id, &id, &params, ctx)]),
+            _ => Ok(vec![proto::err(
+                &id,
+                proto::ERR_METHOD_NOT_FOUND,
+                format!("unknown method: {method}"),
+            )]),
+        };
     }
 
     Ok(vec![proto::err(
@@ -471,40 +623,6 @@ fn handle_message(
         proto::ERR_METHOD_NOT_FOUND,
         format!("unknown method: {method}"),
     )])
-}
-
-fn players_value(ctx: &InspectorRpcCtx<'_>) -> Value {
-    let remote_addrs: std::collections::HashMap<u32, String> =
-        ctx.server_net.remote_slot_debug().into_iter().collect();
-    let players: Vec<Value> = ctx
-        .players
-        .list()
-        .iter()
-        .map(|p| {
-            #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-            let net_id = p.entity.and_then(|e| ctx.server_rep.net_id_of(e));
-            #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-            let net_id: Option<u16> = None;
-            json!({
-                "index": p.slot,
-                "name": p.name,
-                "local": p.local,
-                "entity": p.entity,
-                "netId": net_id,
-                "addr": remote_addrs.get(&p.slot).cloned().unwrap_or_else(|| {
-                    if p.local { "local".into() } else { "?".into() }
-                }),
-            })
-        })
-        .collect();
-    json!({
-        "time": ctx.time_secs,
-        "count": players.len(),
-        "players": players,
-        "role": ctx.server_net.hud_stats().role,
-        "hosting": ctx.server_net.is_listening(),
-        "client": ctx.client_engine.is_some_and(|c| c.network.is_active()),
-    })
 }
 
 fn fmod_events(ctx: &InspectorRpcCtx<'_>) -> Vec<FmodEventSnap> {
@@ -529,11 +647,12 @@ fn fmod_events(ctx: &InspectorRpcCtx<'_>) -> Vec<FmodEventSnap> {
     }
     #[cfg(not(any(feature = "client", feature = "full")))]
     {
+        let _ = ctx;
         Vec::new()
     }
 }
 
-/// Entity rows as JSON (same shape the immediate list reply used to have).
+/// Entity rows as JSON (same shape the server-side list reply uses).
 fn rows_value(rows: &[ClientEntityRow]) -> Vec<Value> {
     rows.iter()
         .map(|e| {
@@ -553,114 +672,126 @@ fn rows_value(rows: &[ClientEntityRow]) -> Vec<Value> {
         .collect::<Vec<Value>>()
 }
 
-/// `cliententities.list` / `cliententities.get` served from the main-thread
-/// share; both defer their reply by one frame (command hop to the main
-/// thread): the RPC asks for rows via `share.request_rows()` and a later poll
-/// answers from the fresh snapshot.
+/// `cliententities.list` / `cliententities.get`, served synchronously from
+/// the client world in the RPC ctx (single host — no deferred hop anymore).
+/// JSON reply shapes are unchanged.
 fn client_entities_rpc(
     action: &str,
     id: &Value,
     params: &Value,
-    client_share: Option<&ClientInspectShare>,
-    deferred_get: &mut Option<PendingGet>,
-    deferred_list: &mut Option<PendingList>,
+    ctx: Option<&InspectorRpcCtx<'_>>,
 ) -> Result<Vec<String>, String> {
-    match action {
-        "list" => {
-            let Some(share) = client_share else {
-                // No client world (dedicated server, or client features
-                // disabled): answer immediately with an empty list.
-                return Ok(vec![proto::ok(
+    #[cfg(any(feature = "client", feature = "full"))]
+    {
+        let client = ctx.and_then(|c| c.client_engine);
+        match action {
+            "list" => {
+                let Some(client) = client else {
+                    // No client world (client features disabled): immediate
+                    // empty list, same shape as before.
+                    return Ok(vec![proto::ok(
+                        id,
+                        json!({ "time": 0.0, "count": 0, "entities": [] }),
+                    )]);
+                };
+                let world = &client.world;
+                let rows: Vec<ClientEntityRow> = world
+                    .inspect_entities()
+                    .into_iter()
+                    .map(|e| ClientEntityRow {
+                        id: e.id,
+                        prefab_id: entity_prefab_id(world, e.id),
+                        position: entity_position(world, e.id),
+                        name: e.name,
+                    })
+                    .collect();
+                let entities = rows_value(&rows);
+                let time = ctx.map(|c| c.time_secs).unwrap_or(0.0);
+                Ok(vec![proto::ok(
                     id,
-                    json!({ "time": 0.0, "count": 0, "entities": [] }),
-                )]);
-            };
-            share.request_rows();
-            // Latest list request wins; a superseded request id gets no reply.
-            *deferred_list = Some(PendingList {
-                request_id: id.clone(),
-                wait_gen: share.rows_gen(),
-                since: Instant::now(),
-            });
-            // Reply is sent from a later poll once the main thread publishes
-            // the fresh snapshot.
-            Ok(Vec::new())
-        }
-        "get" => {
-            let Some(share) = client_share else {
-                return Ok(vec![proto::err(
-                    id,
-                    proto::ERR_INTERNAL,
-                    "no client world (client features disabled)",
-                )]);
-            };
-            let Some(index) = params.get("index").and_then(|v| v.as_u64()) else {
-                return Ok(vec![proto::err(
-                    id,
-                    proto::ERR_INVALID_PARAMS,
-                    "missing index",
-                )]);
-            };
-            // Ask for a fresh snapshot first so repeated gets stay current.
-            share.request_rows();
-            let known = share
-                .rows()
-                .map(|(_, rows)| rows.iter().any(|e| e.id == index))
-                .unwrap_or(false);
-            if !known {
-                return Ok(vec![proto::err(
-                    id,
-                    proto::ERR_ENTITY_NOT_FOUND,
-                    "entity not found",
-                )]);
+                    json!({
+                        "time": time,
+                        "count": entities.len(),
+                        "entities": entities,
+                    }),
+                )])
             }
-            let seq = share.request_detail(index);
-            *deferred_get = Some(PendingGet {
-                request_id: id.clone(),
-                seq,
-                since: Instant::now(),
-            });
-            // Reply is sent from a later poll once the main thread answers.
-            Ok(Vec::new())
+            "get" => {
+                let Some(client) = client else {
+                    return Ok(vec![proto::err(
+                        id,
+                        proto::ERR_INTERNAL,
+                        "no client world (client features disabled)",
+                    )]);
+                };
+                let Some(index) = params.get("index").and_then(|v| v.as_u64()) else {
+                    return Ok(vec![proto::err(
+                        id,
+                        proto::ERR_INVALID_PARAMS,
+                        "missing index",
+                    )]);
+                };
+                // Fetch the single entity by id instead of scanning the world.
+                let world = &client.world;
+                let Some(ent) = world.inspect_entity(index) else {
+                    return Ok(vec![proto::err(
+                        id,
+                        proto::ERR_ENTITY_NOT_FOUND,
+                        "entity not found",
+                    )]);
+                };
+                // Every component on the entity; unregistered ones surface as
+                // `_unregistered` (same shape as the server detail).
+                let components: Vec<Value> = world
+                    .inspect_entity_all_components(ent.id)
+                    .iter()
+                    .map(|slug| {
+                        serde_json::to_value(component_snapshot(world, ent.id, slug))
+                            .unwrap_or(Value::Null)
+                    })
+                    .collect();
+                Ok(vec![proto::ok(
+                    id,
+                    json!({
+                        "index": ent.id,
+                        "name": ent.name,
+                        "components": components,
+                    }),
+                )])
+            }
+            _ => Ok(vec![proto::err(
+                id,
+                proto::ERR_METHOD_NOT_FOUND,
+                format!("unknown method: cliententities.{action}"),
+            )]),
         }
-        _ => Ok(vec![proto::err(
-            id,
-            proto::ERR_METHOD_NOT_FOUND,
-            format!("unknown method: cliententities.{action}"),
-        )]),
+    }
+    #[cfg(not(any(feature = "client", feature = "full")))]
+    {
+        let _ = (params, ctx);
+        match action {
+            // No client world without client features: immediate empty list.
+            "list" => Ok(vec![proto::ok(
+                id,
+                json!({ "time": 0.0, "count": 0, "entities": [] }),
+            )]),
+            "get" => Ok(vec![proto::err(
+                id,
+                proto::ERR_INTERNAL,
+                "no client world (client features disabled)",
+            )]),
+            _ => Ok(vec![proto::err(
+                id,
+                proto::ERR_METHOD_NOT_FOUND,
+                format!("unknown method: cliententities.{action}"),
+            )]),
+        }
     }
 }
 
 fn collection_list(col_id: &str, ctx: &InspectorRpcCtx<'_>) -> Value {
     let time = ctx.time_secs;
-    let world = ctx.world;
     match col_id {
-        "serverentities" => {
-            let _scope = system_profiler::scope("inspector.serverentities.list");
-            let entities: Vec<Value> = world
-                .inspect_entities()
-                .into_iter()
-                .map(|e| {
-                    let mut row = json!({
-                        "index": e.id,
-                        "name": e.name,
-                    });
-                    let obj = row.as_object_mut().expect("entity row object");
-                    if let Some(prefab_id) = entity_prefab_id(world, e.id) {
-                        obj.insert("prefabId".into(), json!(prefab_id));
-                    }
-                    if let Some(position) = entity_position(world, e.id) {
-                        obj.insert("position".into(), json!(position));
-                    }
-                    row
-                })
-                .collect();
-            json!({
-                "time": time,
-                "count": entities.len(),
-                "entities": entities,
-            })
-        }
         "prefabs" => {
             let classnames = deerpunk_engine_common::scene::PrefabManager::list_disk_classnames(
                 &ctx.resources.base_dir(),
@@ -738,7 +869,6 @@ fn collection_list(col_id: &str, ctx: &InspectorRpcCtx<'_>) -> Value {
                 "events": events,
             })
         }
-        "players" => players_value(ctx),
         "methoddb" => {
             let methods: Vec<Value> = crate::engine_api::engine_api::MethodDB::inventory_entries()
                 .into_iter()
@@ -783,7 +913,6 @@ pub(crate) fn component_snapshot(
 }
 
 fn collection_get(col_id: &str, id: &Value, params: &Value, ctx: &InspectorRpcCtx<'_>) -> String {
-    let world = ctx.world;
     let index = match params.get("index").and_then(|v| v.as_u64()) {
         Some(i) => i,
         None => {
@@ -791,29 +920,6 @@ fn collection_get(col_id: &str, id: &Value, params: &Value, ctx: &InspectorRpcCt
         }
     };
     match col_id {
-        "serverentities" => {
-            let Some(ent) = world.inspect_entities().into_iter().find(|e| e.id == index) else {
-                return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "entity not found");
-            };
-            // Enumerate EVERY component on the entity (registered ones dump
-            // their fields; unregistered ones surface as `_unregistered`).
-            let components: Vec<Value> = world
-                .inspect_entity_all_components(ent.id)
-                .iter()
-                .map(|slug| {
-                    serde_json::to_value(component_snapshot(world, ent.id, slug))
-                        .unwrap_or(Value::Null)
-                })
-                .collect();
-            proto::ok(
-                id,
-                json!({
-                    "index": ent.id,
-                    "name": ent.name,
-                    "components": components,
-                }),
-            )
-        }
         "fmod_events" => {
             let fmod = fmod_events(ctx);
             let Some(e) = fmod.get(index as usize) else {
@@ -851,20 +957,6 @@ fn collection_get(col_id: &str, id: &Value, params: &Value, ctx: &InspectorRpcCt
                     "loaded": a.loaded,
                 }),
             )
-        }
-        "players" => {
-            let list = players_value(ctx)
-                .get("players")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let Some(p) = list
-                .iter()
-                .find(|v| v.get("index").and_then(|i| i.as_u64()) == Some(index))
-            else {
-                return proto::err(id, proto::ERR_ENTITY_NOT_FOUND, "player not found");
-            };
-            proto::ok(id, p.clone())
         }
         "methoddb" => {
             let entries = crate::engine_api::engine_api::MethodDB::inventory_entries();

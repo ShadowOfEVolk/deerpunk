@@ -143,17 +143,7 @@ impl crate::Host {
                 .network
                 .send_c2s(packet);
         } else {
-            let server_on = self
-                .server_thread
-                .as_ref()
-                .map(|s| s.is_enabled())
-                .unwrap_or_else(|| {
-                    self.server_engine
-                        .as_ref()
-                        .map(|e| e.enabled)
-                        .unwrap_or(false)
-                });
-            if !self.client_in_play() || !server_on {
+            if !self.client_in_play() || !self.listen_server_enabled() {
                 return 0;
             }
             self.loopback.send_client_packet(packet);
@@ -179,93 +169,19 @@ impl crate::Host {
         }
     }
 
-    #[methoddb::bind(name = "pop_client_command")]
-    pub fn api_net_pop_client_command(
-        &mut self,
-        out_slot: *mut f32,
-        out_buf: *mut u8,
-        out_buf_len: usize,
-    ) -> i32 {
-        if self.server_engine.is_none() {
-            return -1;
-        }
-        if out_slot.is_null() || out_buf.is_null() {
-            return -1;
-        }
-        let engine = self.server_mut();
-        let Some((slot, line)) = engine.pending_client_commands.first().cloned() else {
-            return 0;
-        };
-        let bytes = line.as_bytes();
-        if bytes.len() > out_buf_len {
-            return -2;
-        }
-        engine.pending_client_commands.remove(0);
-        unsafe {
-            *out_slot = slot as f32;
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, bytes.len());
-        }
-        bytes.len() as i32
-    }
-
+    /// Server world lives on the sim thread (facade bind); main host never
+    /// had local player net ids.
     #[methoddb::bind(name = "player_net_id")]
-    pub fn api_net_player_net_id(&self, slot: u32) -> u32 {
-        #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-        {
-            return self.player_net_id(slot).unwrap_or(0) as u32;
-        }
-        #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-        {
-            let _ = slot;
-            0
-        }
+    pub fn api_net_player_net_id(&self, _slot: u32) -> u32 {
+        0
     }
 }
 
 #[methoddb::namespace(name = "v1:players", on_host, scope = ["server", "client"])]
 impl crate::Host {
-    #[methoddb::bind(name = "set_entity")]
-    pub fn api_players_set_entity(&mut self, slot: u32, entity: u64) -> i32 {
-        if self.server_engine.is_none() {
-            log::error!("[players] set_entity on client host (server thread only)");
-            return -1;
-        }
-        self.server_mut().players.set_entity(slot, entity);
-        0
-    }
-
     #[methoddb::bind(name = "local_entity")]
     pub fn api_players_local_entity(&self) -> u64 {
-        #[cfg(any(feature = "client", feature = "full"))]
-        if self.client_engine.is_some() {
-            return self.local_client_entity().unwrap_or(0);
-        }
-        let Some(slot) = self.server().players.local_slot() else {
-            return 0;
-        };
-        self.server()
-            .players
-            .get(slot)
-            .and_then(|p| p.entity)
-            .unwrap_or(0)
-    }
-
-    #[methoddb::bind(name = "get_usercmd")]
-    pub fn api_players_get_usercmd(&self, slot: u32, out: *mut u8, out_len: usize) -> i32 {
-        if out.is_null() || out_len < USERCMD_SIZE {
-            return -1;
-        }
-        if self.server_engine.is_none() {
-            return -1;
-        }
-        let Some(cmd) = self.server().players.usercmd(slot) else {
-            return -1;
-        };
-        let bytes = cmd.encode();
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, USERCMD_SIZE);
-        }
-        0
+        self.local_client_entity().unwrap_or(0)
     }
 
     #[methoddb::bind(name = "set_simorg")]
@@ -722,6 +638,24 @@ impl crate::Host {
 }
 
 #[cfg(any(feature = "client", feature = "full"))]
+fn ui_client_op<F>(host: &mut crate::Host, f: F) -> i32
+where
+    F: FnOnce(&mut deerpunk_engine_client::client_engine::ClientEngine) -> Result<(), String>,
+{
+    let Some(client) = host.client_engine.as_mut() else {
+        log::error!("[ui] no client engine");
+        return -1;
+    };
+    match f(client) {
+        Ok(()) => 0,
+        Err(e) => {
+            log::error!("[ui] {e}");
+            -1
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "full"))]
 #[methoddb::namespace(name = "v1:ui", on_host, scope = ["server", "client"])]
 impl crate::Host {
     #[methoddb::bind(name = "load")]
@@ -810,194 +744,6 @@ impl crate::Host {
         _value: i32,
     ) -> i32 {
         -1
-    }
-
-    #[methoddb::bind(name = "data_model_set_number")]
-    pub fn api_ui_data_model_set_number(
-        &mut self,
-        _document: &str,
-        _field: &str,
-        _value: f32,
-    ) -> i32 {
-        -1
-    }
-
-    #[methoddb::bind(name = "data_model_set_string")]
-    pub fn api_ui_data_model_set_string(
-        &mut self,
-        _document: &str,
-        _field: &str,
-        _value: &str,
-    ) -> i32 {
-        -1
-    }
-}
-
-#[cfg(any(feature = "client", feature = "full"))]
-fn ui_client_op<F>(host: &mut crate::Host, f: F) -> i32
-where
-    F: FnOnce(&mut deerpunk_engine_client::client_engine::ClientEngine) -> Result<(), String>,
-{
-    let Some(client) = host.client_engine.as_mut() else {
-        log::error!("[ui] no client engine");
-        return -1;
-    };
-    match f(client) {
-        Ok(()) => 0,
-        Err(e) => {
-            log::error!("[ui] {e}");
-            -1
-        }
-    }
-}
-
-#[methoddb::namespace(name = "v1:world", on_host, scope = ["server", "client"])]
-impl crate::Host {
-    #[methoddb::bind(name = "spawn")]
-    pub fn api_world_spawn(&mut self) -> u64 {
-        self.server_mut().world.spawn()
-    }
-
-    #[methoddb::bind(name = "has")]
-    pub fn api_world_has(&self, entity: u64, comp: u64) -> bool {
-        self.server().world.has(entity, comp)
-    }
-
-    #[methoddb::bind(name = "remove")]
-    pub fn api_world_remove(&mut self, entity: u64, comp: u64) {
-        self.server_mut().world.remove(entity, comp);
-    }
-
-    #[methoddb::bind(name = "get")]
-    pub fn api_world_get(&mut self, entity: u64, comp: u64) -> *mut c_void {
-        self.world_get_component_ptr(entity, comp)
-    }
-
-    #[methoddb::bind(name = "set")]
-    pub fn api_world_set(&mut self, entity: u64, comp: u64, data: *const c_void, size: usize) {
-        self.world_set_component_raw(entity, comp, data, size);
-    }
-
-    #[methoddb::bind(name = "clear")]
-    pub fn api_world_clear(&mut self) {
-        self.clear_server_world();
-    }
-
-    #[methoddb::bind(name = "free_value")]
-    pub fn api_world_free_value(&mut self, _ptr: *mut c_void) {}
-
-    /// Spawn `{gamedir}/prefabs/{name}.prefab` into the server world.
-    #[methoddb::bind(name = "spawn_prefab")]
-    pub fn api_world_spawn_prefab(
-        &mut self,
-        name: &str,
-        opts: &deerpunk_engine_api::spawn_prefab::SpawnPrefabOpts,
-    ) -> u64 {
-        if name.is_empty() {
-            return 0;
-        }
-        match self.spawn_prefab(name, opts) {
-            Ok(id) => id,
-            Err(e) => {
-                log::error!("[world] spawn_prefab {name}: {e}");
-                0
-            }
-        }
-    }
-
-    #[methoddb::bind(name = "spawn_bundle")]
-    pub fn api_world_spawn_bundle(
-        &mut self,
-        _comp_ids: *const u64,
-        _comp_data: *const *mut c_void,
-        _count: usize,
-    ) -> u64 {
-        0
-    }
-}
-
-#[methoddb::namespace(name = "v1:world", on_host, scope = ["server"])]
-impl crate::Host {
-    #[methoddb::bind(name = "destroy")]
-    pub fn api_world_destroy(&mut self, entity: u64) {
-        self.server_mut().world.destroy(entity);
-    }
-
-    #[methoddb::bind(name = "destroy_deferred")]
-    pub fn api_world_destroy_deferred(&mut self, entity: u64) {
-        self.server_mut().world.destroy_deferred(entity);
-    }
-
-    #[methoddb::bind(name = "component_register")]
-    pub fn api_world_component_register(&mut self, desc: &ComponentRegisterDesc) -> u64 {
-        crate::engine_api::components::register_component_desc(self, desc)
-    }
-}
-
-#[methoddb::namespace(name = "v1:server", on_host, scope = ["server"])]
-impl crate::Host {
-    #[methoddb::bind(name = "set_enabled")]
-    pub fn api_set_server_enabled(&mut self, enabled: bool) {
-        self.set_server_enabled(enabled);
-    }
-
-    #[methoddb::bind(name = "activated")]
-    pub fn api_server_activated(&mut self) {
-        if self.server_engine.is_some() {
-            self.loopback
-                .post_host_command(deerpunk_engine_common::network::HostCommand::InprocessConnect);
-        } else {
-            self.on_server_activated();
-        }
-    }
-
-    #[methoddb::bind(name = "is_enabled")]
-    pub fn api_server_is_enabled(&self) -> i32 {
-        #[cfg(any(feature = "client", feature = "full"))]
-        if self.server_engine.is_none() {
-            return if self
-                .server_thread
-                .as_ref()
-                .map(|s| s.is_enabled())
-                .unwrap_or(false)
-            {
-                1
-            } else {
-                0
-            };
-        }
-        if self.server().enabled {
-            1
-        } else {
-            0
-        }
-    }
-
-    /// Monotonic simulation time (seconds) while the server is enabled.
-    #[methoddb::bind(name = "sim_time_secs")]
-    pub fn api_server_sim_time_secs(&self) -> f32 {
-        self.server().sim_time_secs as f32
-    }
-}
-
-#[methoddb::namespace(name = "v1:schedule", on_host, scope = ["server", "client"])]
-impl crate::Host {
-    #[methoddb::bind(name = "add_system")]
-    pub fn api_schedule_add_system(&mut self, system_fn: ScheduleSystemFn, user_data: *mut c_void) {
-        self.gamelib_schedule.add_named(
-            "gamelib",
-            crate::schedule::CallbackSystem::new(system_fn, user_data),
-        );
-    }
-
-    #[methoddb::bind(name = "clear")]
-    pub fn api_schedule_clear(&mut self) {
-        self.gamelib_schedule.clear();
-    }
-
-    #[methoddb::bind(name = "run")]
-    pub fn api_schedule_run(&mut self, delta_time: f32) {
-        self.gamelib_schedule.run(delta_time);
     }
 }
 
@@ -1102,105 +848,6 @@ impl crate::Host {
         0
     }
 }
-
-#[methoddb::namespace(name = "v1:physics", on_host, scope = ["server", "client"])]
-impl crate::Host {
-    /// Rapier segment trace — returns hit entity + fraction/normal/point.
-    #[methoddb::bind(name = "trace_line")]
-    pub fn api_physics_trace_line(
-        &mut self,
-        ox: f32,
-        oy: f32,
-        oz: f32,
-        ex: f32,
-        ey: f32,
-        ez: f32,
-        exclude_entity: u64,
-        out: &mut PhysicsTraceResult,
-    ) -> i32 {
-        self.physics_trace_line(ox, oy, oz, ex, ey, ez, exclude_entity, out)
-    }
-
-    #[methoddb::bind(name = "create_shape")]
-    pub fn api_physics_create_shape(&mut self, abi: &[u8]) -> u32 {
-        if abi.is_empty() {
-            return 0;
-        }
-        self.server_mut().physics.create_shape(abi)
-    }
-
-    #[methoddb::bind(name = "destroy_shape")]
-    pub fn api_physics_destroy_shape(&mut self, handle: u32) -> i32 {
-        self.server_mut().physics.destroy_shape(handle);
-        0
-    }
-
-    #[methoddb::bind(name = "create_parts")]
-    pub fn api_physics_create_parts(
-        &mut self,
-        parts_ptr: *const ColliderPart,
-        count: usize,
-    ) -> u32 {
-        if parts_ptr.is_null() || count == 0 {
-            return 0;
-        }
-        let parts = unsafe { std::slice::from_raw_parts(parts_ptr, count) };
-        self.server_mut().physics.create_parts(parts)
-    }
-
-    #[methoddb::bind(name = "destroy_parts")]
-    pub fn api_physics_destroy_parts(&mut self, handle: u32) -> i32 {
-        self.server_mut().physics.destroy_parts(handle);
-        0
-    }
-
-    #[methoddb::bind(name = "set_body_linvel")]
-    pub fn api_physics_set_body_linvel(&mut self, entity: u64, vx: f32, vy: f32, vz: f32) -> i32 {
-        self.server_mut()
-            .physics
-            .set_body_linvel(entity, [vx, vy, vz]);
-        0
-    }
-
-    #[methoddb::bind(name = "cast_capsule")]
-    pub fn api_physics_cast_capsule(
-        &mut self,
-        center: *const f32,
-        half_height: f32,
-        radius: f32,
-        dir: *const f32,
-        max_dist: f32,
-        exclude_entity: u64,
-        out: &mut CapsuleCastHitOut,
-    ) -> i32 {
-        if center.is_null() || dir.is_null() {
-            return -1;
-        }
-        let center = unsafe { [*center, *center.add(1), *center.add(2)] };
-        let dir = unsafe { [*dir, *dir.add(1), *dir.add(2)] };
-        *out = CapsuleCastHitOut::default();
-        match self.server_mut().physics.cast_capsule(
-            center,
-            half_height,
-            radius,
-            dir,
-            max_dist,
-            exclude_entity,
-        ) {
-            Some(hit) => {
-                out.hit = 1;
-                out.start_solid = u32::from(hit.start_solid);
-                out.toi = hit.toi;
-                out.normal = hit.normal;
-                out.point = hit.point;
-                out.entity = hit.entity;
-                1
-            }
-            None => 0,
-        }
-    }
-}
-
 #[cfg(any(feature = "client", feature = "full"))]
 #[methoddb::namespace(name = "v1:input", on_host, scope = ["server", "client"])]
 impl crate::Host {
@@ -1276,22 +923,21 @@ impl crate::Host {
 
 #[methoddb::namespace(name = "v1:host", on_host, scope = ["server"])]
 impl crate::Host {
-    /// Queue a main-thread console proxy that forwards to this server thread's [`CmdSystem`].
+    /// Kept for gamelib ABI compatibility. There is no second Host/server
+    /// thread anymore: gamelib commands register directly on the shared
+    /// [`CmdSystem`], so a main-console proxy is unnecessary.
     #[methoddb::bind(name = "register_main_console")]
     pub fn api_host_register_main_console(&mut self, name: &str) -> i32 {
-        if name.trim().is_empty() {
-            return -1;
-        }
-        crate::main_cmd_proxy::enqueue_main_console_proxy(name);
+        let _ = name;
         0
     }
 }
 
 #[methoddb::namespace(name = "v1:host", on_host, scope = ["client"])]
 impl crate::Host {
-    /// Main thread: start / switch listen-server world (payload → server thread).
+    /// Start / switch the listen-server world (direct call on this host).
     #[methoddb::bind(name = "start_listen_map")]
-    pub fn api_host_start_listen_map(&self, world: &str, seed: i32) -> i32 {
+    pub fn api_host_start_listen_map(&mut self, world: &str, seed: i32) -> i32 {
         self.request_listen_map(world, seed as i64)
     }
 }
@@ -1496,17 +1142,9 @@ impl crate::Host {
         z: f32,
         volume_u8: u32,
     ) -> u32 {
+        // No server rep on the main host; the sim-thread facade fills net ids.
         let id = self.alloc_sound_id();
-        let net_id = {
-            #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-            {
-                self.server().rep.net_id_of(entity).unwrap_or(0)
-            }
-            #[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-            {
-                0u16
-            }
-        };
+        let net_id = 0u16;
         audio_queue_play(
             self,
             SoundPlayRpc::play_loop(id, event, [x, y, z], volume_u8 as f32 / 255.0, net_id),
@@ -1541,131 +1179,6 @@ impl crate::Host {
         }
     }
 }
-
-#[methoddb::namespace(name = "v1:world", on_host, scope = ["server", "client"])]
-impl crate::Host {
-    #[methoddb::bind(name = "query")]
-    pub fn api_world_query(
-        &mut self,
-        require: &[u64],
-        exclude: &[u64],
-        out: *mut u64,
-        max: usize,
-    ) -> usize {
-        let _ = exclude;
-        let qid = self.server_mut().world.query_prepare_ids(require);
-        let mut ids = Vec::new();
-        if let Some(batches) = self.server_mut().world.query_batches(qid) {
-            for batch in batches {
-                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                ids.extend_from_slice(entities);
-            }
-        }
-        self.server_mut().world.query_release(qid);
-        let mut written = 0usize;
-        for &e in &ids {
-            if written >= max || out.is_null() {
-                break;
-            }
-            unsafe {
-                *out.add(written) = e;
-            }
-            written += 1;
-        }
-        written
-    }
-
-    #[methoddb::bind(name = "query_count")]
-    pub fn api_world_query_count(&mut self, require: &[u64], exclude: &[u64]) -> usize {
-        let _ = exclude;
-        let qid = self.server_mut().world.query_prepare_ids(require);
-        let mut count = 0usize;
-        if let Some(batches) = self.server_mut().world.query_batches(qid) {
-            for batch in batches {
-                count += batch.count;
-            }
-        }
-        self.server_mut().world.query_release(qid);
-        count
-    }
-
-    #[methoddb::bind(name = "query_matches")]
-    pub fn api_world_query_matches(&self, entity: u64, require: &[u64], exclude: &[u64]) -> bool {
-        for &c in require {
-            if !self.server().world.has(entity, c) {
-                return false;
-            }
-        }
-        for &c in exclude {
-            if self.server().world.has(entity, c) {
-                return false;
-            }
-        }
-        true
-    }
-
-    #[methoddb::bind(name = "query_prepare")]
-    pub fn api_world_query_prepare(&mut self, expr: &str) -> u32 {
-        self.server_mut().world.query_prepare(expr) as u32
-    }
-
-    #[methoddb::bind(name = "query_execute")]
-    pub fn api_world_query_execute(
-        &mut self,
-        query_id: u32,
-        callback: crate::gamelib_abi::WorldQueryCallback,
-        ctx: *mut c_void,
-    ) {
-        let qid = query_id as usize;
-        if let Some(batches) = self.server_mut().world.query_batches(qid) {
-            for batch in batches {
-                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
-                let field_count = batch.columns.len();
-                for (i, &entity) in entities.iter().enumerate() {
-                    let fields: Vec<*const c_void> = (0..field_count)
-                        .map(|f| unsafe { batch.columns[f].add(i * batch.sizes[f]) })
-                        .collect();
-                    callback(entity, fields.as_ptr(), field_count, ctx);
-                }
-            }
-        }
-    }
-
-    #[methoddb::bind(name = "system_register")]
-    pub fn api_world_system_register(
-        &mut self,
-        name: &str,
-        query: &str,
-        run: WorldProgressSystemFn,
-        user_data: *mut c_void,
-        interval_secs: f32,
-    ) -> u64 {
-        crate::gamelib_system::register_progress_system(
-            &self.server_mut().world,
-            name,
-            query,
-            run,
-            user_data,
-            interval_secs,
-        )
-    }
-
-    #[methoddb::bind(name = "system_set_stage")]
-    pub fn api_world_system_set_stage(&mut self, system_id: u64, stage: &str) -> i32 {
-        crate::gamelib_system::set_system_stage(&self.server_mut().world, system_id, stage)
-    }
-
-    #[methoddb::bind(name = "system_set_interval")]
-    pub fn api_world_system_set_interval(&mut self, system_id: u64, interval_secs: f32) -> i32 {
-        crate::gamelib_system::set_progress_system_interval(
-            &self.server_mut().world,
-            system_id,
-            interval_secs,
-        );
-        0
-    }
-}
-
 #[cfg(any(feature = "client", feature = "full"))]
 #[methoddb::namespace(name = "v1:client_world", on_host, scope = ["server", "client"])]
 impl crate::Host {
@@ -1929,35 +1442,6 @@ impl crate::Host {
         payload_json: &str,
     ) -> u32 {
         self.spawn_particles_burst(effect, [x, y, z], [vx, vy, vz], payload_json)
-    }
-
-    /// Emit a particle burst from the **server** to all play-phase clients
-    /// (svc `emit_particles`). Same payload JSON convention as `spawn_burst`.
-    #[methoddb::bind(name = "emit")]
-    pub fn api_particles_emit(
-        &mut self,
-        effect: &str,
-        x: f32,
-        y: f32,
-        z: f32,
-        vx: f32,
-        vy: f32,
-        vz: f32,
-        payload_json: &str,
-    ) -> u32 {
-        let payload: deerpunk_engine_particles::SpawnPayload = if payload_json.trim().is_empty() {
-            Default::default()
-        } else {
-            match serde_json::from_str(payload_json) {
-                Ok(p) => p,
-                Err(e) => {
-                    log::error!("[particles] emit '{effect}': bad payload json: {e}");
-                    return 0;
-                }
-            }
-        };
-        self.particles_emit(effect, [x, y, z], [vx, vy, vz], &payload);
-        1
     }
 
     /// Register the world raycast hook used by `collide_world` affectors.
@@ -2380,5 +1864,263 @@ impl crate::Host {
         } else {
             0
         }
+    }
+}
+
+// ── Main-host stubs for server-thread binds ──────────────────
+//
+// The sim thread owns the server world/engine now (`ServerThreadCtx`, ctx =
+// "server" tramps). These host-side entries keep the client DLL's resolver
+// table complete (EngineApi::new resolves every name); bodies mirror the old
+// main-host behavior (no server engine → neutral/error returns).
+
+#[methoddb::namespace(name = "v1:world", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    #[methoddb::bind(name = "spawn")]
+    pub fn api_world_spawn(&mut self) -> u64 {
+        log::warn!("[world] spawn on main host (server world is on the sim thread)");
+        0
+    }
+
+    #[methoddb::bind(name = "has")]
+    pub fn api_world_has(&self, _entity: u64, _comp: u64) -> bool {
+        false
+    }
+
+    #[methoddb::bind(name = "remove")]
+    pub fn api_world_remove(&mut self, _entity: u64, _comp: u64) {}
+
+    #[methoddb::bind(name = "get")]
+    pub fn api_world_get(&mut self, _entity: u64, _comp: u64) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[methoddb::bind(name = "set")]
+    pub fn api_world_set(&mut self, _entity: u64, _comp: u64, _data: *const c_void, _size: usize) {
+        log::warn!("[world] set on main host (server world is on the sim thread)");
+    }
+
+    #[methoddb::bind(name = "clear")]
+    pub fn api_world_clear(&mut self) {}
+
+    #[methoddb::bind(name = "free_value")]
+    pub fn api_world_free_value(&mut self, _ptr: *mut c_void) {}
+
+    #[methoddb::bind(name = "spawn_prefab")]
+    pub fn api_world_spawn_prefab(
+        &mut self,
+        _name: &str,
+        _opts: &deerpunk_engine_api::spawn_prefab::SpawnPrefabOpts,
+    ) -> u64 {
+        0
+    }
+
+    #[methoddb::bind(name = "spawn_bundle")]
+    pub fn api_world_spawn_bundle(
+        &mut self,
+        _comp_ids: *const u64,
+        _comp_data: *const *mut c_void,
+        _count: usize,
+    ) -> u64 {
+        0
+    }
+}
+
+#[methoddb::namespace(name = "v1:world", on_host, scope = ["server"])]
+impl crate::Host {
+    #[methoddb::bind(name = "destroy")]
+    pub fn api_world_destroy(&mut self, _entity: u64) {}
+
+    #[methoddb::bind(name = "destroy_deferred")]
+    pub fn api_world_destroy_deferred(&mut self, _entity: u64) {}
+
+    #[methoddb::bind(name = "component_register")]
+    pub fn api_world_component_register(&mut self, _desc: &ComponentRegisterDesc) -> u64 {
+        log::warn!("[world] component_register on main host (server world is on the sim thread)");
+        0
+    }
+}
+
+#[methoddb::namespace(name = "v1:world", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    #[methoddb::bind(name = "query")]
+    pub fn api_world_query(
+        &mut self,
+        _require: &[u64],
+        _exclude: &[u64],
+        _out: *mut u64,
+        _max: usize,
+    ) -> usize {
+        0
+    }
+
+    #[methoddb::bind(name = "query_count")]
+    pub fn api_world_query_count(&mut self, _require: &[u64], _exclude: &[u64]) -> usize {
+        0
+    }
+
+    #[methoddb::bind(name = "query_matches")]
+    pub fn api_world_query_matches(&self, _entity: u64, _require: &[u64], _exclude: &[u64]) -> bool {
+        false
+    }
+
+    #[methoddb::bind(name = "query_prepare")]
+    pub fn api_world_query_prepare(&mut self, _expr: &str) -> u32 {
+        0
+    }
+
+    #[methoddb::bind(name = "query_execute")]
+    pub fn api_world_query_execute(
+        &mut self,
+        _query_id: u32,
+        _callback: crate::gamelib_abi::WorldQueryCallback,
+        _ctx: *mut c_void,
+    ) {
+    }
+
+    #[methoddb::bind(name = "system_register")]
+    pub fn api_world_system_register(
+        &mut self,
+        _name: &str,
+        _query: &str,
+        _run: crate::gamelib_abi::WorldProgressSystemFn,
+        _user_data: *mut c_void,
+        _interval_secs: f32,
+    ) -> u64 {
+        0
+    }
+
+    #[methoddb::bind(name = "system_set_stage")]
+    pub fn api_world_system_set_stage(&mut self, _system_id: u64, _stage: &str) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "system_set_interval")]
+    pub fn api_world_system_set_interval(&mut self, _system_id: u64, _interval_secs: f32) -> i32 {
+        0
+    }
+}
+
+#[methoddb::namespace(name = "v1:server", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    /// Server enable/disable runs on the sim thread; main host reflects it via
+    /// the console channel (`v1:server:set_enabled` is a server-ctx bind).
+    #[methoddb::bind(name = "set_enabled")]
+    pub fn api_set_server_enabled(&mut self, _enabled: bool) {}
+
+    #[methoddb::bind(name = "activated")]
+    pub fn api_server_activated(&mut self) {
+        self.on_server_activated();
+    }
+
+    /// Mirrored sim-thread engine state (no engine on the main host anymore).
+    #[methoddb::bind(name = "is_enabled")]
+    pub fn api_server_is_enabled(&self) -> i32 {
+        if self.listen_server_enabled() {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[methoddb::bind(name = "sim_time_secs")]
+    pub fn api_server_sim_time_secs(&self) -> f32 {
+        0.0
+    }
+}
+
+#[methoddb::namespace(name = "v1:physics", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    #[methoddb::bind(name = "trace_line")]
+    pub fn api_physics_trace_line(
+        &mut self,
+        _ox: f32,
+        _oy: f32,
+        _oz: f32,
+        _ex: f32,
+        _ey: f32,
+        _ez: f32,
+        _exclude_entity: u64,
+        _out: &mut PhysicsTraceResult,
+    ) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "create_shape")]
+    pub fn api_physics_create_shape(&mut self, _abi: &[u8]) -> u32 {
+        0
+    }
+
+    #[methoddb::bind(name = "destroy_shape")]
+    pub fn api_physics_destroy_shape(&mut self, _handle: u32) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "create_parts")]
+    pub fn api_physics_create_parts(&mut self, _parts: *const ColliderPart, _count: usize) -> u32 {
+        0
+    }
+
+    #[methoddb::bind(name = "destroy_parts")]
+    pub fn api_physics_destroy_parts(&mut self, _handle: u32) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "set_body_linvel")]
+    pub fn api_physics_set_body_linvel(&mut self, _entity: u64, _vx: f32, _vy: f32, _vz: f32) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "cast_capsule")]
+    pub fn api_physics_cast_capsule(
+        &mut self,
+        _center: *const f32,
+        _half_height: f32,
+        _radius: f32,
+        _dir: *const f32,
+        _max_dist: f32,
+        _exclude_entity: u64,
+        _out: &mut CapsuleCastHitOut,
+    ) -> i32 {
+        -1
+    }
+}
+
+#[methoddb::namespace(name = "v1:schedule", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    #[methoddb::bind(name = "add_system")]
+    pub fn api_schedule_add_system(&mut self, _system_fn: ScheduleSystemFn, _user_data: *mut c_void) {}
+
+    #[methoddb::bind(name = "clear")]
+    pub fn api_schedule_clear(&mut self) {}
+
+    #[methoddb::bind(name = "run")]
+    pub fn api_schedule_run(&mut self, _delta_time: f32) {}
+}
+
+#[methoddb::namespace(name = "v1:players", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    #[methoddb::bind(name = "set_entity")]
+    pub fn api_players_set_entity(&mut self, _slot: u32, _entity: u64) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "get_usercmd")]
+    pub fn api_players_get_usercmd(&self, _slot: u32, _out: *mut u8, _out_len: usize) -> i32 {
+        -1
+    }
+}
+
+#[methoddb::namespace(name = "v1:net", on_host, scope = ["server", "client"])]
+impl crate::Host {
+    /// Old main-host behavior: no server engine on this host → -1.
+    #[methoddb::bind(name = "pop_client_command")]
+    pub fn api_net_pop_client_command(
+        &mut self,
+        _out_slot: *mut f32,
+        _out_buf: *mut u8,
+        _out_buf_len: usize,
+    ) -> i32 {
+        -1
     }
 }

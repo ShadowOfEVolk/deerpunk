@@ -205,27 +205,8 @@ impl ParticlesEmitRpc {
     }
 }
 
-impl Host {
-    /// Emit a particle burst on every play-phase client (server authority).
-    /// The client spawns it locally through the engine effect catalog.
-    /// Delivery is a broadcast — the net layer has no per-client PVS yet.
-    // TODO(pvs): filter by per-client interest once replication exposes it.
-    pub fn particles_emit(
-        &mut self,
-        effect: &str,
-        pos: [f32; 3],
-        vel: [f32; 3],
-        payload: &SpawnPayload,
-    ) {
-        let rpc = ParticlesEmitRpc {
-            effect: effect.to_string(),
-            pos,
-            vel,
-            payload: payload.clone(),
-        };
-        self.deliver_s2c_broadcast(&[rpc.to_packet()]);
-    }
-}
+// `particles_emit` moved to `ServerThreadCtx` (deliver_s2c_broadcast with
+// UDP happens on the sim thread).
 
 /// Deferred `sv_particles_test` emits (console runs before the server tick).
 static PENDING_SV_EMIT: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
@@ -266,14 +247,14 @@ pub fn register_commands(cmd: &mut CmdSystem) {
 }
 
 /// Server tick: flush deferred `sv_particles_test` emits through the svc path.
-pub fn drain_pending_sv_emits(host: &mut Host) {
+pub fn drain_pending_sv_emits(ctx: &mut crate::server_ctx::ServerThreadCtx) {
     let pending = std::mem::take(&mut *PENDING_SV_EMIT.lock().unwrap());
     for (effect, count) in pending {
         let payload = SpawnPayload {
             count: (count > 0).then_some(count),
             ..SpawnPayload::default()
         };
-        host.particles_emit(&effect, [0.0, 2.0, 0.0], [0.0, 0.0, 0.0], &payload);
+        ctx.particles_emit(&effect, [0.0, 2.0, 0.0], [0.0, 0.0, 0.0], &payload);
     }
 }
 

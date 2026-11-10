@@ -21,7 +21,6 @@ mod engine_methoddb;
 pub mod fs;
 pub mod gameinfo;
 pub mod inspector;
-mod main_cmd_proxy;
 mod mesh_components;
 mod mesh_upload;
 pub mod move_state;
@@ -31,6 +30,7 @@ mod particles_net;
 mod particles_spawn;
 mod physics_trace;
 pub mod schedule;
+mod server_ctx;
 mod server_thread;
 mod spawn_prefab;
 pub mod stdin_cmd;
@@ -79,6 +79,7 @@ pub mod user_messages;
 pub use deerpunk_engine_common::network::{HostCommand, NetLoopback};
 pub use deerpunk_engine_ffi::ResolverFn;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(any(feature = "client", feature = "full"))]
 pub mod entity_debug {
@@ -131,45 +132,51 @@ extern "C" fn host_frame_ui_trampoline(ctx: *mut std::ffi::c_void) {
 
 // ── Host ─────────────────────────────────────────────────────
 //
-// Foundation: cvar/cmd/fs/resources/mesh_registry/inspector/time.
-// Server:     [`ServerEngine`] — sim + session (players, DLL, rep, LAN host).
+// Foundation: cvar/cmd/fs/resources/mesh_registry/inspector/time — all on
+//             this main-thread instance (there is NO second Host).
+// Server:     [`ServerEngine`] lives on the sim thread behind the
+//             [`server_ctx::ServerThreadCtx`] facade (Arcs + channels only);
+//             reached from here via [`Self::server_thread`] commands and the
+//             enabled mirror.
 // Client:     [`client_engine`] — render/input + session (DLL, console, rep, demo).
-// Glue:       `loopback` (in-process CLC/SVC), `net` (UDP net socket + renet), `um`.
+// Glue:       `loopback` (in-process CLC/SVC queues), `net` (UDP net socket + renet), `um`.
 
 pub struct Host {
-    /// Present only on the dedicated server thread (`Host::new_server_instance`).
-    pub server_engine: Option<ServerEngine>,
+    /// The ONE Host lives on the main thread; the server simulation
+    /// ([`ServerEngine`]) runs on the sim thread through the
+    /// [`server_ctx::ServerThreadCtx`] facade. No second Host exists.
     #[cfg(any(feature = "client", feature = "full"))]
     pub client_engine: Option<ClientEngine>,
-    /// Shared listen-server wire queues (thread-safe).
+    /// Shared listen-server wire queues (in-memory transport).
     pub loopback: Arc<NetLoopback>,
-    #[cfg(any(feature = "client", feature = "full"))]
+    /// Simulation thread handle (owns the server engine via the facade).
     pub(crate) server_thread: Option<server_thread::ServerThread>,
-    /// Shared with the listen-server simulation thread ([`Arc`] — table is internally locked).
+    /// Internally locked table, shared by value clones (main + sim thread).
     pub cvar: Arc<cvar::CvarSystem>,
     pub cmd: cmd::CmdSystem,
     pub fs: fs::FileSystem,
     pub gameinfo: gameinfo::GameInfo,
     pub resources: deerpunk_engine_common::resource::ResourceManager,
-    /// Shared mesh handles for server spawn + client draw (not «client-only»).
+    /// Shared mesh handles for client draw (server spawn uses the facade's).
     pub mesh_registry: deerpunk_engine_common::resource::MeshRegistry,
     /// Name → id map for custom mesh allocators registered via
     /// `v1:mesh:register_allocator`. Id `0` is reserved for the built-in
     /// slab allocator and is never stored here.
     pub mesh_allocator_names: std::collections::HashMap<String, u32>,
+    /// Main-side user-message registry (client hooks; ids match the sim
+    /// thread's registry by registration order).
     pub um: user_messages::UserMessageRegistry,
     pub inspector: inspector::Inspector,
-    /// Client-world entity data handed to the server-thread inspector.
-    client_inspector_share: Option<Arc<inspector::ClientInspectShare>>,
     /// Gamelib / host load UI (`v1:host:loader_queue_set`).
     pub loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue,
     pub(crate) time_secs: f32,
-    /// Sound ids when [`server_engine`] is absent (client-only host).
+    /// Sound ids when no server engine is reachable (client-only host).
     next_client_sound_id: u32,
-    /// Listen-server: main reads this after [`apply_set_server_enabled`] on the sim thread.
-    listen_enabled_sink: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// Gamelib systems from `v1:schedule:add_system` (server thread only).
-    pub(crate) gamelib_schedule: Schedule,
+    /// Mirrored `enabled` state of the sim-thread engine (written by the
+    /// facade each tick; read from the main thread without crossing over).
+    server_enabled_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Server-world inspector snapshots (published by the sim thread).
+    server_inspector_share: Arc<inspector::ServerInspectShare>,
 }
 
 #[cfg(any(feature = "client", feature = "full"))]
@@ -212,9 +219,7 @@ impl Host {
     }
 
     fn disconnect_all_net(&mut self) {
-        if self.server_engine.is_some() {
-            self.server_mut().network.disconnect();
-        } else if let Some(st) = &self.server_thread {
+        if let Some(st) = &self.server_thread {
             st.send(server_thread::ServerThreadCmd::SetEnabled(false));
         }
         #[cfg(any(feature = "client", feature = "full"))]
@@ -244,11 +249,9 @@ impl Host {
         let client_engine = Some(ClientEngine::new(&resources));
         let loopback = Arc::new(NetLoopback::new());
         Self {
-            server_engine: None,
             #[cfg(any(feature = "client", feature = "full"))]
             client_engine,
             loopback,
-            #[cfg(any(feature = "client", feature = "full"))]
             server_thread: None,
             cvar: Arc::new(cvar::CvarSystem::new()),
             cmd: cmd::CmdSystem::new(),
@@ -259,149 +262,43 @@ impl Host {
             mesh_allocator_names: std::collections::HashMap::new(),
             um: user_messages::UserMessageRegistry::default(),
             inspector: inspector::Inspector::new(),
-            client_inspector_share: None,
             loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue::default(),
             time_secs: 0.0,
             next_client_sound_id: 1,
-            listen_enabled_sink: None,
-            gamelib_schedule: Schedule::new(),
+            server_enabled_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            server_inspector_share: Arc::new(inspector::ServerInspectShare::new()),
         }
     }
 
-    pub(crate) fn set_listen_enabled_sink(&mut self, sink: Arc<std::sync::atomic::AtomicBool>) {
-        self.listen_enabled_sink = Some(sink);
-    }
-
-    /// Simulation thread [`Host`] only (listen-client main thread has `server_engine == None`).
-    #[inline]
-    #[track_caller]
-    pub(crate) fn server_mut(&mut self) -> &mut ServerEngine {
-        self.server_engine
-            .as_mut()
-            .expect("server_engine only on server thread Host")
-    }
-
-    #[inline]
-    #[track_caller]
-    pub(crate) fn server(&self) -> &ServerEngine {
-        self.server_engine
-            .as_ref()
-            .expect("server_engine only on server thread Host")
-    }
-
-    #[cfg(any(feature = "client", feature = "full"))]
-    fn listen_server_listening(&self) -> bool {
-        self.server_engine
-            .as_ref()
-            .map(|e| e.network.is_listening())
-            .unwrap_or_else(|| self.listen_server_enabled())
-    }
-
-    /// Server-thread `Host` (no client, full server sim).
-    pub(crate) fn new_server_instance(
-        loopback: Arc<NetLoopback>,
-        gamedir: std::path::PathBuf,
-        shared_cvar: Arc<cvar::CvarSystem>,
-    ) -> Self {
-        let mut resources = deerpunk_engine_common::resource::ResourceManager::new();
-        let shader_root = std::env::var("SHADER_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::path::PathBuf::from("shaders"));
-        resources.register_loader(Box::new(deerpunk_engine_common::resource::FileLoader {
-            root: shader_root.clone(),
-        }));
-        resources.register_loader(Box::new(deerpunk_engine_common::resource::TexgenLoader));
-        resources.register_loader(Box::new(deerpunk_engine_common::resource::ShaderLoader {
-            root: shader_root,
-        }));
-        #[cfg(any(feature = "tracy", feature = "puffin"))]
-        deerpunk_engine_renderer::profile_ensure_started();
-        Self {
-            server_engine: Some(ServerEngine::new()),
-            #[cfg(any(feature = "client", feature = "full"))]
-            client_engine: None,
-            loopback,
-            #[cfg(any(feature = "client", feature = "full"))]
-            server_thread: None,
-            cvar: shared_cvar,
-            cmd: cmd::CmdSystem::new(),
-            fs: fs::FileSystem::new(),
-            gameinfo: gameinfo::GameInfo::from_gamedir(&gamedir),
-            resources,
-            mesh_registry: deerpunk_engine_common::resource::MeshRegistry::new(),
-            mesh_allocator_names: std::collections::HashMap::new(),
-            um: user_messages::UserMessageRegistry::default(),
-            inspector: inspector::Inspector::new(),
-            client_inspector_share: None,
-            loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue::default(),
-            time_secs: 0.0,
-            next_client_sound_id: 1,
-            listen_enabled_sink: None,
-            gamelib_schedule: Schedule::new(),
-        }
-    }
-
-    #[cfg(any(feature = "client", feature = "full"))]
+    /// Mirrored sim-thread `engine.enabled` (written by the facade each tick;
+    /// the main thread reads it without touching the engine).
     fn listen_server_enabled(&self) -> bool {
-        self.server_thread
-            .as_ref()
-            .map(|s| s.is_enabled())
-            .unwrap_or(false)
+        self.server_enabled_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub(crate) fn server_initialize(&mut self, gamedir: &std::path::Path) {
-        self.rebind_cmd_refs();
-        self.fs.initialize();
-        self.fs.set_gamedir(gamedir);
-        deerpunk_engine_common::resource::register_default_loaders(&self.resources, &gamedir);
-        self.cvar.ensure_initialized();
-        self.cmd.initialize();
-        binds::Binds::register_commands(&mut self.cmd);
-        move_state::register_commands(&mut self.cmd);
-        net_console::register_commands(&mut self.cmd);
-        crate::particles_net::register_commands(&mut self.cmd);
-        self.register_internal_components();
-        if let Err(e) = self.server_mut().initialize(gamedir) {
-            log::error!("[host] server_engine.initialize: {e}");
+    /// Forward the gamelib path to the sim thread (load + `init` happen there,
+    /// against the facade ctx). Configs + inspector start on this thread once
+    /// [`ServerToMain::ServerDllStarted`] arrives.
+    pub fn load_server_dll(&mut self, path: &str) {
+        #[cfg(any(feature = "client", feature = "full"))]
+        if let Some(st) = &self.server_thread {
+            st.load_dll(path.to_string());
+            return;
         }
-        self.inspector
-            .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
-                id: "assets".into(),
-                label: "Assets".into(),
-                group: deerpunk_inspector_protocol::CollectionGroup::Runtime,
-                modes: vec![
-                    deerpunk_inspector_protocol::CollectionMode::List,
-                    deerpunk_inspector_protocol::CollectionMode::Get,
-                ],
-                id_field: "index".into(),
-                nested_in: None,
-            });
+        let _ = path;
+        log::error!("[host] load_server_dll: no server thread");
     }
 
-    pub(crate) fn load_server_dll_on_thread(&mut self, path: &str) {
-        let ctx_ptr = self as *mut Host as *mut u8;
-        let db = self.method_db();
-        let resolver = db.into_resolver();
-        match ServerDll::load(path) {
-            Ok(server) => {
-                unsafe {
-                    server.init(ctx_ptr, resolver);
-                }
-                self.server_mut().dll = Some(server);
-                log::info!("server DLL loaded (server thread): {}", path);
-            }
-            Err(e) => {
-                log::error!("server DLL load failed: {e}");
-            }
-        }
-    }
-
+    /// Main-thread half of the server gamelib startup: exec `{gamename}.rc`
+    /// and start the inspector WS (after `server_init` registered cvars/ums).
     pub(crate) fn finish_server_dll_startup(&mut self) {
         self.exec_game_rc();
         self.start_inspector();
     }
 
-    /// Main-thread listen host: queue world load on the simulation thread (not `ExecCmd map`).
+    /// Listen host: queue a world load on the sim thread (thread defers it
+    /// until the gamelib is loaded).
     pub(crate) fn request_listen_map(&self, world: &str, seed: i64) -> i32 {
         let world = world.trim();
         if world.is_empty() {
@@ -426,90 +323,22 @@ impl Host {
         0
     }
 
-    pub(crate) fn apply_gamelib_start_map(&mut self, world: &str, seed: i64) {
-        let Some(dll) = self.server_mut().dll.as_ref() else {
-            log::error!("[host] StartMap '{world}': server DLL not loaded");
-            return;
-        };
-        unsafe {
-            dll.start_map(world, seed);
-        }
-    }
-
-    pub(crate) fn server_thread_tick(
-        &mut self,
-        dt: f32,
-        enabled_flag: &std::sync::atomic::AtomicBool,
-    ) {
-        self.drain_loopback_client_packets();
-        self.tick_net_server(dt);
-        let on = self.server().enabled;
-        enabled_flag.store(on, std::sync::atomic::Ordering::Relaxed);
-        // Inspector serves connections even with the world off (main menu);
-        // poll_server_inspector handles the no-world case with ctx=None.
-        self.poll_server_inspector();
-        if !on {
-            return;
-        }
-        self.server_mut().sim_time_secs += dt as f64;
-        let skin = self.cvar.get_f32_or("ph_capsule_skin", 0.5);
-        self.server_mut().physics.set_capsule_skin(skin);
-        if let Some(ref dll) = self.server_mut().dll {
-            unsafe {
-                dll.frame(dt);
-            }
-        }
-        {
-            let _g = system_profiler::scope("gamelib.schedule");
-            self.gamelib_schedule.run(dt);
-        }
-        let _ = self.server_mut().frame(dt);
-        let packets = self.server_mut().replication_packets();
-        if !packets.is_empty() {
-            self.deliver_s2c_broadcast(&packets);
-        }
-        self.deliver_usercmd_acks();
-        self.time_secs += dt;
-    }
-
+    /// Main-thread inspector poll: one poll serves the client world
+    /// synchronously and the server world via the sim-thread share.
     fn poll_server_inspector(&mut self) {
         if !self.inspector.is_running() {
             return;
         }
         let time_secs = self.time_secs;
         let resources = &self.resources;
-        // Poll even without a server engine (main menu): the inspector
-        // accepts connections there; world RPCs reply with an error until
-        // a map is loaded.
-        let ctx = self
-            .server_engine
-            .as_mut()
-            .map(|engine| inspector::InspectorRpcCtx {
-                world: &engine.world,
-                resources,
-                time_secs,
-                players: &engine.players,
-                server_net: &engine.network,
-                server_rep: &engine.rep,
-                #[cfg(any(feature = "client", feature = "full"))]
-                client_engine: None,
-            });
-        self.inspector.poll(ctx);
-    }
-
-    pub(crate) fn server_shutdown(&mut self) {
-        if let Some(engine) = self.server_engine.as_mut() {
-            if let Some(dll) = engine.dll.as_ref() {
-                unsafe {
-                    dll.shutdown();
-                }
-            }
-            engine.dll = None;
-            engine.set_enabled(false);
-        }
-        if let Some(mut eng) = self.server_engine.take() {
-            eng.shutdown();
-        }
+        let ctx = inspector::InspectorRpcCtx {
+            resources,
+            time_secs,
+            #[cfg(any(feature = "client", feature = "full"))]
+            client_engine: self.client_engine.as_ref(),
+            server: &self.server_inspector_share,
+        };
+        self.inspector.poll(Some(ctx));
     }
 
     /// CmdSystem holds raw pointers into Host fields — refresh after any move.
@@ -557,23 +386,6 @@ impl Host {
         // Configs + stuffcmds live in `{gamename}.rc`, exec'd after gamelibs.
         self.register_internal_components();
 
-        #[cfg(any(feature = "client", feature = "full"))]
-        {
-            let gamedir_path = gamedir.as_ref().to_path_buf();
-            // Client-world entity data for the server-thread inspector.
-            let client_share = Arc::new(inspector::ClientInspectShare::default());
-            self.client_inspector_share = Some(client_share.clone());
-            let server_thread = server_thread::ServerThread::spawn(
-                self.loopback.clone(),
-                gamedir_path,
-                self.cvar.clone(),
-                client_share,
-            );
-            main_cmd_proxy::attach(server_thread.cmd_sender().clone());
-            self.server_thread = Some(server_thread);
-            log::info!("[host] server simulation thread spawned");
-        }
-
         // UI runtime before gamelib so `v1:ui:*` works from server_init.
         #[cfg(any(feature = "client", feature = "full"))]
         {
@@ -599,6 +411,21 @@ impl Host {
             self.rebind_cmd_refs();
         }
 
+        // Sim thread owns the server engine behind the facade; this Host
+        // shares loopback/cvar and mirrors enabled state + inspector data.
+        #[cfg(any(feature = "client", feature = "full"))]
+        {
+            let server_thread = server_thread::ServerThread::spawn(
+                self.loopback.clone(),
+                gamedir.as_ref().to_path_buf(),
+                self.cvar.clone(),
+                self.server_enabled_flag.clone(),
+                self.server_inspector_share.clone(),
+            );
+            self.server_thread = Some(server_thread);
+            log::info!("[host] server simulation thread spawned");
+        }
+
         stdin_cmd::start();
 
         log::info!("Engine initialized");
@@ -606,10 +433,9 @@ impl Host {
 
     /// Start inspector WS using current cvars (after configs / stuffcmds).
     pub fn start_inspector(&mut self) {
-        // Runtime/definition descriptors must live on the Host that owns the
-        // listening inspector: on listen clients that is the server-thread
-        // Host (`finish_server_dll_startup`), not the main-thread Host that
-        // ran `initialize`, so register right before the bind.
+        // Runtime/definition descriptors must be registered on the Host that
+        // owns the listening inspector — this single Host — right before the
+        // bind (one registration pass; collection ids replace by id).
         self.inspector
             .register_collection(deerpunk_inspector_protocol::CollectionDescriptor {
                 id: "assets".into(),
@@ -696,26 +522,20 @@ impl Host {
             w.component_init::<Collider>();
             w.component_init::<ParticleEmitter>();
         };
-        if let Some(engine) = self.server_engine.as_ref() {
-            register(&engine.world);
-        }
+        // Server-world registration happens on the sim thread
+        // (`ServerThreadCtx::setup`); this registers the client world.
         #[cfg(any(feature = "client", feature = "full"))]
         if let Some(client) = self.client_engine.as_ref() {
             register(&client.world);
+        }
+        #[cfg(not(any(feature = "client", feature = "full")))]
+        {
+            let _ = &register;
         }
     }
 
     pub fn method_db(&self) -> engine_api::engine_api::MethodDB {
         engine_api::engine_api::MethodDB::new()
-    }
-
-    pub fn load_server_dll(&mut self, path: &str) {
-        #[cfg(any(feature = "client", feature = "full"))]
-        if let Some(st) = &self.server_thread {
-            st.load_dll(path.to_string());
-            return;
-        }
-        log::error!("[host] load_server_dll: no server thread");
     }
 
     /// Exec `{gamedir}/{gamename}.rc`. Fallback: configs + stuffcmds if missing.
@@ -806,20 +626,11 @@ impl Host {
     /// То же, что консольный `connect localhost`, без UDP (S2C/C2S = [`Channel`]).
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn connect_to_server_inprocess(&mut self) {
-        #[cfg(any(feature = "client", feature = "full"))]
         if self.client_engine.is_none() {
-            log::warn!("[net] connect inprocess: no client host (sim thread?)");
+            log::warn!("[net] connect inprocess: no client host");
             return;
         }
-        #[cfg(any(feature = "client", feature = "full"))]
-        let server_on = self
-            .server_engine
-            .as_ref()
-            .map(|e| e.enabled)
-            .unwrap_or_else(|| self.listen_server_enabled());
-        #[cfg(not(any(feature = "client", feature = "full")))]
-        let server_on = self.server().enabled;
-        if !server_on {
+        if !self.listen_server_enabled() {
             log::warn!("[net] connect inprocess: server not running");
             return;
         }
@@ -831,44 +642,11 @@ impl Host {
         deerpunk_ui::set_client_in_game(false);
         self.flush_client_scene();
         let name = self.gameinfo.window_title().to_string();
+        log::info!("[net] connect inprocess (server thread)");
         if let Some(st) = &self.server_thread {
-            log::info!("[net] connect inprocess (server thread)");
             st.send(server_thread::ServerThreadCmd::ConnectLocal(name));
-        } else {
-            self.connect_local_client();
-            let slot = self.server_mut().players.local_slot().unwrap_or(0);
-            log::info!("[net] connect inprocess slot={slot} (channel)");
-            self.finish_client_join(&[slot]);
         }
         self.drain_loopback_from_server();
-    }
-
-    /// `player_connected` + catchup + join init (UDP remote или in-process).
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    fn finish_client_join(&mut self, slots: &[u32]) {
-        if slots.is_empty() {
-            return;
-        }
-        if self.server_engine.is_none() {
-            log::error!("[net] finish_client_join on client-only host");
-            return;
-        }
-        if !self.server().enabled {
-            return;
-        }
-        for &slot in slots {
-            if let Some(ref dll) = self.server_mut().dll {
-                unsafe {
-                    dll.player_connected(slot);
-                }
-            }
-        }
-        for &slot in slots {
-            self.send_join_init(slot);
-        }
-        let engine = self.server_mut();
-        let catchup = engine.rep.tick(&mut engine.world);
-        self.deliver_s2c_broadcast(&catchup);
     }
 
     pub fn set_server_enabled(&mut self, on: bool) {
@@ -889,173 +667,27 @@ impl Host {
             }
             if let Some(st) = &self.server_thread {
                 st.send(server_thread::ServerThreadCmd::SetEnabled(on));
-                return;
-            }
-        }
-        if self.server_engine.is_some() {
-            self.apply_set_server_enabled(on);
-        }
-    }
-
-    /// Server-thread only (listen / dedicated).
-    pub(crate) fn apply_set_server_enabled(&mut self, on: bool) {
-        let was = self.server().enabled;
-        self.server_mut().set_enabled(on);
-        if !on {
-            self.server_mut().slots_play.clear();
-        }
-        if on {
-            if !self.server_mut().network.is_listening() {
-                let port = self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
-                let addr = format!("0.0.0.0:{port}")
-                    .parse()
-                    .unwrap_or_else(|_| ([0, 0, 0, 0], net::DEFAULT_PORT).into());
-                match connect_auth::load_or_create_private_key(self.fs.gamedir()) {
-                    Ok(key) => {
-                        if let Err(e) = self.server_mut().network.listen(addr, key) {
-                            log::error!("[net] auto-listen failed: {e}");
-                        } else {
-                            self.start_lan_advertiser(port);
-                        }
-                    }
-                    Err(e) => log::error!("[net] netcode.key: {e}"),
-                }
-            }
-        } else {
-            if was && self.server_mut().network.is_listening() {
-                self.server_mut().network.disconnect();
-            }
-            self.server_mut().lan_advertiser = None;
-            self.server_mut().lan_map.clear();
-        }
-        if let Some(sink) = &self.listen_enabled_sink {
-            sink.store(self.server().enabled, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    fn start_lan_advertiser(&mut self, port: u16) {
-        match lan::LanAdvertiser::new(port) {
-            Ok(adv) => {
-                self.server_mut().lan_advertiser = Some(adv);
-                log::info!("[lan] advertising on port {port}");
-            }
-            Err(e) => {
-                self.server_mut().lan_advertiser = None;
-                log::warn!("[lan] advertiser: {e}");
             }
         }
     }
 
-    fn lan_advertise_state(&self) -> lan::LanAdvertiseState {
-        let hostname = self
-            .cvar
-            .get_string("hostname")
-            .unwrap_or_else(|| "DarkDemo".into());
-        let default_port = self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
-        if let Some(sv) = self.server_engine.as_ref() {
-            let port = sv.network.listen_port().unwrap_or(default_port);
-            let map = if sv.lan_map.is_empty() {
-                "?".into()
-            } else {
-                sv.lan_map.clone()
-            };
-            let players = sv.players.list().len().min(255) as u8;
-            return lan::LanAdvertiseState {
-                hostname,
-                map,
-                port,
-                players,
-                max_players: 16,
-            };
-        }
-        lan::LanAdvertiseState {
-            hostname,
-            map: "?".into(),
-            port: default_port,
-            players: if self.listen_server_enabled() { 1 } else { 0 },
-            max_players: 16,
-        }
-    }
-
-    fn tick_lan(&mut self) {
-        if self
-            .server_engine
-            .as_ref()
-            .is_some_and(|e| e.lan_advertiser.is_some())
-        {
-            let state = self.lan_advertise_state();
-            if let Some(adv) = self.server_engine.as_mut().unwrap().lan_advertiser.as_mut() {
-                adv.tick(&state);
-            }
-        }
-
-        #[cfg(any(feature = "client", feature = "full"))]
-        if let Some(client) = self.client_engine.as_mut() {
-            client.lan_browser.poll();
-            let mut list = client.lan_browser.servers();
-            if self.listen_server_listening() {
-                let st = self.lan_advertise_state();
-                let local = lan::LanServerInfo {
-                    addr: ([127, 0, 0, 1], st.port).into(),
-                    hostname: st.hostname,
-                    map: st.map,
-                    port: st.port,
-                    players: st.players,
-                    max_players: st.max_players,
-                };
-                if !list
-                    .iter()
-                    .any(|s| s.port == local.port && s.addr.ip().is_loopback())
-                {
-                    list.insert(0, local);
-                }
-            }
-            lan::set_servers_json(&list);
-            deerpunk_ui::set_lan_servers_json(lan::servers_json());
-        }
-    }
-
-    /// Local listen client joins the running server (PlayerConnection, then gamelib hook).
+    /// Local listen client joins the running server (channel hop to the sim
+    /// thread, which also runs join init + catchup).
     pub fn connect_local_client(&mut self) {
         #[cfg(not(any(feature = "client", feature = "full")))]
         {
             log::info!("[players] connect_local skipped (no client feature)");
-            return;
         }
         #[cfg(any(feature = "client", feature = "full"))]
         {
-            if self.client_engine.is_none() {
-                return;
-            }
             let name = self.gameinfo.window_title().to_string();
-            if self.server_engine.is_some() {
-                if self.server_mut().players.connect_local(name).is_none() {
-                    return;
-                }
-            } else if let Some(st) = &self.server_thread {
+            if let Some(st) = &self.server_thread {
                 st.send(server_thread::ServerThreadCmd::ConnectLocal(name));
             }
         }
     }
 
     pub fn disconnect_local_client(&mut self) {
-        if self.server_engine.is_none() {
-            if let Some(c) = self.client_engine.as_mut() {
-                c.join_phase = ClientSessionPhase::Idle;
-            }
-            #[cfg(any(feature = "client", feature = "full"))]
-            deerpunk_ui::set_client_in_game(false);
-            return;
-        }
-        if let Some(conn) = self.server_mut().players.disconnect_local() {
-            if let Some(ref dll) = self.server_mut().dll {
-                unsafe {
-                    dll.player_disconnected(conn.slot);
-                }
-            }
-        }
-        self.server_mut().players.clear();
-        self.server_mut().slots_play.clear();
         if let Some(c) = self.client_engine.as_mut() {
             c.join_phase = ClientSessionPhase::Idle;
         }
@@ -1070,9 +702,7 @@ impl Host {
     #[cfg(any(feature = "client", feature = "full"))]
     fn flush_pending_albedos(&mut self) -> u32 {
         let world_ptr: *const deerpunk_engine_common::world::World =
-            if let Some(engine) = self.server_engine.as_ref() {
-                &engine.world
-            } else if let Some(client) = self.client_engine.as_ref() {
+            if let Some(client) = self.client_engine.as_ref() {
                 &client.world
             } else {
                 return 0;
@@ -1112,6 +742,50 @@ impl Host {
     #[cfg(not(any(feature = "client", feature = "full")))]
     fn drain_ui_commands(&mut self) {}
 
+    /// Consume sim-thread → main messages: gamelib command names get a
+    /// main-console PROXY that forwards the typed line back over `ExecCmd`
+    /// (the real handler runs on the sim thread — old `main_cmd_proxy`
+    /// semantics); the DLL-started message runs configs + starts the
+    /// inspector. FIFO ordering guarantees proxies register before
+    /// `finish_server_dll_startup` execs configs/stuffcmds.
+    fn drain_server_to_host(&mut self) {
+        let msgs = match self.server_thread.as_ref() {
+            Some(st) => st.server_to_host_rx().try_iter().collect::<Vec<_>>(),
+            None => return,
+        };
+        for msg in msgs {
+            match msg {
+                server_ctx::ServerToMain::RegisterProxyCommand(name) => {
+                    let Some(st) = self.server_thread.as_ref() else {
+                        continue;
+                    };
+                    let tx = st.cmd_sender().clone();
+                    let cmd_name = name.clone();
+                    self.cmd.register(
+                        crate::cmd::CommandRegistration::new(name.clone()).execute(
+                            move |ctx| {
+                                let line = if ctx.args.is_empty() {
+                                    cmd_name.clone()
+                                } else {
+                                    format!("{} {}", cmd_name, ctx.args.join(" "))
+                                };
+                                log::info!("[host] main → server thread: {line}");
+                                let _ = tx.send(
+                                    server_thread::ServerThreadCmd::ExecCmd(line),
+                                );
+                            },
+                        ),
+                    );
+                    log::info!("[host] main-console proxy registered: '{name}'");
+                }
+                server_ctx::ServerToMain::ServerDllStarted => {
+                    log::info!("[host] server gamelib started — exec configs + inspector");
+                    self.finish_server_dll_startup();
+                }
+            }
+        }
+    }
+
     pub fn frame(&mut self, delta_time: f32) {
         {
             let _g = system_profiler::scope("frame.logic");
@@ -1119,7 +793,7 @@ impl Host {
             self.rebind_cmd_refs();
             stdin_cmd::drain(&self.cmd);
             self.drain_ui_commands();
-            main_cmd_proxy::drain_pending_registrations(&mut self.cmd);
+            self.drain_server_to_host();
             self.time_secs += delta_time.max(0.0);
             #[cfg(any(feature = "client", feature = "full"))]
             self.drain_pending_demo_cmds();
@@ -1178,11 +852,11 @@ impl Host {
             }
         }
 
-        #[cfg(any(feature = "client", feature = "full"))]
+        // Inspector WS: client world served synchronously, server world from
+        // the sim-thread share.
         {
             let _g = system_profiler::scope("client.inspector");
-            // Refresh inspector client-world data (rows + pending detail gets).
-            self.pump_client_inspector();
+            self.poll_server_inspector();
         }
 
         #[cfg(any(feature = "client", feature = "full"))]
@@ -1195,59 +869,6 @@ impl Host {
                     }
                 }
             }
-        }
-    }
-
-    /// Main thread: publish client-world rows for the inspector and answer
-    /// queued `cliententities.get` detail requests (one-frame command hop).
-    /// Rows are rebuilt only when an RPC asked for them (`take_rows_request`),
-    /// so idle frames cost one atomic load.
-    #[cfg(any(feature = "client", feature = "full"))]
-    fn pump_client_inspector(&mut self) {
-        let Some(share) = self.client_inspector_share.as_ref() else {
-            return;
-        };
-        let Some(client) = self.client_engine.as_ref() else {
-            return;
-        };
-        let world = &client.world;
-        if share.take_rows_request() {
-            let rows: Vec<inspector::ClientEntityRow> = world
-                .inspect_entities()
-                .into_iter()
-                .map(|e| inspector::ClientEntityRow {
-                    id: e.id,
-                    prefab_id: inspector::entity_prefab_id(world, e.id),
-                    position: inspector::entity_position(world, e.id),
-                    name: e.name,
-                })
-                .collect();
-            share.publish_rows(self.time_secs, rows);
-        }
-        while let Some((seq, entity)) = share.take_pending() {
-            // Fetch the single entity by id instead of scanning the whole world.
-            let ent = world.inspect_entity(entity);
-            let value = match ent {
-                None => serde_json::json!({ "_error": "entity not found" }),
-                Some(ent) => {
-                    // Every component on the entity; unregistered ones surface
-                    // as `_unregistered` (same shape as the server detail).
-                    let components: Vec<serde_json::Value> = world
-                        .inspect_entity_all_components(ent.id)
-                        .iter()
-                        .map(|slug| {
-                            serde_json::to_value(inspector::component_snapshot(world, ent.id, slug))
-                                .unwrap_or(serde_json::Value::Null)
-                        })
-                        .collect();
-                    serde_json::json!({
-                        "index": ent.id,
-                        "name": ent.name,
-                        "components": components,
-                    })
-                }
-            };
-            share.submit_detail(seq, value);
         }
     }
 
@@ -1308,24 +929,7 @@ impl Host {
     #[cfg(any(feature = "client", feature = "full"))]
     fn local_client_entity(&self) -> Option<u64> {
         let client = self.client_engine.as_ref()?;
-        if let Some(e) = client.rep.view_entity() {
-            return Some(e);
-        }
-        if self.server_engine.is_none() {
-            return None;
-        }
-        let slot = self.server().players.local_slot()?;
-        let sid = self.server().players.get(slot)?.entity?;
-        let net_id = self.server().rep.net_id_of(sid)?;
-        client.rep.client_of_net(net_id)
-    }
-
-    /// `NetworkEntity::net_id` for a player slot's pawn (after replication tick).
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    pub fn player_net_id(&self, slot: u32) -> Option<u16> {
-        let engine = self.server_engine.as_ref()?;
-        let sid = engine.players.get(slot)?.entity?;
-        engine.rep.net_id_of(sid)
+        client.rep.view_entity()
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
@@ -1367,13 +971,7 @@ impl Host {
     }
 
     fn local_client_in_play(&self) -> bool {
-        if self.server_engine.is_none() {
-            return self.client_in_play();
-        }
-        let Some(slot) = self.server().players.local_slot() else {
-            return false;
-        };
-        self.server().slots_play.accepts_usercmd(slot)
+        self.client_in_play()
     }
 
     /// S2C to one slot: UDP or in-process [`Channel`].
@@ -1381,32 +979,14 @@ impl Host {
         if packets.is_empty() {
             return;
         }
-        let is_local = if let Some(engine) = self.server_engine.as_ref() {
-            engine.players.get(slot).map(|p| p.local).unwrap_or(false)
-        } else {
-            #[cfg(any(feature = "client", feature = "full"))]
-            {
-                self.client_engine.is_some()
-            }
-            #[cfg(not(any(feature = "client", feature = "full")))]
-            {
-                false
-            }
-        };
-        let via = if is_local {
-            format!("s2c slot={slot} local")
-        } else {
-            format!("s2c slot={slot} udp")
-        };
+        // Main host: local channel only; UDP delivery happens on the sim
+        // thread (facade deliver path).
+        let via = format!("s2c slot={slot} local");
         for p in packets {
             net_packet_log::log_s2c_out(&self.cvar, &via, p);
         }
-        if is_local {
-            for p in packets {
-                self.loopback.send_server_packet(p.clone());
-            }
-        } else if let Some(engine) = self.server_engine.as_mut() {
-            engine.network.send_s2c_to_slot(slot, packets);
+        for p in packets {
+            self.loopback.send_server_packet(p.clone());
         }
     }
 
@@ -1418,9 +998,6 @@ impl Host {
         for p in packets {
             net_packet_log::log_s2c_out(&self.cvar, "s2c broadcast", p);
         }
-        if let Some(engine) = self.server_engine.as_mut() {
-            engine.network.broadcast_s2c(packets);
-        }
         if self.local_client_in_play() {
             for p in packets {
                 self.loopback.send_server_packet(p.clone());
@@ -1428,75 +1005,10 @@ impl Host {
         }
     }
 
-    fn deliver_usercmd_acks(&mut self) {
-        let tick = {
-            let engine = self.server_mut();
-            engine.sim_tick = engine.sim_tick.wrapping_add(1);
-            engine.sim_tick
-        };
-        let slots = self.server().players.slots();
-        let mut pending: Vec<(u32, Vec<u8>)> = Vec::new();
-        {
-            let engine = self.server_mut();
-            for slot in slots {
-                let Some(p) = engine.players.get(slot) else {
-                    continue;
-                };
-                let seq = p.usercmd.sequence;
-                if seq <= p.cmd_ack_sent {
-                    continue;
-                }
-                if let Some(p) = engine.players.get_mut(slot) {
-                    p.cmd_ack_sent = seq;
-                }
-                let rpc = UserCmdAckRpc {
-                    ack_sequence: seq,
-                    server_tick: tick,
-                };
-                pending.push((slot, rpc.encode_packet()));
-            }
-        }
-        for (slot, packet) in pending {
-            self.deliver_s2c_to_slot(slot, &[packet]);
-        }
-    }
-
-    /// Join **init** bundle for one slot (then **play** via `InitDone`).
-    #[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-    fn send_join_init(&mut self, slot: u32) {
-        let gamedir = self.fs.gamedir().to_path_buf();
-        let engine = self.server_mut();
-        let defs = engine
-            .rep
-            .prefab_definition_packets(&gamedir, &engine.world);
-        let snap = engine.rep.snapshot(&engine.world);
-        let def_count = defs.len();
-        let snap_count = snap.len();
-        self.deliver_s2c_to_slot(slot, &defs);
-        if let Some(ref dll) = self.server_mut().dll {
-            unsafe {
-                dll.join_init(slot, 0);
-            }
-        }
-        self.deliver_s2c_to_slot(slot, &snap);
-        if let Some(ref dll) = self.server_mut().dll {
-            unsafe {
-                dll.join_init(slot, 1);
-            }
-        }
-        self.deliver_s2c_to_slot(slot, &[vec![SVC::InitDone as u8]]);
-        self.server_mut().slots_play.mark_ready(slot);
-        log::info!(
-            "[net] init slot={slot}: {def_count} prefab defs, {snap_count} snap pkts → InitDone"
-        );
-    }
-
     #[cfg(any(feature = "client", feature = "full"))]
     fn net_hud_info(&self, level: i32) -> deerpunk_engine_client::infobox::NetHudInfo {
         let st = if self.client_net_active() {
             self.client_engine.as_ref().unwrap().network.hud_stats()
-        } else if let Some(engine) = self.server_engine.as_ref() {
-            engine.network.hud_stats()
         } else {
             deerpunk_engine_server::net::NetHudStats {
                 role: "server",
@@ -1515,30 +1027,8 @@ impl Host {
         if st.role == "client" || st.remote_clients > 0 {
             lines.push(format!("rtt: {:.0} ms", st.rtt_ms));
         }
-        if level >= 2 {
-            if let Some(engine) = self.server_engine.as_ref() {
-                lines.push(format!(
-                    "loss: {:.1}%  remotes: {}  players: {}",
-                    st.packet_loss * 100.0,
-                    st.remote_clients,
-                    engine.players.list().len()
-                ));
-                for p in engine.players.list() {
-                    let ent = p
-                        .entity
-                        .map(|e| format!("{e:#x}"))
-                        .unwrap_or_else(|| "-".into());
-                    let kind = if p.local { "local" } else { "remote" };
-                    lines.push(format!(
-                        "  slot {} [{}] {} ent={}",
-                        p.slot, kind, p.name, ent
-                    ));
-                }
-                for (slot, addr) in engine.network.remote_slot_debug() {
-                    lines.push(format!("  net slot {slot} ← {addr}"));
-                }
-            }
-        }
+        let _ = st;
+        let _ = level;
         deerpunk_engine_client::infobox::NetHudInfo { lines }
     }
 
@@ -1676,18 +1166,12 @@ impl Host {
     }
 
     fn drain_loopback(&mut self) {
+        // Host commands only on the main thread; client CLC packets drain on
+        // the sim thread (facade tick).
         self.drain_loopback_host_commands();
-        if self.server_engine.is_some() {
-            self.drain_loopback_client_packets();
-        }
     }
 
     fn drain_loopback_host_commands(&mut self) {
-        #[cfg(any(feature = "client", feature = "full"))]
-        if self.server_engine.is_some() && self.client_engine.is_none() {
-            // Host commands (InprocessConnect, LoadMap, …) are for the main-thread client Host.
-            return;
-        }
         for cmd in self.loopback.drain_host_commands() {
             match cmd {
                 HostCommand::LoadMap(name) => {
@@ -1696,75 +1180,16 @@ impl Host {
                 }
                 HostCommand::StopServer => {
                     log::info!("[loopback] stop server");
-                    if self.server_engine.is_some() {
-                        self.cmd.add_command("disconnect".into());
-                        self.cmd.frame();
-                        self.apply_set_server_enabled(false);
-                        move_state::clear();
-                    } else {
-                        if let Some(st) = &self.server_thread {
-                            st.send(server_thread::ServerThreadCmd::SetEnabled(false));
-                        }
-                        self.set_server_enabled(false);
-                        move_state::clear();
+                    if let Some(st) = &self.server_thread {
+                        st.send(server_thread::ServerThreadCmd::SetEnabled(false));
                     }
+                    self.set_server_enabled(false);
+                    move_state::clear();
                 }
                 HostCommand::InprocessConnect => {
                     self.on_server_activated();
                 }
             }
-        }
-    }
-
-    /// GS-style: one match for every CLC the server accepts.
-    fn parse_client_message(&mut self, slot: u32, packet: &[u8]) {
-        net_packet_log::log_clc_in(&self.cvar, slot, packet);
-        let Some(&cmd) = packet.first() else {
-            return;
-        };
-        let Some(clc) = CLC::from_u8(cmd) else {
-            log::warn!("[sv] unknown CLC cmd={cmd} from slot={slot}");
-            return;
-        };
-        match clc {
-            CLC::Nop => {}
-            CLC::Bad => log::warn!("[sv] CLC::Bad from slot={slot}"),
-            CLC::UserCmd => {
-                let engine = self.server_mut();
-                if engine.enabled && !engine.slots_play.accepts_usercmd(slot) {
-                    return;
-                }
-                let payload = &packet[1..];
-                let Some(ucmd) = UserCmd::decode(payload) else {
-                    log::warn!("[sv] bad UserCmd len={} from slot={slot}", payload.len());
-                    return;
-                };
-                engine.players.set_usercmd(slot, ucmd);
-            }
-            CLC::ClientCommand => {
-                let engine = self.server_mut();
-                if engine.enabled && !engine.slots_play.accepts_usercmd(slot) {
-                    return;
-                }
-                let payload = &packet[1..];
-                let Some(line) = decode_client_command_payload(payload) else {
-                    log::warn!("[sv] bad ClientCommand from slot={slot}");
-                    return;
-                };
-                engine
-                    .pending_client_commands
-                    .push((slot, line.to_string()));
-            }
-        }
-    }
-
-    fn drain_loopback_client_packets(&mut self) {
-        if self.server_engine.is_none() {
-            return;
-        }
-        let slot = self.server().players.local_slot().unwrap_or(0);
-        for packet in self.loopback.receive_client_packets() {
-            self.parse_client_message(slot, &packet);
         }
     }
 
@@ -1788,31 +1213,13 @@ impl Host {
                 .send_c2s(packet);
             return;
         }
-        let server_on = self
-            .server_thread
-            .as_ref()
-            .map(|s| s.is_enabled())
-            .unwrap_or_else(|| {
-                self.server_engine
-                    .as_ref()
-                    .map(|e| e.enabled)
-                    .unwrap_or(false)
-            });
-        if !self.client_in_play() || !server_on {
+        if !self.client_in_play() || !self.listen_server_enabled() {
             return;
         }
         self.loopback.send_client_packet(packet);
     }
 
     pub fn alloc_sound_id(&mut self) -> u32 {
-        if let Some(engine) = self.server_engine.as_mut() {
-            let id = engine.next_sound_id;
-            engine.next_sound_id = engine.next_sound_id.wrapping_add(1);
-            if engine.next_sound_id == 0 {
-                engine.next_sound_id = 1;
-            }
-            return id;
-        }
         let id = self.next_client_sound_id;
         self.next_client_sound_id = self.next_client_sound_id.wrapping_add(1);
         if self.next_client_sound_id == 0 {
@@ -2071,7 +1478,6 @@ impl Host {
                 let _g = system_profiler::scope("frame.bootstrap");
                 stdin_cmd::drain(&self.cmd);
                 self.drain_ui_commands();
-                main_cmd_proxy::drain_pending_registrations(&mut self.cmd);
                 self.drain_loopback();
 
                 let cons_open = self.cvar.get_bool_or("cl_console_show", false);

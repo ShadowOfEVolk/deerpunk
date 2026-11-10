@@ -1,9 +1,9 @@
-//! `v1:world:spawn_prefab` — host implementation.
+//! `v1:world:spawn_prefab` — FFI opts parsing.
 
 use std::collections::HashMap;
 
 use deerpunk_engine_api::spawn_prefab::SpawnPrefabOpts;
-use deerpunk_engine_common::scene::{spawn_prefab_entity, MapSpawnOpts};
+use deerpunk_engine_common::scene::MapSpawnOpts;
 use glam::Vec3;
 
 use crate::engine_api::resources::read_str;
@@ -39,29 +39,5 @@ pub(crate) fn map_spawn_opts_from_ffi(
     Ok(Some(MapSpawnOpts { origin, angles, kv }))
 }
 
-#[cfg(any(feature = "dedicated-server", feature = "client", feature = "full"))]
-impl crate::Host {
-    pub fn spawn_prefab(&mut self, name: &str, opts: &SpawnPrefabOpts) -> Result<u64, String> {
-        let map = map_spawn_opts_from_ffi(opts)?;
-        let gamedir = self.fs.gamedir().to_path_buf();
-        let resources = &self.resources;
-        let mesh_registry = &mut self.mesh_registry;
-        let world = &mut self.server_engine.as_mut().expect("server thread").world;
-        spawn_prefab_entity(
-            world,
-            mesh_registry,
-            &gamedir,
-            resources,
-            name,
-            map.as_ref(),
-        )
-        .map_err(|e| e.message)
-    }
-}
-
-#[cfg(not(any(feature = "dedicated-server", feature = "client", feature = "full")))]
-impl crate::Host {
-    pub fn spawn_prefab(&mut self, _name: &str, _opts: &SpawnPrefabOpts) -> Result<u64, String> {
-        Err("spawn_prefab unavailable".into())
-    }
-}
+// `spawn_prefab` moved to `ServerThreadCtx` (the server world lives on the
+// sim thread); only the FFI opts parsing stays here.
