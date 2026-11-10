@@ -157,6 +157,7 @@ enum AbiType {
     MutVoidPtr,
     MutU8Ptr,
     MutF32Ptr,
+    MutU32Ptr,
     MutU64Ptr,
     I16,
     U16,
@@ -308,6 +309,13 @@ fn classify_ty(ty: &Type) -> syn::Result<AbiType> {
                     Ok(AbiType::MutU64Ptr)
                 } else {
                     Ok(AbiType::ConstU64Ptr)
+                }
+            }
+            Type::Path(syn::TypePath { qself: None, path, .. }) if path.is_ident("u32") => {
+                if ptr.mutability.is_some() {
+                    Ok(AbiType::MutU32Ptr)
+                } else {
+                    Err(syn::Error::new_spanned(ty, "expected `*mut u32`"))
                 }
             }
             Type::Ptr(inner2)
@@ -608,6 +616,12 @@ fn generate_tramp(
             AbiType::MutU64Ptr => {
                 let n = format_ident!("__arg{}", arg_idx);
                 ffi_params.push(quote! { #n: *mut u64 });
+                rust_args.push(quote! { #n });
+                arg_idx += 1;
+            }
+            AbiType::MutU32Ptr => {
+                let n = format_ident!("__arg{}", arg_idx);
+                ffi_params.push(quote! { #n: *mut u32 });
                 rust_args.push(quote! { #n });
                 arg_idx += 1;
             }

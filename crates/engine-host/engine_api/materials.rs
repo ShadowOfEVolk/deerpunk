@@ -5,8 +5,8 @@
 use deerpunk_engine_macro as methoddb;
 
 use deerpunk_engine_common::material::{MaterialAsset, MaterialHandle, PropertyValueSer};
-use deerpunk_engine_common::MeshTexture;
 use deerpunk_engine_common::resource::AssetId;
+use deerpunk_engine_common::MeshTexture;
 
 /// Register a `.mat` / material URI in [`ResourceManager`] → [`AssetId`] (no GPU upload).
 pub(crate) fn materials_load_asset(host: &mut crate::Host, path: &str) -> u64 {

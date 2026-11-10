@@ -73,13 +73,19 @@ pub struct EngineApi {
     pub shutdown: extern "C" fn(*mut u8),
 }
 
-fn resolve_fn(r: Resolver, name: &str) -> *const () {
+fn resolve_fn_opt(r: Resolver, name: &str) -> Option<*const ()> {
     let bytes = name.as_bytes();
     let ptr = r(bytes.as_ptr(), bytes.len());
     if ptr.is_null() {
-        panic!("[engine-api] unresolved method: {}", name);
+        None
+    } else {
+        Some(ptr)
     }
-    ptr
+}
+
+fn resolve_fn(r: Resolver, name: &str) -> *const () {
+    resolve_fn_opt(r, name)
+        .unwrap_or_else(|| panic!("[engine-api] unresolved method: {}", name))
 }
 
 unsafe impl Send for EngineApi {}

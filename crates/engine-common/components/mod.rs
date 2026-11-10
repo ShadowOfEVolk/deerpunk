@@ -11,6 +11,7 @@ pub mod network_entity;
 pub mod parent;
 pub mod pending_albedo_atlas;
 pub mod point_light;
+pub mod prefab_id;
 pub mod render_layer;
 pub mod simple_entity;
 pub mod skinned_mesh3d;
@@ -37,6 +38,7 @@ pub use network_entity::{NetworkEntity, NET_FIELDS_MAX, NET_PREFAB_MAX};
 pub use parent::ParentComponent;
 pub use pending_albedo_atlas::PendingAlbedoAtlas;
 pub use point_light::PointLight;
+pub use prefab_id::{prefab_id_for, PrefabId};
 pub use render_layer::{
     render_layer_visible, RenderLayer, RENDER_LAYER_DEFAULT, RENDER_LAYER_DEFAULT_CAMERA,
     RENDER_LAYER_DEFAULT_DRAW, RENDER_LAYER_WORLD, RENDER_LAYER_WORLD_CAMERA,

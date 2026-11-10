@@ -8,6 +8,9 @@ pub struct CvarSystem {
     init_once: Once,
     values: RwLock<HashMap<String, String>>,
     flags: RwLock<HashMap<String, u32>>,
+    /// Queued CLI overrides; applied by [`CvarSystem::apply_overrides`] after
+    /// configs exec so they win over values restored from `config.cfg`.
+    overrides: RwLock<HashMap<String, String>>,
 }
 
 impl CvarSystem {
@@ -16,6 +19,7 @@ impl CvarSystem {
             init_once: Once::new(),
             values: RwLock::new(HashMap::new()),
             flags: RwLock::new(HashMap::new()),
+            overrides: RwLock::new(HashMap::new()),
         }
     }
 
@@ -36,6 +40,7 @@ impl CvarSystem {
     pub fn shutdown(&self) {
         self.values.write().expect("cvars write lock").clear();
         self.flags.write().expect("cvars flags lock").clear();
+        self.overrides.write().expect("cvars overrides lock").clear();
     }
 
     pub fn set(&self, name: &str, value: &str) -> bool {
@@ -55,6 +60,27 @@ impl CvarSystem {
             .insert(name.to_string(), value.to_string());
         let mut flags = self.flags.write().expect("cvars flags lock");
         flags.entry(name.to_string()).or_insert(0);
+    }
+
+    /// Queue a value that must win over config files (e.g. from CLI args).
+    /// Applied later by [`CvarSystem::apply_overrides`].
+    pub fn queue_override(&self, name: &str, value: &str) {
+        self.overrides
+            .write()
+            .expect("cvars overrides lock")
+            .insert(name.to_string(), value.to_string());
+    }
+
+    /// Re-apply queued overrides. Call after configs / stuffcmds exec'd and
+    /// just before consumers read the cvar (e.g. starting the inspector).
+    pub fn apply_overrides(&self) {
+        let pending = {
+            let mut guard = self.overrides.write().expect("cvars overrides lock");
+            std::mem::take(&mut *guard)
+        };
+        for (name, value) in pending {
+            self.set_or_create(&name, &value);
+        }
     }
 
     pub fn flags_of(&self, name: &str) -> u32 {

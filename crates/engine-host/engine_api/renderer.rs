@@ -98,12 +98,14 @@ impl crate::Host {
         }
         let mut params = [0f32; 32];
         params.copy_from_slice(&f[..32]);
-        ce.set_gamelib_sky(Some(deerpunk_engine_client::client_engine::GamelibSkyPayload {
-            params,
-            horizon: [f[32], f[33], f[34]],
-            zenith: [f[35], f[36], f[37]],
-            sun_glow: f[38],
-        }));
+        ce.set_gamelib_sky(Some(
+            deerpunk_engine_client::client_engine::GamelibSkyPayload {
+                params,
+                horizon: [f[32], f[33], f[34]],
+                zenith: [f[35], f[36], f[37]],
+                sun_glow: f[38],
+            },
+        ));
         0
     }
 
@@ -154,11 +156,16 @@ impl crate::Host {
             defines.split(',').map(|s| s.trim().to_string()).collect()
         };
         let content_root = self.resources.base_dir();
-        match ce.shader_registry.load(path, &defines_vec, &source, &content_root) {
+        match ce
+            .shader_registry
+            .load(path, &defines_vec, &source, &content_root)
+        {
             Ok(id) => {
                 if let Some(def) = ce.shader_registry.get(id) {
                     if let Some(ref err) = def.compile_error {
-                        log::warn!("[renderer] load_shader '{path}' active as error fallback: {err}");
+                        log::warn!(
+                            "[renderer] load_shader '{path}' active as error fallback: {err}"
+                        );
                     }
                 }
                 id
@@ -180,6 +187,42 @@ impl crate::Host {
             .get(shader_id)
             .map(|def| def.mesh_vertex_layout().stride)
             .unwrap_or(0)
+    }
+
+    /// Queue a one-shot capture of the next rendered frame (clean scene, no UI).
+    /// Returns 1 if queued, 0 if unavailable (no surface / already pending).
+    #[methoddb::bind(name = "capture_request")]
+    pub fn api_renderer_capture_request(&mut self) -> i32 {
+        let Some(ce) = self.client_engine.as_mut() else {
+            return 0;
+        };
+        ce.renderer_mut().capture_request() as i32
+    }
+
+    /// Take the captured RGBA8 frame. 1 = written to `out` (dims in `w`/`h`),
+    /// 0 = nothing ready yet, -1 = `out` too small (`w`/`h` get required dims).
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[methoddb::bind(name = "capture_take")]
+    pub fn api_renderer_capture_take(
+        &mut self,
+        out: *mut u8,
+        out_len: usize,
+        w: *mut u32,
+        h: *mut u32,
+    ) -> i32 {
+        if w.is_null() || h.is_null() {
+            return 0;
+        }
+        let Some(ce) = self.client_engine.as_mut() else {
+            return 0;
+        };
+        let out: &mut [u8] = if out.is_null() || out_len == 0 {
+            &mut []
+        } else {
+            unsafe { std::slice::from_raw_parts_mut(out, out_len) }
+        };
+        ce.renderer_mut()
+            .capture_take(out, unsafe { &mut *w }, unsafe { &mut *h })
     }
 }
 
@@ -233,5 +276,21 @@ impl crate::Host {
     #[methoddb::bind(name = "reload_shaders")]
     pub fn api_renderer_reload_shaders(&mut self) -> i32 {
         -1
+    }
+
+    #[methoddb::bind(name = "capture_request")]
+    pub fn api_renderer_capture_request(&mut self) -> i32 {
+        0
+    }
+
+    #[methoddb::bind(name = "capture_take")]
+    pub fn api_renderer_capture_take(
+        &mut self,
+        _out: *mut u8,
+        _out_len: usize,
+        _w: *mut u32,
+        _h: *mut u32,
+    ) -> i32 {
+        0
     }
 }

@@ -2,7 +2,6 @@
 
 use std::sync::Mutex;
 
-
 use crate::cmd::CommandRegistration;
 use crate::demo;
 use crate::Host;
@@ -21,21 +20,30 @@ pub fn register_commands(cmd: &mut crate::cmd::CmdSystem) {
             println!("Usage: record <name>");
             return;
         };
-        PENDING.lock().unwrap().push(PendingDemoCmd::Record(name.to_string()));
+        PENDING
+            .lock()
+            .unwrap()
+            .push(PendingDemoCmd::Record(name.to_string()));
     }));
     cmd.register(CommandRegistration::new("playdemo").execute(|ctx| {
         let Some(name) = ctx.args.first().copied() else {
             println!("Usage: playdemo <name>");
             return;
         };
-        PENDING.lock().unwrap().push(PendingDemoCmd::Play(name.to_string()));
+        PENDING
+            .lock()
+            .unwrap()
+            .push(PendingDemoCmd::Play(name.to_string()));
     }));
     cmd.register(CommandRegistration::new("play").execute(|ctx| {
         let Some(name) = ctx.args.first().copied() else {
             println!("Usage: play <name>  (demo)");
             return;
         };
-        PENDING.lock().unwrap().push(PendingDemoCmd::Play(name.to_string()));
+        PENDING
+            .lock()
+            .unwrap()
+            .push(PendingDemoCmd::Play(name.to_string()));
     }));
     cmd.register(CommandRegistration::new("stop").execute(|_| {
         PENDING.lock().unwrap().push(PendingDemoCmd::Stop);
@@ -118,7 +126,14 @@ impl Host {
                 Err(e) => println!("[demo] stop record error: {e}"),
             }
         }
-        if self.client_engine.as_mut().unwrap().demo_player.take().is_some() {
+        if self
+            .client_engine
+            .as_mut()
+            .unwrap()
+            .demo_player
+            .take()
+            .is_some()
+        {
             println!("[demo] stopped playback");
             self.flush_client_scene();
             let _ = self.cvar.set("cl_demoplaying", "0");

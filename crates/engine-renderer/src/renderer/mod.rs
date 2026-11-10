@@ -33,6 +33,7 @@ mod features;
 pub use features::mesh::{
     bench_batch_fingerprint, bench_build_indirect, bench_mdi_cache_probes, StaticBatchPlanBench,
 };
+mod capture;
 pub mod frame;
 mod hdr;
 
@@ -617,6 +618,9 @@ pub struct Renderer {
     uploaded_mesh_revs: Vec<u64>,
     defer_surface_submit: bool,
     pending_surface_present: Option<PendingSurfacePresent>,
+    /// Swapchain texture of the frame being composed (source for one-shot captures).
+    frame_surface_texture: Option<wgpu::Texture>,
+    capture: capture::CaptureState,
 }
 
 /// Command buffer + swapchain image waiting for async `submit` / `present`.
@@ -1446,6 +1450,8 @@ impl Renderer {
             uploaded_mesh_revs: Vec::new(),
             defer_surface_submit: false,
             pending_surface_present: None,
+            frame_surface_texture: None,
+            capture: capture::CaptureState::new(),
         }
     }
 
@@ -1481,6 +1487,7 @@ impl Renderer {
         if occlusion_queries {
             self.mesh_occlusion.queue_readback_after_submit();
         }
+        self.queue_capture_readback_after_submit();
         if let Some(ui) = tail.game_frame_ui_ms {
             self.last_profile.game_frame_ui_ms = ui;
         }
@@ -1727,7 +1734,7 @@ impl Renderer {
         let caps = surface.get_capabilities(&self.gpu.adapter);
         let format = pick_surface_format(&caps);
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format,
             width,
             height,
@@ -1963,6 +1970,7 @@ impl Renderer {
     ) -> Result<(), FrameError> {
         // 1. Read back previous frame's luminance (if ready)
         self.process_lum_readback();
+        self.process_capture_readback();
         self.mesh_occlusion.process_readback(&self.gpu.device);
 
         let Some(surface) = &self.surface else {
@@ -1986,6 +1994,9 @@ impl Renderer {
         let surface_view = current
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        if self.capture.wants_capture() {
+            self.frame_surface_texture = Some(current.texture.clone());
+        }
         let format = self
             .surface_config
             .as_ref()
@@ -2024,6 +2035,7 @@ impl Renderer {
         shaders: &ShaderRegistry,
     ) -> Result<(), FrameError> {
         self.process_lum_readback();
+        self.process_capture_readback();
         self.mesh_occlusion.process_readback(&self.gpu.device);
 
         let Some(surface) = &self.surface else {
@@ -2047,6 +2059,9 @@ impl Renderer {
         let surface_view = current
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        if self.capture.wants_capture() {
+            self.frame_surface_texture = Some(current.texture.clone());
+        }
         let format = self
             .surface_config
             .as_ref()
@@ -2091,6 +2106,7 @@ impl Renderer {
     ) -> Result<(), FrameError> {
         crate::gamelib_profile::zone_begin("render.readback");
         self.process_lum_readback();
+        self.process_capture_readback();
         self.mesh_occlusion.process_readback(&self.gpu.device);
         crate::gamelib_profile::zone_end();
 
@@ -2115,6 +2131,9 @@ impl Renderer {
         let surface_view = current
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        if self.capture.wants_capture() {
+            self.frame_surface_texture = Some(current.texture.clone());
+        }
         let format = self
             .surface_config
             .as_ref()
@@ -2404,6 +2423,7 @@ impl Renderer {
         crate::gamelib_profile::zone_end();
         let queue_submit_ms = submit_start.elapsed().as_secs_f32() * 1000.0;
         self.queue_lum_readback_after_submit(lum_copied);
+        self.queue_capture_readback_after_submit();
         if self.frame_occlusion_queries {
             self.mesh_occlusion.queue_readback_after_submit();
         }
@@ -2852,9 +2872,28 @@ impl Renderer {
     }
 
     /// Queue a UI frame to be drawn after tonemap on the next `encode_frame`.
+    ///
+    /// The render thread may not have consumed the previous frame yet; its
+    /// resource uploads (meshes/textures) are merged into the new frame so a
+    /// fast producer can never orphan draws that reference never-uploaded
+    /// meshes (the UI pass silently skips those forever).
     pub fn set_ui_frame(&mut self, frame: Option<deerpunk_engine_common::ui_draw::UiFrame>) {
-        self.ui_upload = frame.is_some();
-        self.pending_ui = frame;
+        match frame {
+            Some(next) => {
+                match self.pending_ui.take() {
+                    Some(mut prev) => {
+                        prev.absorb(next);
+                        self.pending_ui = Some(prev);
+                    }
+                    None => self.pending_ui = Some(next),
+                }
+                self.ui_upload = true;
+            }
+            None => {
+                self.pending_ui = None;
+                self.ui_upload = false;
+            }
+        }
     }
 
     fn draw_batched(

@@ -13,6 +13,8 @@ pub struct RendererApiResolved {
     load_shader_fn: unsafe extern "C" fn(*mut u8, *const u8, usize, *const u8, usize) -> u32,
     shader_vertex_size_fn: unsafe extern "C" fn(*mut u8, u32) -> u32,
     reload_shaders_fn: unsafe extern "C" fn(*mut u8) -> i32,
+    capture_request_fn: Option<unsafe extern "C" fn(*mut u8) -> i32>,
+    capture_take_fn: Option<unsafe extern "C" fn(*mut u8, *mut u8, usize, *mut u32, *mut u32) -> i32>,
 }
 
 impl RendererApiResolved {
@@ -49,6 +51,12 @@ impl RendererApiResolved {
             reload_shaders_fn: unsafe {
                 crate::fn_from_erased(resolve_fn(resolver, "v1:renderer:reload_shaders"))
             },
+            // Capture is a newer optional symbol: resolve without panicking so
+            // older hosts keep working and both methods degrade to 0.
+            capture_request_fn: crate::resolve_fn_opt(resolver, "v1:renderer:capture_request")
+                .map(|ptr| unsafe { crate::fn_from_erased(ptr) }),
+            capture_take_fn: crate::resolve_fn_opt(resolver, "v1:renderer:capture_take")
+                .map(|ptr| unsafe { crate::fn_from_erased(ptr) }),
         }
     }
 
@@ -140,5 +148,25 @@ impl RendererApiResolved {
     /// Hot-reload WGSL from gamedir (sky, postfx, materials already in the registry).
     pub fn reload_shaders(&self) -> i32 {
         unsafe { (self.reload_shaders_fn)(self.ctx) }
+    }
+
+    /// Queue a one-shot capture of the next rendered frame (clean scene, no UI).
+    /// Returns 1 if queued, 0 if unavailable (symbol unresolved / no surface /
+    /// already pending).
+    pub fn capture_request(&self) -> i32 {
+        match self.capture_request_fn {
+            Some(f) => unsafe { f(self.ctx) },
+            None => 0,
+        }
+    }
+
+    /// Take the captured RGBA8 frame (tightly packed, BGR(A) swizzled to RGBA,
+    /// 256-aligned rows unpacked). 1 = written to `out` with dims in `w`/`h`,
+    /// 0 = nothing ready yet, -1 = `out` too small (`w`/`h` get required dims).
+    pub fn capture_take(&self, out: &mut [u8], w: &mut u32, h: &mut u32) -> i32 {
+        match self.capture_take_fn {
+            Some(f) => unsafe { f(self.ctx, out.as_mut_ptr(), out.len(), w, h) },
+            None => 0,
+        }
     }
 }

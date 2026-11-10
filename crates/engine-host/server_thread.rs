@@ -52,6 +52,7 @@ impl ServerThread {
         shared_loopback: Arc<NetLoopback>,
         gamedir: PathBuf,
         shared_cvar: Arc<crate::cvar::CvarSystem>,
+        client_share: Arc<crate::inspector::ClientInspectShare>,
     ) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let enabled = Arc::new(AtomicBool::new(false));
@@ -66,6 +67,7 @@ impl ServerThread {
                     shared_loopback,
                     gamedir,
                     shared_cvar,
+                    client_share,
                     running_t,
                     enabled_t,
                     cmd_rx,
@@ -112,12 +114,14 @@ fn server_main(
     loopback: Arc<NetLoopback>,
     gamedir: PathBuf,
     shared_cvar: Arc<crate::cvar::CvarSystem>,
+    client_share: Arc<crate::inspector::ClientInspectShare>,
     running: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
     cmd_rx: crossbeam_channel::Receiver<ServerThreadCmd>,
 ) {
     log::info!("[server-thread] simulation thread running");
     let mut host = Host::new_server_instance(loopback, gamedir.clone(), shared_cvar);
+    host.inspector.set_client_share(client_share);
     host.set_listen_enabled_sink(enabled.clone());
     host.server_initialize(&gamedir);
 

@@ -17,18 +17,18 @@ use deerpunk_engine_common::network::protocol::SVC;
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
 use deerpunk_engine_common::network::{UserCmd, USERCMD_SIZE};
 
-use deerpunk_engine_common::network::HostCommand;
-use crate::move_state;
-use crate::user_messages::UmHookFn;
-use crate::physics_trace::PhysicsTraceResult;
 use crate::engine_api::physics::CapsuleCastHitOut;
-use deerpunk_engine_common::components::mesh3d::Mesh3D;
-use deerpunk_engine_common::components::SkinnedMesh3D;
-use deerpunk_engine_common::physics::ColliderPart;
-use deerpunk_engine_api::components::ComponentRegisterDesc;
-use deerpunk_engine_api::resources::ResourceLoaderDesc;
 use crate::gamelib_abi::ScheduleSystemFn;
 use crate::gamelib_abi::WorldProgressSystemFn;
+use crate::move_state;
+use crate::physics_trace::PhysicsTraceResult;
+use crate::user_messages::UmHookFn;
+use deerpunk_engine_api::components::ComponentRegisterDesc;
+use deerpunk_engine_api::resources::ResourceLoaderDesc;
+use deerpunk_engine_common::components::mesh3d::Mesh3D;
+use deerpunk_engine_common::components::SkinnedMesh3D;
+use deerpunk_engine_common::network::HostCommand;
+use deerpunk_engine_common::physics::ColliderPart;
 
 #[methoddb::namespace(name = "v1:net", on_host, scope = ["server", "client"])]
 impl crate::Host {
@@ -137,13 +137,22 @@ impl crate::Host {
             if !self.client_in_play() {
                 return 0;
             }
-            self.client_engine.as_mut().unwrap().network.send_c2s(packet);
+            self.client_engine
+                .as_mut()
+                .unwrap()
+                .network
+                .send_c2s(packet);
         } else {
             let server_on = self
                 .server_thread
                 .as_ref()
                 .map(|s| s.is_enabled())
-                .unwrap_or_else(|| self.server_engine.as_ref().map(|e| e.enabled).unwrap_or(false));
+                .unwrap_or_else(|| {
+                    self.server_engine
+                        .as_ref()
+                        .map(|e| e.enabled)
+                        .unwrap_or(false)
+                });
             if !self.client_in_play() || !server_on {
                 return 0;
             }
@@ -161,7 +170,8 @@ impl crate::Host {
         }
         #[cfg(any(feature = "client", feature = "full"))]
         {
-            let Some(packet) = deerpunk_engine_common::network::encode_client_command_clc(line) else {
+            let Some(packet) = deerpunk_engine_common::network::encode_client_command_clc(line)
+            else {
                 return -1;
             };
             self.send_clc_packet(packet);
@@ -415,10 +425,7 @@ impl crate::Host {
     /// `out[0..3]` eye, `out[3..6]` normalized look (Z-up).
     #[methoddb::bind(name = "scene_time")]
     pub fn api_client_scene_time(&self) -> f32 {
-        self.client_engine
-            .as_ref()
-            .map(|c| c.time())
-            .unwrap_or(0.0)
+        self.client_engine.as_ref().map(|c| c.time()).unwrap_or(0.0)
     }
 
     #[methoddb::bind(name = "view_ray")]
@@ -432,12 +439,15 @@ impl crate::Host {
         let Some(ent) = self.local_client_entity() else {
             return -1;
         };
-        use deerpunk_engine_client::camera_util::{camera_world_at_entity, find_child_camera_with_layer};
+        use deerpunk_engine_client::camera_util::{
+            camera_world_at_entity, find_child_camera_with_layer,
+        };
         use deerpunk_engine_common::components::render_layer::RENDER_LAYER_WORLD;
         use glam::Vec3;
 
         let pawn = ent;
-        let Some(cam_ent) = find_child_camera_with_layer(&client.world, pawn, RENDER_LAYER_WORLD) else {
+        let Some(cam_ent) = find_child_camera_with_layer(&client.world, pawn, RENDER_LAYER_WORLD)
+        else {
             return -1;
         };
         let Some((eye, view_rot)) = camera_world_at_entity(&client.world, cam_ent) else {
@@ -589,7 +599,11 @@ impl crate::Host {
         ranges: *const deerpunk_engine_api::client::MeshSubmitRange,
         range_count: u32,
     ) -> i32 {
-        if position.is_null() || rotation.is_null() || scale.is_null() || ranges.is_null() || range_count == 0
+        if position.is_null()
+            || rotation.is_null()
+            || scale.is_null()
+            || ranges.is_null()
+            || range_count == 0
         {
             return -1;
         }
@@ -737,16 +751,25 @@ impl crate::Host {
 
     #[methoddb::bind(name = "data_model_set_bool")]
     pub fn api_ui_data_model_set_bool(&mut self, document: &str, field: &str, value: i32) -> i32 {
-        ui_client_op(self, |c| c.ui_data_model_set_bool(document, field, value != 0))
+        ui_client_op(self, |c| {
+            c.ui_data_model_set_bool(document, field, value != 0)
+        })
     }
 
     #[methoddb::bind(name = "data_model_set_number")]
     pub fn api_ui_data_model_set_number(&mut self, document: &str, field: &str, value: f32) -> i32 {
-        ui_client_op(self, |c| c.ui_data_model_set_number(document, field, value as f64))
+        ui_client_op(self, |c| {
+            c.ui_data_model_set_number(document, field, value as f64)
+        })
     }
 
     #[methoddb::bind(name = "data_model_set_string")]
-    pub fn api_ui_data_model_set_string(&mut self, document: &str, field: &str, value: &str) -> i32 {
+    pub fn api_ui_data_model_set_string(
+        &mut self,
+        document: &str,
+        field: &str,
+        value: &str,
+    ) -> i32 {
         ui_client_op(self, |c| c.ui_data_model_set_string(document, field, value))
     }
 }
@@ -780,7 +803,12 @@ impl crate::Host {
     }
 
     #[methoddb::bind(name = "data_model_set_bool")]
-    pub fn api_ui_data_model_set_bool(&mut self, _document: &str, _field: &str, _value: i32) -> i32 {
+    pub fn api_ui_data_model_set_bool(
+        &mut self,
+        _document: &str,
+        _field: &str,
+        _value: i32,
+    ) -> i32 {
         -1
     }
 
@@ -846,13 +874,7 @@ impl crate::Host {
     }
 
     #[methoddb::bind(name = "set")]
-    pub fn api_world_set(
-        &mut self,
-        entity: u64,
-        comp: u64,
-        data: *const c_void,
-        size: usize,
-    ) {
+    pub fn api_world_set(&mut self, entity: u64, comp: u64, data: *const c_void, size: usize) {
         self.world_set_component_raw(entity, comp, data, size);
     }
 
@@ -910,7 +932,6 @@ impl crate::Host {
     pub fn api_world_component_register(&mut self, desc: &ComponentRegisterDesc) -> u64 {
         crate::engine_api::components::register_component_desc(self, desc)
     }
-
 }
 
 #[methoddb::namespace(name = "v1:server", on_host, scope = ["server"])]
@@ -962,11 +983,7 @@ impl crate::Host {
 #[methoddb::namespace(name = "v1:schedule", on_host, scope = ["server", "client"])]
 impl crate::Host {
     #[methoddb::bind(name = "add_system")]
-    pub fn api_schedule_add_system(
-        &mut self,
-        system_fn: ScheduleSystemFn,
-        user_data: *mut c_void,
-    ) {
+    pub fn api_schedule_add_system(&mut self, system_fn: ScheduleSystemFn, user_data: *mut c_void) {
         self.gamelib_schedule.add_named(
             "gamelib",
             crate::schedule::CallbackSystem::new(system_fn, user_data),
@@ -1396,9 +1413,7 @@ impl crate::Host {
                                     mesh3d.mesh.0
                                 )
                             });
-                        log::info!(
-                            "[host] client_apply_mesh_uri '{uri}' ent={entity:#x} {detail}"
-                        );
+                        log::info!("[host] client_apply_mesh_uri '{uri}' ent={entity:#x} {detail}");
                     }
                     1
                 }
@@ -1420,9 +1435,7 @@ fn methoddb_read_cstr(ptr: *mut u8, len: usize) -> String {
     if ptr.is_null() || len == 0 {
         return String::new();
     }
-    unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)).to_string()
-    }
+    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)).to_string() }
 }
 
 fn audio_queue_play(host: &mut crate::Host, play: SoundPlayRpc) {
@@ -1544,8 +1557,7 @@ impl crate::Host {
         let mut ids = Vec::new();
         if let Some(batches) = self.server_mut().world.query_batches(qid) {
             for batch in batches {
-                let entities =
-                    unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 ids.extend_from_slice(entities);
             }
         }
@@ -1578,12 +1590,7 @@ impl crate::Host {
     }
 
     #[methoddb::bind(name = "query_matches")]
-    pub fn api_world_query_matches(
-        &self,
-        entity: u64,
-        require: &[u64],
-        exclude: &[u64],
-    ) -> bool {
+    pub fn api_world_query_matches(&self, entity: u64, require: &[u64], exclude: &[u64]) -> bool {
         for &c in require {
             if !self.server().world.has(entity, c) {
                 return false;
@@ -1612,8 +1619,7 @@ impl crate::Host {
         let qid = query_id as usize;
         if let Some(batches) = self.server_mut().world.query_batches(qid) {
             for batch in batches {
-                let entities =
-                    unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 let field_count = batch.columns.len();
                 for (i, &entity) in entities.iter().enumerate() {
                     let fields: Vec<*const c_void> = (0..field_count)
@@ -1690,7 +1696,11 @@ impl crate::Host {
             return;
         };
         deerpunk_engine_common::ecs_validate::assert_component_id(comp, "client_world::set");
-        deerpunk_engine_common::ecs_validate::assert_entity_alive(&ce.world, entity, "client_world::set");
+        deerpunk_engine_common::ecs_validate::assert_entity_alive(
+            &ce.world,
+            entity,
+            "client_world::set",
+        );
         if data.is_null() {
             panic!("[client_world] set entity {entity:#x} comp {comp:#x}: null data pointer");
         }
@@ -1776,15 +1786,16 @@ impl crate::Host {
             return;
         };
         deerpunk_engine_common::ecs_validate::assert_component_id(comp, "client_world::remove");
-        deerpunk_engine_common::ecs_validate::assert_entity_alive(&ce.world, entity, "client_world::remove");
+        deerpunk_engine_common::ecs_validate::assert_entity_alive(
+            &ce.world,
+            entity,
+            "client_world::remove",
+        );
         ce.world.remove(entity, comp);
     }
 
     #[methoddb::bind(name = "component_register")]
-    pub fn api_client_world_component_register(
-        &self,
-        desc: &ComponentRegisterDesc,
-    ) -> u64 {
+    pub fn api_client_world_component_register(&self, desc: &ComponentRegisterDesc) -> u64 {
         crate::engine_api::components::register_client_component_desc(self, desc)
     }
 
@@ -1804,8 +1815,7 @@ impl crate::Host {
         let mut ids = Vec::new();
         if let Some(batches) = ce.world.query_batches(qid) {
             for batch in batches {
-                let entities =
-                    unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
+                let entities = unsafe { std::slice::from_raw_parts(batch.entities, batch.count) };
                 ids.extend_from_slice(entities);
             }
         }
@@ -1854,7 +1864,11 @@ impl crate::Host {
     }
 
     #[methoddb::bind(name = "system_set_interval")]
-    pub fn api_client_world_system_set_interval(&mut self, system_id: u64, interval_secs: f32) -> i32 {
+    pub fn api_client_world_system_set_interval(
+        &mut self,
+        system_id: u64,
+        interval_secs: f32,
+    ) -> i32 {
         let Some(ce) = self.client_engine.as_mut() else {
             return -1;
         };
@@ -1880,15 +1894,13 @@ impl crate::Host {
         if query_ptr.is_null() || query_len == 0 || callback as usize == 0 {
             return 0;
         }
-        let query = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(query_ptr, query_len)) };
+        let query = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(query_ptr, query_len))
+        };
         let on_add = events & 1 != 0;
         let on_set = events & 2 != 0;
         match deerpunk_engine_common::ecs_observer::register_client_observer(
-            &ce.world,
-            query,
-            on_add,
-            on_set,
-            callback,
+            &ce.world, query, on_add, on_set, callback,
         ) {
             Ok(()) => 1,
             Err(e) => {
@@ -2186,7 +2198,10 @@ impl crate::Host {
         let vtable = unsafe {
             std::ptr::read_unaligned(vtable_bytes.as_ptr() as *const MeshAllocatorVTable)
         };
-        let reg = MeshAllocatorRegistration { vtable, ctx: alloc_ctx };
+        let reg = MeshAllocatorRegistration {
+            vtable,
+            ctx: alloc_ctx,
+        };
 
         let Some(ce) = self.client_engine.as_mut() else {
             // Server-only host: nothing to register with.
@@ -2203,7 +2218,10 @@ impl crate::Host {
     /// no allocator is registered under `name`.
     #[methoddb::bind(name = "allocator_id")]
     pub fn api_mesh_allocator_id(&self, name: &str) -> u32 {
-        self.mesh_allocator_names.get(name).copied().unwrap_or(u32::MAX)
+        self.mesh_allocator_names
+            .get(name)
+            .copied()
+            .unwrap_or(u32::MAX)
     }
 
     /// Keep a mesh that is not referenced by `Mesh3D` / `SkinnedMesh3D`.
@@ -2260,7 +2278,9 @@ impl crate::Host {
     #[methoddb::bind(name = "free")]
     pub fn api_bone_buffer_free(&mut self, handle: u32) {
         if let Some(ce) = self.client_engine.as_mut() {
-            ce.bone_buffer_free(deerpunk_engine_client::bone_buffer_pool::BoneBufferHandle(handle));
+            ce.bone_buffer_free(deerpunk_engine_client::bone_buffer_pool::BoneBufferHandle(
+                handle,
+            ));
         }
     }
 

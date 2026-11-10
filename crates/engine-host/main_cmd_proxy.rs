@@ -8,7 +8,7 @@
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
 
-use crate::cmd::{CommandRegistration, CmdSystem};
+use crate::cmd::{CmdSystem, CommandRegistration};
 use crate::server_thread::ServerThreadCmd;
 
 static SERVER_TX: Mutex<Option<Sender<ServerThreadCmd>>> = Mutex::new(None);
@@ -39,14 +39,16 @@ pub fn drain_pending_registrations(cmd: &mut CmdSystem) {
 fn register_proxy(cmd: &mut CmdSystem, name: String) {
     let log_name = name.clone();
     let cmd_name = name;
-    cmd.register(CommandRegistration::new(cmd_name.clone()).execute(move |ctx| {
-        let line = if ctx.args.is_empty() {
-            cmd_name.clone()
-        } else {
-            format!("{} {}", cmd_name, ctx.args.join(" "))
-        };
-        forward_to_server_thread(&line);
-    }));
+    cmd.register(
+        CommandRegistration::new(cmd_name.clone()).execute(move |ctx| {
+            let line = if ctx.args.is_empty() {
+                cmd_name.clone()
+            } else {
+                format!("{} {}", cmd_name, ctx.args.join(" "))
+            };
+            forward_to_server_thread(&line);
+        }),
+    );
     log::info!("[host] main-console proxy registered: '{log_name}'");
 }
 

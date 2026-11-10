@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cmd_completion::{
-    filter_name_prefix, suggest_cvar_assignment, suggest_cvar_names_at_arg, split_for_completion,
+    filter_name_prefix, split_for_completion, suggest_cvar_assignment, suggest_cvar_names_at_arg,
     MAX_COMPLETIONS,
 };
 use crate::cvar::CvarSystem;
@@ -73,16 +73,13 @@ impl CommandRegistration {
         let execute = self
             .execute
             .expect("CommandRegistration: call .execute() before register");
-        let suggest = self
-            .suggest
-            .unwrap_or_else(|| Box::new(|_, _| Vec::new()));
+        let suggest = self.suggest.unwrap_or_else(|| Box::new(|_, _| Vec::new()));
         (name, CommandEntry { execute, suggest })
     }
 }
 
 /// Gamelib console callback (`v1:cmd:register`).
-pub type CmdCallback =
-    extern "C" fn(i32, *const *const u8, *const usize, *mut c_void);
+pub type CmdCallback = extern "C" fn(i32, *const *const u8, *const usize, *mut c_void);
 
 struct DllCmd {
     callback: CmdCallback,
@@ -162,7 +159,10 @@ impl CmdSystem {
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
-    pub fn set_client_ref(&mut self, client: Option<&mut deerpunk_engine_client::client_engine::ClientEngine>) {
+    pub fn set_client_ref(
+        &mut self,
+        client: Option<&mut deerpunk_engine_client::client_engine::ClientEngine>,
+    ) {
         self.client_engine = client.map_or(std::ptr::null_mut(), |c| c as *mut _);
     }
 
@@ -175,7 +175,9 @@ impl CmdSystem {
     }
 
     #[cfg(any(feature = "client", feature = "full"))]
-    fn client_engine_mut(&self) -> Option<&mut deerpunk_engine_client::client_engine::ClientEngine> {
+    fn client_engine_mut(
+        &self,
+    ) -> Option<&mut deerpunk_engine_client::client_engine::ClientEngine> {
         if self.client_engine.is_null() {
             None
         } else {
@@ -226,9 +228,7 @@ impl CmdSystem {
         self.register_toggle_command();
         self.register_toggle_smart_command();
         self.register_stuffcmds_command();
-        self.register(
-            CommandRegistration::new("quit").execute(|ctx| ctx.cmd.request_quit()),
-        );
+        self.register(CommandRegistration::new("quit").execute(|ctx| ctx.cmd.request_quit()));
         #[cfg(any(feature = "client", feature = "full"))]
         self.register_s_play_command();
         #[cfg(any(feature = "client", feature = "full"))]
@@ -278,11 +278,9 @@ impl CmdSystem {
     /// Quake/Xash: apply `+command args` from the process command line.
     /// Intended at the end of `.rc` / after configs; runs at most once.
     fn register_stuffcmds_command(&mut self) {
-        self.register(
-            CommandRegistration::new("stuffcmds").execute(|ctx| {
-                ctx.cmd.exec_stuffcmds();
-            }),
-        );
+        self.register(CommandRegistration::new("stuffcmds").execute(|ctx| {
+            ctx.cmd.exec_stuffcmds();
+        }));
     }
 
     pub fn exec_stuffcmds(&self) {
@@ -302,8 +300,8 @@ impl CmdSystem {
     }
 
     fn register_echo_command(&mut self) {
-        self.register(
-            CommandRegistration::new("echo").execute(|ctx: CommandExecutionContext<'_>| {
+        self.register(CommandRegistration::new("echo").execute(
+            |ctx: CommandExecutionContext<'_>| {
                 if ctx.args.is_empty() {
                     println!();
                     log::info!("[echo]");
@@ -312,8 +310,8 @@ impl CmdSystem {
                     println!("{line}");
                     log::info!("[echo] {line}");
                 }
-            }),
-        );
+            },
+        ));
     }
 
     /// Flip a cvar between 0 and 1: `toggle <cvar>`.
@@ -333,8 +331,8 @@ impl CmdSystem {
                     let on = ctx.cmd.cvar().get_bool_or(name, false);
                     let next = if on { "0" } else { "1" };
                     ctx.cmd.cvar().set_or_create(name, next);
-                println!("toggle {name} = {next}");
-            })
+                    println!("toggle {name} = {next}");
+                })
                 .suggest(|line, ctx| suggest_cvar_names_at_arg(line, "toggle", 0, ctx.cvar)),
         );
     }
@@ -343,55 +341,54 @@ impl CmdSystem {
     /// Out of range / missing → `min`. Otherwise `cur+1`, wrap to `min` after `max`.
     fn register_toggle_smart_command(&mut self) {
         self.register(
-            CommandRegistration::new("toggle_smart").execute(|ctx: CommandExecutionContext<'_>| {
-                if ctx.args.len() < 3 {
-                    println!("Usage: toggle_smart <min> <max> <cvar>");
-                    return;
-                }
-                let Ok(min) = ctx.args[0].parse::<i32>() else {
-                    println!("Usage: toggle_smart <min> <max> <cvar>");
-                    return;
-                };
-                let Ok(max) = ctx.args[1].parse::<i32>() else {
-                    println!("Usage: toggle_smart <min> <max> <cvar>");
-                    return;
-                };
-                let name = strip_cfg_quotes(ctx.args[2]);
-                if name.is_empty() {
-                    println!("Usage: toggle_smart <min> <max> <cvar>");
-                    return;
-                }
-                let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
-                let cur = ctx.cmd.cvar().get_f32(name).map(|v| v as i32);
-                let next = match cur {
-                    Some(v) if (lo..=hi).contains(&v) => {
-                        if v >= hi {
-                            lo
-                        } else {
-                            v + 1
-                        }
+            CommandRegistration::new("toggle_smart")
+                .execute(|ctx: CommandExecutionContext<'_>| {
+                    if ctx.args.len() < 3 {
+                        println!("Usage: toggle_smart <min> <max> <cvar>");
+                        return;
                     }
-                    _ => lo,
-                };
-                let next_s = next.to_string();
-                ctx.cmd.cvar().set_or_create(name, &next_s);
-                println!("toggle_smart {name} = {next_s} (range {lo}..{hi})");
-            })
-            .suggest(|line, ctx| suggest_cvar_names_at_arg(line, "toggle_smart", 2, ctx.cvar)),
+                    let Ok(min) = ctx.args[0].parse::<i32>() else {
+                        println!("Usage: toggle_smart <min> <max> <cvar>");
+                        return;
+                    };
+                    let Ok(max) = ctx.args[1].parse::<i32>() else {
+                        println!("Usage: toggle_smart <min> <max> <cvar>");
+                        return;
+                    };
+                    let name = strip_cfg_quotes(ctx.args[2]);
+                    if name.is_empty() {
+                        println!("Usage: toggle_smart <min> <max> <cvar>");
+                        return;
+                    }
+                    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+                    let cur = ctx.cmd.cvar().get_f32(name).map(|v| v as i32);
+                    let next = match cur {
+                        Some(v) if (lo..=hi).contains(&v) => {
+                            if v >= hi {
+                                lo
+                            } else {
+                                v + 1
+                            }
+                        }
+                        _ => lo,
+                    };
+                    let next_s = next.to_string();
+                    ctx.cmd.cvar().set_or_create(name, &next_s);
+                    println!("toggle_smart {name} = {next_s} (range {lo}..{hi})");
+                })
+                .suggest(|line, ctx| suggest_cvar_names_at_arg(line, "toggle_smart", 2, ctx.cvar)),
         );
     }
 
     fn register_exec_command(&mut self) {
-        self.register(
-            CommandRegistration::new("exec").execute(|ctx| {
-                if ctx.args.is_empty() {
-                    println!("Usage: exec <filename>");
-                    return;
-                }
-                let filename = &ctx.args[0];
-                ctx.cmd.exec_file(filename);
-            }),
-        );
+        self.register(CommandRegistration::new("exec").execute(|ctx| {
+            if ctx.args.is_empty() {
+                println!("Usage: exec <filename>");
+                return;
+            }
+            let filename = &ctx.args[0];
+            ctx.cmd.exec_file(filename);
+        }));
     }
 
     fn exec_file(&self, filename: &str) {
@@ -515,12 +512,7 @@ impl CmdSystem {
     }
 
     #[methoddb::bind(name = "register")]
-    pub fn api_register(
-        &mut self,
-        name: &str,
-        callback: CmdCallback,
-        user: *mut c_void,
-    ) -> i32 {
+    pub fn api_register(&mut self, name: &str, callback: CmdCallback, user: *mut c_void) -> i32 {
         let name = name.trim();
         if name.is_empty() {
             log::error!("[cmd] register: empty name");
@@ -529,11 +521,11 @@ impl CmdSystem {
         let dll = DllCmd { callback, user };
         let name_owned = name.to_string();
         log::info!("[cmd] registered gamelib command '{name_owned}'");
-        self.register(
-            CommandRegistration::new(name_owned).execute(move |ctx: CommandExecutionContext<'_>| {
+        self.register(CommandRegistration::new(name_owned).execute(
+            move |ctx: CommandExecutionContext<'_>| {
                 invoke_dll_cmd(&dll, &ctx.args);
-            }),
-        );
+            },
+        ));
         0
     }
 

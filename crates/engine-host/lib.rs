@@ -157,6 +157,8 @@ pub struct Host {
     pub mesh_allocator_names: std::collections::HashMap<String, u32>,
     pub um: user_messages::UserMessageRegistry,
     pub inspector: inspector::Inspector,
+    /// Client-world entity data handed to the server-thread inspector.
+    client_inspector_share: Option<Arc<inspector::ClientInspectShare>>,
     /// Gamelib / host load UI (`v1:host:loader_queue_set`).
     pub loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue,
     pub(crate) time_secs: f32,
@@ -255,6 +257,7 @@ impl Host {
             mesh_allocator_names: std::collections::HashMap::new(),
             um: user_messages::UserMessageRegistry::default(),
             inspector: inspector::Inspector::new(),
+            client_inspector_share: None,
             loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue::default(),
             time_secs: 0.0,
             next_client_sound_id: 1,
@@ -327,6 +330,7 @@ impl Host {
             mesh_allocator_names: std::collections::HashMap::new(),
             um: user_messages::UserMessageRegistry::default(),
             inspector: inspector::Inspector::new(),
+            client_inspector_share: None,
             loader_queue: deerpunk_engine_common::loader_queue::LoaderQueue::default(),
             time_secs: 0.0,
             next_client_sound_id: 1,
@@ -438,6 +442,9 @@ impl Host {
         self.tick_net_server(dt);
         let on = self.server().enabled;
         enabled_flag.store(on, std::sync::atomic::Ordering::Relaxed);
+        // Inspector serves connections even with the world off (main menu);
+        // poll_server_inspector handles the no-world case with ctx=None.
+        self.poll_server_inspector();
         if !on {
             return;
         }
@@ -459,7 +466,6 @@ impl Host {
             self.deliver_s2c_broadcast(&packets);
         }
         self.deliver_usercmd_acks();
-        self.poll_server_inspector();
         self.time_secs += dt;
     }
 
@@ -469,19 +475,21 @@ impl Host {
         }
         let time_secs = self.time_secs;
         let resources = &self.resources;
-        let Some(engine) = self.server_engine.as_mut() else {
-            return;
-        };
-        let ctx = inspector::InspectorRpcCtx {
-            world: &engine.world,
-            resources,
-            time_secs,
-            players: &engine.players,
-            server_net: &engine.network,
-            server_rep: &engine.rep,
-            #[cfg(any(feature = "client", feature = "full"))]
-            client_engine: None,
-        };
+        // Poll even without a server engine (main menu): the inspector
+        // accepts connections there; world RPCs reply with an error until
+        // a map is loaded.
+        let ctx = self.server_engine.as_mut().map(|engine| {
+            inspector::InspectorRpcCtx {
+                world: &engine.world,
+                resources,
+                time_secs,
+                players: &engine.players,
+                server_net: &engine.network,
+                server_rep: &engine.rep,
+                #[cfg(any(feature = "client", feature = "full"))]
+                client_engine: None,
+            }
+        });
         self.inspector.poll(ctx);
     }
 
@@ -547,10 +555,14 @@ impl Host {
         #[cfg(any(feature = "client", feature = "full"))]
         {
             let gamedir_path = gamedir.as_ref().to_path_buf();
+            // Client-world entity data for the server-thread inspector.
+            let client_share = Arc::new(inspector::ClientInspectShare::default());
+            self.client_inspector_share = Some(client_share.clone());
             let server_thread = server_thread::ServerThread::spawn(
                 self.loopback.clone(),
                 gamedir_path,
                 self.cvar.clone(),
+                client_share,
             );
             main_cmd_proxy::attach(server_thread.cmd_sender().clone());
             self.server_thread = Some(server_thread);
@@ -646,6 +658,8 @@ impl Host {
 
     /// Start inspector WS using current cvars (after configs / stuffcmds).
     pub fn start_inspector(&mut self) {
+        // Force queued CLI overrides (`--inspector-*`) over config.cfg values.
+        self.cvar.apply_overrides();
         let port = self
             .cvar
             .get_string("sv_inspector_port")
@@ -1151,6 +1165,8 @@ impl Host {
             if let Some(client) = self.client_engine.as_mut() {
                 client.tick_world(delta_time);
             }
+            // Refresh inspector client-world data (rows + pending detail gets).
+            self.pump_client_inspector();
         }
 
         #[cfg(any(feature = "client", feature = "full"))]
@@ -1163,6 +1179,58 @@ impl Host {
                     }
                 }
             }
+        }
+    }
+
+    /// Main thread: publish client-world rows for the inspector and answer
+    /// queued `cliententities.get` detail requests (one-frame command hop).
+    #[cfg(any(feature = "client", feature = "full"))]
+    fn pump_client_inspector(&mut self) {
+        let Some(share) = self.client_inspector_share.as_ref() else {
+            return;
+        };
+        let Some(client) = self.client_engine.as_ref() else {
+            return;
+        };
+        let world = &client.world;
+        if share.want_rows() {
+            let rows: Vec<inspector::ClientEntityRow> = world
+                .inspect_entities()
+                .into_iter()
+                .map(|e| inspector::ClientEntityRow {
+                    id: e.id,
+                    prefab_id: inspector::entity_prefab_id(world, e.id),
+                    position: inspector::entity_position(world, e.id),
+                    name: e.name,
+                })
+                .collect();
+            share.publish_rows(self.time_secs, rows);
+        }
+        while let Some((seq, entity)) = share.take_pending() {
+            let ent = world.inspect_entities().into_iter().find(|e| e.id == entity);
+            let value = match ent {
+                None => serde_json::json!({ "_error": "entity not found" }),
+                Some(ent) => {
+                    // Every component on the entity; unregistered ones surface
+                    // as `_unregistered` (same shape as the server detail).
+                    let components: Vec<serde_json::Value> = world
+                        .inspect_entity_all_components(ent.id)
+                        .iter()
+                        .map(|slug| {
+                            serde_json::to_value(inspector::component_snapshot(
+                                world, ent.id, slug,
+                            ))
+                            .unwrap_or(serde_json::Value::Null)
+                        })
+                        .collect();
+                    serde_json::json!({
+                        "index": ent.id,
+                        "name": ent.name,
+                        "components": components,
+                    })
+                }
+            };
+            share.submit_detail(seq, value);
         }
     }
 

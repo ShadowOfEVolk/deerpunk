@@ -1,5 +1,5 @@
-use crate::system_profiler;
 use crate::gamelib_abi::ScheduleSystemFn;
+use crate::system_profiler;
 use std::ffi::c_void;
 
 pub trait System: Send {
@@ -52,11 +52,7 @@ impl Schedule {
         self.add_named("system", system)
     }
 
-    pub fn add_named<S: System + 'static>(
-        &mut self,
-        name: &'static str,
-        system: S,
-    ) -> &mut Self {
+    pub fn add_named<S: System + 'static>(&mut self, name: &'static str, system: S) -> &mut Self {
         self.systems.push(NamedSystem {
             name,
             system: Box::new(system),

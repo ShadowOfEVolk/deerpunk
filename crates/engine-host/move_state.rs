@@ -3,8 +3,8 @@
 use std::sync::Mutex;
 
 use deerpunk_engine_common::network::{
-    AXIS_COUNT, AXIS_FORWARD, AXIS_SIDE, AXIS_UP, BUTTON_ATTACK, BUTTON_DUCK, BUTTON_DROP,
-    BUTTON_JUMP, BUTTON_ATTACK2, BUTTON_ATTACK3, BUTTON_SPEED, BUTTON_USE,
+    AXIS_COUNT, AXIS_FORWARD, AXIS_SIDE, AXIS_UP, BUTTON_ATTACK, BUTTON_ATTACK2, BUTTON_ATTACK3,
+    BUTTON_DROP, BUTTON_DUCK, BUTTON_JUMP, BUTTON_SPEED, BUTTON_USE,
 };
 
 use crate::cmd::{CmdSystem, CommandRegistration};
@@ -110,12 +110,8 @@ pub fn register_commands(cmd: &mut CmdSystem) {
         ($name:literal) => {{
             let plus = concat!("+", $name);
             let minus = concat!("-", $name);
-            cmd.register(
-                CommandRegistration::new(plus).execute(|_| set_axis_key($name, true)),
-            );
-            cmd.register(
-                CommandRegistration::new(minus).execute(|_| set_axis_key($name, false)),
-            );
+            cmd.register(CommandRegistration::new(plus).execute(|_| set_axis_key($name, true)));
+            cmd.register(CommandRegistration::new(minus).execute(|_| set_axis_key($name, false)));
         }};
     }
     axis_pair!("forward");
@@ -129,12 +125,8 @@ pub fn register_commands(cmd: &mut CmdSystem) {
         ($name:literal, $bit:expr) => {{
             let plus = concat!("+", $name);
             let minus = concat!("-", $name);
-            cmd.register(
-                CommandRegistration::new(plus).execute(|_| set_button($bit, true)),
-            );
-            cmd.register(
-                CommandRegistration::new(minus).execute(|_| set_button($bit, false)),
-            );
+            cmd.register(CommandRegistration::new(plus).execute(|_| set_button($bit, true)));
+            cmd.register(CommandRegistration::new(minus).execute(|_| set_button($bit, false)));
         }};
     }
     btn_pair!("attack", BUTTON_ATTACK);
@@ -145,9 +137,7 @@ pub fn register_commands(cmd: &mut CmdSystem) {
     btn_pair!("use", BUTTON_USE);
     btn_pair!("speed", BUTTON_SPEED);
     btn_pair!("drop", BUTTON_DROP);
-    cmd.register(
-        CommandRegistration::new("drop").execute(|_| pulse_button(BUTTON_DROP)),
-    );
+    cmd.register(CommandRegistration::new("drop").execute(|_| pulse_button(BUTTON_DROP)));
 }
 
 /// Clear held move keys (console open / disconnect).

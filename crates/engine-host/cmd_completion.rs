@@ -8,10 +8,7 @@ pub const MAX_COMPLETIONS: usize = 12;
 pub fn split_for_completion(line: &str) -> (Vec<String>, String, bool) {
     let ends_ws = line.ends_with(' ') || line.ends_with('\t');
     let trimmed = line.trim_end_matches([' ', '\t']);
-    let mut parts: Vec<String> = trimmed
-        .split_whitespace()
-        .map(String::from)
-        .collect();
+    let mut parts: Vec<String> = trimmed.split_whitespace().map(String::from).collect();
     if ends_ws {
         return (parts, String::new(), true);
     }

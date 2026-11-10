@@ -13,16 +13,34 @@ pub use types::*;
 
 use serde_json::{Value, json};
 
-/// Built-in collections for a minimal engine stub (entities only).
+/// Built-in collections for a minimal engine stub (entities per world).
 pub fn default_collections() -> Vec<CollectionDescriptor> {
-    vec![CollectionDescriptor {
-        id: "entities".into(),
-        label: "Entities".into(),
-        group: CollectionGroup::Runtime,
-        modes: vec![CollectionMode::List, CollectionMode::Get],
-        id_field: "index".into(),
-        nested_in: None,
-    }]
+    vec![
+        CollectionDescriptor {
+            id: "serverentities".into(),
+            label: "Server Entities".into(),
+            group: CollectionGroup::Runtime,
+            modes: vec![CollectionMode::List, CollectionMode::Get],
+            id_field: "index".into(),
+            nested_in: None,
+        },
+        CollectionDescriptor {
+            id: "cliententities".into(),
+            label: "Client Entities".into(),
+            group: CollectionGroup::Runtime,
+            modes: vec![CollectionMode::List, CollectionMode::Get],
+            id_field: "index".into(),
+            nested_in: None,
+        },
+        CollectionDescriptor {
+            id: "prefabs".into(),
+            label: "Prefabs".into(),
+            group: CollectionGroup::Definitions,
+            modes: vec![CollectionMode::List],
+            id_field: "id".into(),
+            nested_in: None,
+        },
+    ]
 }
 
 pub fn initialize_result(

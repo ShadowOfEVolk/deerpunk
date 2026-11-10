@@ -77,6 +77,11 @@ pub struct EntityListItem {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classname: Option<String>,
+    /// FNV-1a id of the prefab this entity was spawned from (see `prefabs` collection).
+    #[serde(default, rename = "prefabId", skip_serializing_if = "Option::is_none")]
+    pub prefab_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "seed": 3517650905,
+  "world_type": "default",
+  "last_played_unix": 0,
+  "created_unix": 1794299568,
+  "play_time_secs": 91,
+  "time_ticks": 1831,
+  "spawn": [
+    8.0,
+    8.0,
+    20.0
+  ]
+}

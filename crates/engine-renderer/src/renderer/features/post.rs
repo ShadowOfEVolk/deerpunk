@@ -40,6 +40,11 @@ impl Renderer {
             );
             lap_ms(ctx.lap);
 
+            // One-shot capture: the surface holds the tonemapped scene and no
+            // UI has been drawn yet (this is the only tonemap path — the
+            // deferred-submit branch reuses this same encoder).
+            self.encode_capture_copy(encoder);
+
             // UI overlay (RmlUi geometry) on LDR surface
             if let Some(ui) = self.pending_ui.as_ref() {
                 let upload = std::mem::take(&mut self.ui_upload);

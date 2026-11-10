@@ -5,11 +5,7 @@ impl crate::Host {
     pub fn clear_server_world(&mut self) {
         let world = &mut self.server_engine.as_mut().expect("server thread").world;
         world.clear_deferred_destroy();
-        let ids: Vec<u64> = world
-            .inspect_entities()
-            .into_iter()
-            .map(|e| e.id)
-            .collect();
+        let ids: Vec<u64> = world.inspect_entities().into_iter().map(|e| e.id).collect();
         log::info!("[world] clear — destroying {} entities", ids.len());
         for id in ids {
             world.destroy(id);
@@ -37,37 +33,21 @@ impl crate::Host {
         if size == std::mem::size_of::<deerpunk_engine_common::components::mesh3d::Mesh3D>() {
             let mesh_registry = &mut self.mesh_registry;
             let world = &mut self.server_engine.as_mut().expect("server thread").world;
-            crate::mesh_components::set_mesh3d_raw(
-                world,
-                mesh_registry,
-                entity,
-                comp,
-                data,
-                size,
-            );
+            crate::mesh_components::set_mesh3d_raw(world, mesh_registry, entity, comp, data, size);
             return;
         }
         if size == std::mem::size_of::<deerpunk_engine_common::components::SkinnedMesh3D>() {
             let mesh_registry = &mut self.mesh_registry;
             let world = &mut self.server_engine.as_mut().expect("server thread").world;
-            crate::mesh_components::set_skinned_raw(
-                world,
-                mesh_registry,
-                entity,
-                comp,
-                data,
-                size,
-            );
+            crate::mesh_components::set_skinned_raw(world, mesh_registry, entity, comp, data, size);
             return;
         }
         if size == std::mem::size_of::<deerpunk_engine_common::components::MapKv>() {
-            let value = unsafe { std::ptr::read(data as *const deerpunk_engine_common::components::MapKv) };
+            let value =
+                unsafe { std::ptr::read(data as *const deerpunk_engine_common::components::MapKv) };
             self.server_mut().world.set(entity, comp, value);
             return;
         }
-        self.server_mut()
-            .world
-            .set_raw(entity, comp, data, size);
+        self.server_mut().world.set_raw(entity, comp, data, size);
     }
-
 }

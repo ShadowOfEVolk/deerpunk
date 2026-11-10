@@ -158,8 +158,7 @@ impl Host {
                     self.disconnect_all_net();
                     #[cfg(any(feature = "client", feature = "full"))]
                     {
-                        self.client_engine.as_mut().unwrap().join_phase =
-                            ClientSessionPhase::Idle;
+                        self.client_engine.as_mut().unwrap().join_phase = ClientSessionPhase::Idle;
                         self.flush_client_scene();
                         deerpunk_ui::set_client_in_game(false);
                     }
@@ -171,11 +170,11 @@ impl Host {
                     }
                     println!("[net] net_disconnect");
                 }
-                PendingNetCmd::LanRefresh => {
+                PendingNetCmd::LanRefresh =>
+                {
                     #[cfg(any(feature = "client", feature = "full"))]
                     if let Some(client) = self.client_engine.as_mut() {
-                        let port =
-                            self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
+                        let port = self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
                         match client.lan_browser.ensure_listening(port) {
                             Ok(()) => {
                                 client.lan_browser.send_query();
@@ -185,7 +184,8 @@ impl Host {
                         }
                     }
                 }
-                PendingNetCmd::LanStop => {
+                PendingNetCmd::LanStop =>
+                {
                     #[cfg(any(feature = "client", feature = "full"))]
                     if let Some(client) = self.client_engine.as_mut() {
                         client.lan_browser.stop();

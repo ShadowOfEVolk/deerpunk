@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::component_inspect::NativeInspectDumpFn;
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PointLight, SkinnedMesh3D,
+    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PointLight, PrefabId, SkinnedMesh3D,
     SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent,
 };
 use crate::material::DrawMaterial;
@@ -136,11 +136,18 @@ fn dump_network_entity(
     let n = world
         .get::<NetworkEntity>(entity, comp)
         .ok_or("NetworkEntity missing")?;
-    Ok(json!({
+    let mut obj = json!({
         "net_id": n.net_id,
         "hot_count": n.hot_count,
         "cold_count": n.cold_count,
-    }))
+    });
+    let prefab = n.prefab_str();
+    if !prefab.is_empty() {
+        obj.as_object_mut()
+            .expect("network entity dump object")
+            .insert("prefab".into(), json!(prefab));
+    }
+    Ok(obj)
 }
 
 fn dump_mesh3d(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
@@ -176,6 +183,11 @@ fn dump_draw_material(world: &World, entity: EntityId, comp: ComponentId) -> Res
         "material_handle": dm.handle.0,
         "material_valid": !dm.handle.is_none(),
     }))
+}
+
+fn dump_prefab_id(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+    let p = world.get::<PrefabId>(entity, comp).ok_or("PrefabId missing")?;
+    Ok(json!({ "id": p.id }))
 }
 
 /// Call after [`register_engine_prefab_appliers`]: same component ids, inspector metadata.
@@ -295,6 +307,20 @@ pub fn register_engine_component_inspect(world: &World) {
 
     let id = world.component_init::<MapKv>();
     reg(world, "MapKv", id, json!({ "type": "object" }), dump_map_kv);
+
+    let id = world.component_init::<PrefabId>();
+    reg(
+        world,
+        "PrefabId",
+        id,
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "integer" },
+            }
+        }),
+        dump_prefab_id,
+    );
 
     let id = world.component_init::<Mesh3D>();
     reg(

@@ -45,4 +45,3 @@ pub fn set_skinned_raw(
     let new = unsafe { std::ptr::read_unaligned(data as *const SkinnedMesh3D) };
     world.set(entity, comp, new);
 }
-

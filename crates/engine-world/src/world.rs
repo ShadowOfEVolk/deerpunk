@@ -1051,6 +1051,7 @@ fn is_game_component_token(token: &str) -> bool {
             | "MeshRenderer"
             | "NetReplicatedComponent"
             | "NetworkEntity"
+            | "PrefabId"
             | "CharacterController"
             | "PlayerMovement"
             | "PlayerUse"
@@ -1111,6 +1112,40 @@ impl World {
                     name,
                     components,
                 });
+            }
+        }
+        out
+    }
+
+    /// Every game component token on one entity (no whitelist filtering).
+    ///
+    /// Skips flecs pairs like `(Identifier,Name)` and `flecs.*` builtins, so
+    /// engine + gamelib components (registered for inspection or not) remain.
+    /// Used by the inspector entity-detail dump, which must enumerate ALL
+    /// components instead of only the whitelisted ones.
+    pub fn inspect_entity_all_components(&self, entity: EntityId) -> Vec<String> {
+        let mut out = Vec::new();
+        unsafe {
+            let type_ptr = sys::ecs_get_type(self.inner, entity);
+            if type_ptr.is_null() {
+                return out;
+            }
+            let tp = sys::ecs_type_str(self.inner, type_ptr);
+            if tp.is_null() {
+                return out;
+            }
+            let s = CStr::from_ptr(tp).to_string_lossy().into_owned();
+            if let Some(free_fn) = sys::ecs_os_api.free_ {
+                free_fn(tp as *mut std::ffi::c_void);
+            }
+            for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                // Skip flecs pairs `(X,Y)` — the comma split can also leave a
+                // trailing `Y)` fragment — and `flecs.*` builtin identifiers.
+                if part.contains('(') || part.contains(')') || part.split('.').next() == Some("flecs")
+                {
+                    continue;
+                }
+                out.push(part.to_string());
             }
         }
         out

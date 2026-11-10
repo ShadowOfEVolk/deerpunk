@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::components::{NetworkEntity, ParentComponent};
+use crate::components::{NetworkEntity, ParentComponent, PrefabId, prefab_id_for};
 use crate::network::field_path::{FieldValue, NetFieldId};
 use crate::resource::{MeshRegistry, ResourceManager};
 use crate::world::{EntityId, World};
@@ -108,6 +108,9 @@ fn spawn_prefab_children(
             .map_err(|e| format!("prefab '{prefab_name}' child[{idx}] {comp_name}: {e}"))?;
         }
         world.set(child, parent_id, ParentComponent { parent });
+        // Children spawned from the same prefab carry the same PrefabId.
+        let prefab_comp = world.component_init::<PrefabId>();
+        world.set(child, prefab_comp, prefab_id_for(prefab_name));
         spawn_prefab_children(
             world,
             meshes,
@@ -357,6 +360,9 @@ fn patch_transform(components: &mut HashMap<String, Value>, key: &str, v: &[f32;
 
 fn stamp_network_prefab_name(world: &World, entity: EntityId, name: &str) {
     world.set_entity_name(entity, name);
+    // Every prefab-spawned entity in either world carries a stable PrefabId.
+    let prefab_id = world.component_init::<PrefabId>();
+    world.set(entity, prefab_id, prefab_id_for(name));
     let id = world.component_init::<NetworkEntity>();
     if !world.has(entity, id) {
         return;

@@ -66,9 +66,7 @@ fn empty_snapshot() -> Value {
 }
 
 fn with_profiler<R>(f: impl FnOnce(&mut ProfilerState) -> R) -> R {
-    let mut g = PROFILER
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut g = PROFILER.lock().unwrap_or_else(|p| p.into_inner());
     f(&mut g)
 }
 

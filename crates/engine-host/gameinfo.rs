@@ -181,11 +181,7 @@ fn tokenize(line: &str) -> Vec<String> {
     tokens
 }
 
-deerpunk_engine_common::cvar_def!(
-    "r_ui_fps",
-    "30",
-    "HUD update rate. 0 = every frame."
-);
+deerpunk_engine_common::cvar_def!("r_ui_fps", "30", "HUD update rate. 0 = every frame.");
 deerpunk_engine_common::cvar_def!(
     "gamedir",
     "examples/deathmatch/gamedir",

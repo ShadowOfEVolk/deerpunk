@@ -31,9 +31,7 @@ pub(crate) fn register_component_desc(host: &mut crate::Host, desc: &ComponentRe
     let layout_meta = if desc.layout_meta_ptr.is_null() || desc.layout_meta_len == 0 {
         Vec::new()
     } else {
-        unsafe {
-            std::slice::from_raw_parts(desc.layout_meta_ptr, desc.layout_meta_len).to_vec()
-        }
+        unsafe { std::slice::from_raw_parts(desc.layout_meta_ptr, desc.layout_meta_len).to_vec() }
     };
     let reg = ComponentDescriptor {
         name,
@@ -94,9 +92,7 @@ pub(crate) fn register_client_component_desc(
     let layout_meta = if desc.layout_meta_ptr.is_null() || desc.layout_meta_len == 0 {
         Vec::new()
     } else {
-        unsafe {
-            std::slice::from_raw_parts(desc.layout_meta_ptr, desc.layout_meta_len).to_vec()
-        }
+        unsafe { std::slice::from_raw_parts(desc.layout_meta_ptr, desc.layout_meta_len).to_vec() }
     };
     let reg = ComponentDescriptor {
         name,

@@ -22,8 +22,14 @@ impl Host {
             .map(|c| c.network.poll(duration))
             .unwrap_or_default();
 
-        if self.client_engine.as_ref().is_some_and(|c| c.network.is_active())
-            && self.client_engine.as_ref().is_some_and(|c| c.network.is_connected())
+        if self
+            .client_engine
+            .as_ref()
+            .is_some_and(|c| c.network.is_active())
+            && self
+                .client_engine
+                .as_ref()
+                .is_some_and(|c| c.network.is_connected())
         {
             if let Some(client) = self.client_engine.as_mut() {
                 if client.join_phase == ClientSessionPhase::Idle {
@@ -50,11 +56,10 @@ impl Host {
         } else {
             None
         };
-        let (c2s, need_public) = self.server_mut().network.poll(
-            duration,
-            &slots,
-            lan_reply.as_ref(),
-        );
+        let (c2s, need_public) =
+            self.server_mut()
+                .network
+                .poll(duration, &slots, lan_reply.as_ref());
         if let Some(addr) = need_public {
             self.server_mut().network.apply_need_public_addr(addr);
         }
