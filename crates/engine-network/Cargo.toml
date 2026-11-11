@@ -8,4 +8,4 @@ description = "Deerpunk wire protocol, session, LAN, loopback (no ECS)"
 path = "src/lib.rs"
 
 [dependencies]
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
