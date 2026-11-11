@@ -1,7 +1,8 @@
 //! World-query hook for `collide_world` affectors.
 //!
 //! The engine never knows about voxels (or any other world shape). Games
-//! implement [`WorldCollider`] and hand a reference to [`crate::ParticleSim::tick`].
+//! implement [`WorldCollider`] and register it on the shared
+//! [`crate::ParticlePool`] via [`crate::ParticlePool::set_collider`].
 
 use glam::Vec3;
 

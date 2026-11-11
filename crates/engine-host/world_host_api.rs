@@ -17,7 +17,8 @@ pub(crate) fn set_component_raw_fallback(
     size: usize,
 ) {
     if size == std::mem::size_of::<deerpunk_engine_common::components::MapKv>() {
-        let value = unsafe { std::ptr::read(data as *const deerpunk_engine_common::components::MapKv) };
+        let value =
+            unsafe { std::ptr::read(data as *const deerpunk_engine_common::components::MapKv) };
         world.set(entity, comp, value);
         return;
     }

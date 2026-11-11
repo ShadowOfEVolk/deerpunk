@@ -419,3 +419,31 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         assert_eq!(id1, id2);
     }
 }
+#[cfg(test)]
+mod billboard_gpu_tests {
+    const INTERNAL: &str = "../engine-resource/assets/internal";
+
+    fn internal_path(rel: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(INTERNAL)
+            .join(rel)
+    }
+
+    fn compile(path: &str, rel: &str) -> Result<(), String> {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(INTERNAL);
+        let src = std::fs::read_to_string(internal_path(rel))
+            .unwrap_or_else(|e| panic!("{rel} on disk: {e}"));
+        super::compile_shader_source(path, &[], &src, &root).map(|_| ())
+    }
+
+    /// The native instanced particle shader (static quad + 40-byte
+    /// `GpuParticle` instances) must survive preprocess + naga reflect.
+    #[test]
+    fn internal_billboard_instanced_shader_reflects() {
+        let res = compile(
+            "internal://shaders/particles/billboard_instanced.wgsl",
+            "shaders/particles/billboard_instanced.wgsl",
+        );
+        assert!(res.is_ok(), "billboard_instanced.wgsl: {:?}", res.err());
+    }
+}

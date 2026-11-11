@@ -677,20 +677,25 @@ fn main() {}
 mod particle_shader_tests {
     use super::*;
 
-    /// Engine internal particle shader parses, resolves its includes, and
-    /// declares the transparent + additive + 40-byte particle layout.
+    /// Shader meta parsing on an inline source shaped like the engine's
+    /// instanced particle shader: pass/blend tags, vertex layout stride,
+    /// include expansion of the Bayer dither.
     #[test]
     fn particle_billboard_shader_meta() {
-        let src = crate::resource::internal_asset("shaders/particles/billboard.wgsl")
-            .expect("internal particle shader embedded");
+        let src = r#"
+#@shader pass=mesh_transparent blend=additive
+#@vertex position float3, ext_float2_0 float2, uv float2, atlas_rect float4, baked_color unorm8x4
+#include "internal://shaders/inc/dither.wgsl"
+@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }
+"#;
         let out =
             ShaderPreprocessor::process_at(src, &[], Some(Path::new("/"))).expect("preprocess");
         assert_eq!(out.meta.pass, Some(RenderPass::MeshTransparent));
         assert_eq!(out.meta.blend, BlendMode::Additive);
         let layout = out.meta.vertex_layout.expect("#@vertex layout declared");
         assert_eq!(
-            layout.stride, 40,
-            "position f3 + uv f2 + atlas_rect f4 + color unorm8x4"
+            layout.stride, 48,
+            "center f3 + corner f2 + uv f2 + atlas_rect f4 + color unorm8x4"
         );
         assert!(out.wgsl.contains("vs_main"));
         assert!(out.wgsl.contains("dither_keep"), "Bayer include expanded");

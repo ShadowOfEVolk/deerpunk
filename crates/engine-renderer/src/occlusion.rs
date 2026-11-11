@@ -30,6 +30,9 @@ pub struct MeshOcclusion {
     warmup_frames: u8,
     last_occluded: u32,
     last_queried: u32,
+    /// Bumped whenever visibility results may have moved (readback applied, enable
+    /// flip). Lets consumers key per-frame caches on the visible set.
+    visibility_epoch: u64,
     gpu: Option<OcclusionGpu>,
 }
 
@@ -65,15 +68,22 @@ impl MeshOcclusion {
             warmup_frames: 2,
             last_occluded: 0,
             last_queried: 0,
+            visibility_epoch: 0,
             gpu: None,
         }
     }
 
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
+        self.visibility_epoch += 1;
         if !on {
             self.states.clear();
         }
+    }
+
+    /// Counter that changes whenever the visible set may have moved.
+    pub fn visibility_epoch(&self) -> u64 {
+        self.visibility_epoch
     }
 
     /// GPU occlusion hides draws after warmup; when false, all draws pass.
@@ -155,11 +165,17 @@ impl MeshOcclusion {
         let data = slice.get_mapped_range().expect("occlusion readback map");
         let words: &[u64] = bytemuck::cast_slice(&data);
         let mut occluded = 0u32;
+        let mut visibility_changed = false;
         for (qi, key) in self.pending_keys.iter().enumerate() {
             // Missing slot → assume visible so we do not flash-hide on readback glitches.
             let samples = words.get(qi).copied().unwrap_or(1);
+            let drawn_before = Self::is_drawn(&self.states, *key);
             Self::apply_sample(*key, samples, &mut self.states);
-            if !Self::is_drawn(&self.states, *key) {
+            let drawn_after = Self::is_drawn(&self.states, *key);
+            if drawn_before != drawn_after {
+                visibility_changed = true;
+            }
+            if !drawn_after {
                 occluded += 1;
             }
         }
@@ -170,6 +186,9 @@ impl MeshOcclusion {
         self.readback_rx = None;
         if self.warmup_frames > 0 {
             self.warmup_frames -= 1;
+        }
+        if visibility_changed {
+            self.visibility_epoch += 1;
         }
     }
 

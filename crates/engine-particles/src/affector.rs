@@ -48,7 +48,10 @@ pub enum Affector {
     },
     /// Game-defined effect, resolved through [`AffectorRegistry`].
     /// Unknown names are rejected at load time.
-    Custom { type_name: String, params: JsonValue },
+    Custom {
+        type_name: String,
+        params: JsonValue,
+    },
 }
 
 impl Affector {
@@ -113,7 +116,12 @@ pub struct ApplyCtx<'a> {
 }
 
 /// Apply affectors to one particle for `dt` seconds.
-pub fn apply_affectors(affectors: &[Affector], reg: &AffectorRegistry, p: &mut Particle, ctx: &mut ApplyCtx) {
+pub fn apply_affectors(
+    affectors: &[Affector],
+    reg: &AffectorRegistry,
+    p: &mut Particle,
+    ctx: &mut ApplyCtx,
+) {
     let dt = ctx.dt;
     for aff in affectors {
         match aff {

@@ -245,14 +245,35 @@ fn default_color() -> ColorDef {
 /// unknown types pass through as `Custom` (hard-errored unless registered).
 #[derive(Clone, Debug, PartialEq)]
 pub enum AffectorDef {
-    Gravity { g: f32 },
-    Drag { k: f32 },
-    TerminalVelocity { v: f32 },
-    Sway { freq: f32, amp: f32 },
-    Flutter { amp: f32, freq: f32 },
-    SpinWobble { wobble: f32, freq: f32 },
-    LinearForce { f: [f32; 3] },
-    CollideWorld { bounce: f32, friction: f32, rest: String },
+    Gravity {
+        g: f32,
+    },
+    Drag {
+        k: f32,
+    },
+    TerminalVelocity {
+        v: f32,
+    },
+    Sway {
+        freq: f32,
+        amp: f32,
+    },
+    Flutter {
+        amp: f32,
+        freq: f32,
+    },
+    SpinWobble {
+        wobble: f32,
+        freq: f32,
+    },
+    LinearForce {
+        f: [f32; 3],
+    },
+    CollideWorld {
+        bounce: f32,
+        friction: f32,
+        rest: String,
+    },
     /// Passthrough: params kept verbatim for the registered custom affector.
     Custom(serde_json::Value),
 }
@@ -286,7 +307,10 @@ fn field_f32(v: &serde_json::Value, key: &str) -> Result<f32, String> {
 }
 
 fn field_f32_or(v: &serde_json::Value, key: &str, default: f32) -> f32 {
-    v.get(key).and_then(|x| x.as_f64()).map(|x| x as f32).unwrap_or(default)
+    v.get(key)
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32)
+        .unwrap_or(default)
 }
 
 impl AffectorDef {
@@ -297,9 +321,15 @@ impl AffectorDef {
             .ok_or_else(|| "affector missing 'type'".to_string())?
             .to_string();
         Ok(match type_name.as_str() {
-            "gravity" => Self::Gravity { g: field_f32(&v, "g")? },
-            "drag" => Self::Drag { k: field_f32(&v, "k")? },
-            "terminal_velocity" => Self::TerminalVelocity { v: field_f32(&v, "v")? },
+            "gravity" => Self::Gravity {
+                g: field_f32(&v, "g")?,
+            },
+            "drag" => Self::Drag {
+                k: field_f32(&v, "k")?,
+            },
+            "terminal_velocity" => Self::TerminalVelocity {
+                v: field_f32(&v, "v")?,
+            },
             "sway" => Self::Sway {
                 freq: field_f32(&v, "freq")?,
                 amp: field_f32(&v, "amp")?,
@@ -370,7 +400,10 @@ impl AffectorDef {
                         "unknown affector type '{type_name}' (builtin or registered custom required)"
                     ));
                 }
-                Affector::Custom { type_name, params: v }
+                Affector::Custom {
+                    type_name,
+                    params: v,
+                }
             }
         })
     }
@@ -447,7 +480,9 @@ impl EffectDef {
             if name != "soft_disc" {
                 return Err(format!("procedural sprite '{name}' is not supported yet"));
             }
-            return Err("procedural sprite 'soft_disc' deferred: no generated sprite upload yet".into());
+            return Err(
+                "procedural sprite 'soft_disc' deferred: no generated sprite upload yet".into(),
+            );
         }
         if self.emitter.kind == EmitterKind::Stream && self.emitter.rate <= 0.0 {
             return Err("stream emitter needs rate > 0".into());
@@ -471,7 +506,9 @@ impl EffectDef {
                     return Err(format!("unknown affector type '{name}'"));
                 }
             } else if aff_is_collide(aff) && !has_collider {
-                return Err("effect uses 'collide_world' but no WorldCollider is registered".into());
+                return Err(
+                    "effect uses 'collide_world' but no WorldCollider is registered".into(),
+                );
             }
         }
         Ok(())

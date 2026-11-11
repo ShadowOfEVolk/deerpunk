@@ -260,3 +260,59 @@ impl UiGeometryBuilder {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quad_bytes() -> Vec<u8> {
+        let mut v = Vec::new();
+        for i in 0..4 {
+            let x = (i % 2) as f32;
+            let y = (i / 2) as f32;
+            v.extend_from_slice(&x.to_le_bytes());
+            v.extend_from_slice(&y.to_le_bytes());
+            // skip colour (4 bytes between pos and uv)
+            v.extend_from_slice(&[0u8; 4]);
+            v.extend_from_slice(&0f32.to_le_bytes());
+            v.extend_from_slice(&0f32.to_le_bytes());
+        }
+        v
+    }
+
+    /// Delta contract on the producer side: identical renders emit no frame,
+    /// a changed render emits only its own delta (new meshes / textures).
+    #[test]
+    fn static_hud_emits_no_frame_and_changes_emit_delta_only() {
+        let mut builder = UiGeometryBuilder::new(800, 600);
+        let white = builder.white_id();
+
+        let bytes = quad_bytes();
+        let geo = builder.compile_geometry(&bytes, 20, 4, &[0, 1, 2, 0, 2, 3]);
+        builder.draw_geometry(geo, 10.0, 10.0, white as usize);
+
+        let first = builder.take_frame_if_changed().expect("first frame ships");
+        assert_eq!(first.meshes.len(), 1);
+        assert_eq!(first.textures.len(), 1, "white fallback ships exactly once");
+        assert_eq!(first.draws.len(), 1);
+
+        // Same render again → no new resources, identical draws → no frame.
+        builder.begin_frame();
+        builder.draw_geometry(geo, 10.0, 10.0, white as usize);
+        assert!(
+            builder.take_frame_if_changed().is_none(),
+            "static HUD must emit nothing"
+        );
+
+        // A text tick recompiles one element: delta = that mesh only, no
+        // texture re-emission (font atlas ships once).
+        builder.begin_frame();
+        let geo2 = builder.compile_geometry(&bytes, 20, 4, &[0, 1, 2, 0, 2, 3]);
+        builder.release_geometry(geo);
+        builder.draw_geometry(geo2, 10.0, 10.0, white as usize);
+        let tick = builder.take_frame_if_changed().expect("changed HUD ships");
+        assert_eq!(tick.meshes.len(), 1, "only the recompiled mesh ships");
+        assert!(tick.textures.is_empty(), "no texture re-emission");
+        assert_eq!(tick.released_meshes, vec![geo]);
+    }
+}

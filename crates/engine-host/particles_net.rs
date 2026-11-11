@@ -8,7 +8,8 @@
 //! `u8 flags` + effect string (`u8` len + UTF-8) + `pos[3] f32` + `vel[3] f32`
 //! + optional `SpawnPayload` fields, each gated by a presence bit:
 //! count `u32`, scale `f32`, speed `f32`, tint `4×u8` (0..1 → 0..255),
-//! dir `3×f32`, sprite (`u8` kind: 0 = uv rect `4×f32`, 1 = frame `u32`).
+//! dir `3×f32`, sprite (`u8` kind: 0 = uv rect `4×f32`, 1 = frame `u32`),
+//! texture (`u8` len + UTF-8).
 
 use std::sync::Mutex;
 
@@ -28,6 +29,7 @@ const FLAG_DIR: u8 = 1 << 4;
 const FLAG_SPRITE: u8 = 1 << 5;
 /// When set with [`FLAG_SPRITE`], the override is a frame index (else a UV rect).
 const FLAG_SPRITE_FRAME: u8 = 1 << 6;
+const FLAG_TEXTURE: u8 = 1 << 7;
 
 /// One server-emitted particle burst (mirror of the client spawn arguments).
 #[derive(Clone, Debug, PartialEq)]
@@ -113,6 +115,13 @@ fn encode_payload_fields(out: &mut Vec<u8>, flags: &mut u8, payload: &SpawnPaylo
         }
         None => {}
     }
+    if let Some(texture) = &payload.texture {
+        *flags |= FLAG_TEXTURE;
+        // Same length convention as the effect name: `u8` len, truncated.
+        let bytes = texture.as_bytes();
+        out.push(bytes.len().min(255) as u8);
+        out.extend_from_slice(&bytes[..bytes.len().min(255)]);
+    }
 }
 
 impl ParticlesEmitRpc {
@@ -188,6 +197,11 @@ impl ParticlesEmitRpc {
             } else {
                 None
             },
+            texture: if flags & FLAG_TEXTURE != 0 {
+                Some(c.string()?)
+            } else {
+                None
+            },
         };
         Some(Self {
             effect,
@@ -224,7 +238,10 @@ pub fn register_commands(cmd: &mut CmdSystem) {
             log::warn!("[particles_test] no client");
             return;
         };
-        let pos = client.particle_camera_pos().to_array();
+        // Above the eye, outside the near-plane slab: quads spawned AT the
+        // camera position are entirely closer than `near` and never raster.
+        let [ex, ey, ez] = client.particle_camera_pos(None).to_array();
+        let pos = [ex, ey, ez + 2.5];
         let payload = SpawnPayload {
             count,
             ..SpawnPayload::default()
@@ -295,6 +312,7 @@ mod tests {
                 sprite: Some(SpriteOverride::Rect {
                     uv: [0.0, 0.0, 0.5, 0.5],
                 }),
+                texture: Some("textures/particles/leaf_oak.png".into()),
             },
         });
     }

@@ -1,7 +1,5 @@
 //! Auto-split from `encode_frame` (frame graph pass).
 
-use std::collections::HashSet;
-
 use deerpunk_engine_common::material::ShaderId;
 use deerpunk_engine_common::resource::mesh_handle::MeshHandle;
 
@@ -21,53 +19,74 @@ macro_rules! render_scope {
 impl Renderer {
     /// Unique registry handles referenced by this camera's static and skinned draws.
     ///
-    /// Chunk face splits repeat the same handle. The id list is deduped here so the
-    /// upload loop never sees those repeats.
-    fn visible_mesh_ids(&self, ctx: &FrameCtx<'_>) -> Vec<(MeshHandle, ShaderId)> {
+    /// Chunk face splits repeat the same handle. The id list is deduped with epoch
+    /// marks (no hashing, no per-frame allocation) into the caller-owned scratch.
+    fn visible_mesh_ids_into(&mut self, ctx: &FrameCtx<'_>, ids: &mut Vec<(MeshHandle, ShaderId)>) {
         render_scope!("render/visible_mesh_ids");
-        let mut seen: HashSet<usize> = HashSet::new();
-        let mut ids = Vec::new();
+        ids.clear();
+        self.visible_seen_epoch += 1;
+        let epoch = self.visible_seen_epoch;
+        let marks = &mut self.visible_seen_marks;
         let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
         for i in 0..meshes.len() {
             let md = meshes.get(i);
-            if seen.insert(md.mesh.0) {
+            let slot = md.mesh.idx() as usize;
+            if marks.len() <= slot {
+                marks.resize(slot + 1, 0);
+            }
+            if marks[slot] != epoch {
+                marks[slot] = epoch;
                 ids.push((md.mesh, md.shader_id));
             }
         }
         let skinned = SkinnedDrawListView::new(ctx.snapshot, ctx.geometry);
         for j in 0..skinned.len() {
             let sd = skinned.get(j);
-            if seen.insert(sd.mesh.0) {
+            let slot = sd.mesh.idx() as usize;
+            if marks.len() <= slot {
+                marks.resize(slot + 1, 0);
+            }
+            if marks[slot] != epoch {
+                marks[slot] = epoch;
                 ids.push((sd.mesh, sd.shader_id));
             }
         }
-        ids
     }
 
-    /// Handles whose GPU slot is missing or whose `gpu_revision` moved.
-    fn get_meshes_to_upload(&mut self, ctx: &FrameCtx<'_>) -> Vec<(MeshHandle, ShaderId)> {
+    /// Handles whose GPU slot is missing or whose `gpu_revision` moved. Fills
+    /// the caller-owned scratch; the per-item `mesh_needs_gpu_upload` checks are
+    /// spanned by the `render/get_meshes_to_upload` zone only.
+    fn get_meshes_to_upload_into(
+        &mut self,
+        ctx: &FrameCtx<'_>,
+        ids: &mut Vec<(MeshHandle, ShaderId)>,
+        to_upload: &mut Vec<(MeshHandle, ShaderId)>,
+    ) {
         render_scope!("render/get_meshes_to_upload");
-        let ids = self.visible_mesh_ids(ctx);
-        let mut to_upload = Vec::new();
-        for (mesh, shader_id) in ids {
+        self.visible_mesh_ids_into(ctx, ids);
+        to_upload.clear();
+        for (mesh, shader_id) in ids.drain(..) {
             if self.mesh_needs_gpu_upload(mesh) {
                 to_upload.push((mesh, shader_id));
             } else {
                 self.frame_mesh_gpu_cached += 1;
             }
         }
-        to_upload
     }
 
     /// Upload visible mesh bytes before the mesh pass. Re-uploads when `gpu_revision` moves.
     pub(in crate::renderer) fn prepare_mesh_uploads(&mut self, ctx: &mut FrameCtx<'_>) {
-        let to_upload = self.get_meshes_to_upload(ctx);
-        for (mesh, shader_id) in to_upload {
+        let mut ids = std::mem::take(&mut self.visible_ids_scratch);
+        let mut to_upload = std::mem::take(&mut self.upload_list_scratch);
+        self.get_meshes_to_upload_into(ctx, &mut ids, &mut to_upload);
+        for (mesh, shader_id) in to_upload.drain(..) {
             let Some(shader) = ctx.shaders.get(shader_id) else {
                 continue;
             };
             let _ = self.mesh_for_draw(&mesh, shader.mesh_vertex_layout());
         }
+        self.upload_list_scratch = to_upload;
+        self.visible_ids_scratch = ids;
         ctx.prof.mesh_gpu_uploads = self.frame_mesh_gpu_uploads;
     }
 

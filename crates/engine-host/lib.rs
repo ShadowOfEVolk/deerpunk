@@ -761,8 +761,8 @@ impl Host {
                     };
                     let tx = st.cmd_sender().clone();
                     let cmd_name = name.clone();
-                    self.cmd.register(
-                        crate::cmd::CommandRegistration::new(name.clone()).execute(
+                    self.cmd
+                        .register(crate::cmd::CommandRegistration::new(name.clone()).execute(
                             move |ctx| {
                                 let line = if ctx.args.is_empty() {
                                     cmd_name.clone()
@@ -770,12 +770,9 @@ impl Host {
                                     format!("{} {}", cmd_name, ctx.args.join(" "))
                                 };
                                 log::info!("[host] main → server thread: {line}");
-                                let _ = tx.send(
-                                    server_thread::ServerThreadCmd::ExecCmd(line),
-                                );
+                                let _ = tx.send(server_thread::ServerThreadCmd::ExecCmd(line));
                             },
-                        ),
-                    );
+                        ));
                     log::info!("[host] main-console proxy registered: '{name}'");
                 }
                 server_ctx::ServerToMain::ServerDllStarted => {
@@ -1112,6 +1109,13 @@ impl Host {
                 p.encoder_finish_ms,
                 p.queue_submit_ms,
                 p.after_present_ms
+            ));
+            let (particles, groups) = client.particle_stats();
+            lines.push(format!("particles {particles}  groups {groups}"));
+            let tui = &p.tonemap_ui;
+            lines.push(format!(
+                "tonemap_ui: chain {:.2} cap {:.2} sync {:.2} draw {:.2} blit {:.2}",
+                tui.chain_ms, tui.capture_ms, tui.ui_sync_ms, tui.ui_draw_ms, tui.ui_blit_ms
             ));
         }
         if level >= 4 {
@@ -1523,7 +1527,22 @@ impl Host {
                 if let Some(client) = self.client_engine.as_mut() {
                     client.discard_pending_present();
                 }
-            } else if render_pipeline >= 1 {
+            }
+
+            self.frame(dt);
+
+            if skip_gpu {
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                system_profiler::end_frame();
+                continue;
+            }
+
+            // Wait for the pipelined submit only after the game frame: while
+            // console/net/sim run, the submit thread performs queue.submit
+            // instead of the main thread blocking on it at the top of the
+            // loop. Everything below (render cvars, extract, encode) needs
+            // the previous frame submitted and presented first.
+            if render_pipeline >= 1 {
                 {
                     let _g = system_profiler::scope("frame.render_wait");
                     if let Some(client) = self.client_engine.as_mut() {
@@ -1536,16 +1555,6 @@ impl Host {
                     deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
                     system_profiler::ingest_render_profile(profile);
                 }
-            } else if let Some(client) = self.client_engine.as_mut() {
-                client.set_render_pipeline(0);
-            }
-
-            self.frame(dt);
-
-            if skip_gpu {
-                std::thread::sleep(std::time::Duration::from_millis(16));
-                system_profiler::end_frame();
-                continue;
             }
 
             {
@@ -1658,6 +1667,9 @@ impl Host {
                     deerpunk_engine_client::render_gpu_log::log_frame(&self.cvar, profile);
                     system_profiler::ingest_render_profile(profile);
                 }
+            }
+            if let Some(client) = self.client_engine.as_mut() {
+                client.recycle_scene(&mut scene);
             }
             {
                 let _g = system_profiler::scope("host.input_reset");

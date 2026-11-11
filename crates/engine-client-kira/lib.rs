@@ -1,24 +1,21 @@
 //! Kira audio backend — datapack `sound_events` / `sound_banks` + clips via [`ResourceManager`].
 
-use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::{self, JoinHandle};
 use deerpunk_engine_client::audio::{AudioBackend, AudioInitContext, AudioListener, FmodEventInfo};
 use deerpunk_engine_common::resource::{path_to_file_uri, AudioClip, ResourceManager};
 use deerpunk_engine_common::sound_event::{
     normalize_event_id, ParamLerp, SoundEventBank, SoundEventDef, SoundEventRegistry,
 };
-use kira::manager::{
-    backend::DefaultBackend,
-    AudioManager, AudioManagerSettings,
-};
+use kira::manager::{backend::DefaultBackend, AudioManager, AudioManagerSettings};
 use kira::sound::static_sound::{StaticSoundData, StaticSoundSettings};
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::FromFileError;
 use kira::tween::Tween;
 use rand::Rng;
+use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
 use walkdir::WalkDir;
 
 /// Decode `.ogg`/`.wav` off the main thread; results merged in [`KiraBackend::drain_warm_results`].
@@ -146,16 +143,17 @@ impl KiraBackend {
         }
     }
 
-    /// Queue unique SFX clips for background decode (music stays streamed on play).
+    /// Queue unique SFX clips for background decode (`stream: true` events
+    /// decode from disk at play time and stay out of the cache).
     fn enqueue_sfx_warm(&mut self) -> u32 {
         self.ensure_warm_worker();
 
         let mut jobs: Vec<(String, PathBuf)> = Vec::new();
         for def in self.events.events.values() {
+            if def.is_stream() {
+                continue;
+            }
             for clip_rel in Self::clips_for_def(def) {
-                if clip_rel.contains("/music/") || clip_rel.contains("\\music\\") {
-                    continue;
-                }
                 let uri = self.resolve_clip_uri(clip_rel);
                 if self.clip_cache.contains_key(&uri) {
                     continue;
@@ -203,7 +201,10 @@ impl KiraBackend {
 
     fn resolve_clip_path(&self, clip: &str) -> PathBuf {
         if clip.starts_with("file://") {
-            let rest = clip.strip_prefix("file://").unwrap_or(clip).trim_start_matches('/');
+            let rest = clip
+                .strip_prefix("file://")
+                .unwrap_or(clip)
+                .trim_start_matches('/');
             return PathBuf::from(rest);
         }
         let rel = clip.trim_start_matches('/');
@@ -219,11 +220,7 @@ impl KiraBackend {
         path_to_file_uri(&path)
     }
 
-    fn load_sound_data(
-        &mut self,
-        assets: &ResourceManager,
-        uri: &str,
-    ) -> Option<StaticSoundData> {
+    fn load_sound_data(&mut self, assets: &ResourceManager, uri: &str) -> Option<StaticSoundData> {
         if let Some(cached) = self.clip_cache.get(uri) {
             return Some(cached.clone());
         }
@@ -265,7 +262,7 @@ impl KiraBackend {
         (vol, pitch)
     }
 
-    fn play_streaming_loop(
+    fn play_streaming(
         &mut self,
         def: &SoundEventDef,
         volume: f32,
@@ -289,7 +286,8 @@ impl KiraBackend {
         } else {
             rng.gen_range(pr.min..=pr.max)
         };
-        let (vol_mul, pitch_mul) = Self::apply_params(def, params, def.base_volume() * volume, pitch);
+        let (vol_mul, pitch_mul) =
+            Self::apply_params(def, params, def.base_volume() * volume, pitch);
 
         let mut data = match StreamingSoundData::from_file(&path) {
             Ok(d) => d,
@@ -298,8 +296,12 @@ impl KiraBackend {
                 return false;
             }
         };
+        // Loop region only for loop events (music one-shots end naturally);
+        // streamed one-shots without an instance id are fire-and-forget.
+        if def.is_loop() {
+            data = data.loop_region(..);
+        }
         data = data
-            .loop_region(..)
             .volume(vol_mul.clamp(0.0, 2.0) as f64)
             .playback_rate(pitch_mul.clamp(0.1, 4.0) as f64);
 
@@ -309,7 +311,9 @@ impl KiraBackend {
 
         match manager.play(data) {
             Ok(handle) => {
-                self.loop_streams.insert(instance_id, handle);
+                if instance_id != 0 {
+                    self.loop_streams.insert(instance_id, handle);
+                }
                 true
             }
             Err(e) => {
@@ -350,7 +354,8 @@ impl KiraBackend {
         } else {
             rng.gen_range(pr.min..=pr.max)
         };
-        let (vol_mul, pitch_mul) = Self::apply_params(def, params, def.base_volume() * volume, pitch);
+        let (vol_mul, pitch_mul) =
+            Self::apply_params(def, params, def.base_volume() * volume, pitch);
 
         let mut settings = StaticSoundSettings::new()
             .volume(vol_mul.clamp(0.0, 2.0) as f64)
@@ -396,8 +401,11 @@ impl KiraBackend {
             }
         };
         let r#loop = force_loop || def.is_loop();
-        if r#loop && instance_id != 0 && origin.is_none() {
-            let _ = self.play_streaming_loop(&def, volume, params, instance_id);
+        // Explicit `stream: true` in the bank (music tracks) streams from
+        // disk with chunked decode instead of a full in-memory load. Looped
+        // 2D instances keep streaming so they can be stopped by instance id.
+        if origin.is_none() && (def.is_stream() || (r#loop && instance_id != 0)) {
+            let _ = self.play_streaming(&def, volume, params, instance_id);
             return;
         }
         let listener = self.last_listener;
@@ -442,10 +450,7 @@ fn discover_datapack_events(gamedir: &Path) -> SoundEventRegistry {
         };
         match parent {
             Some("sound_events") => {
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(fname);
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(fname);
                 match serde_json::from_str::<SoundEventDef>(&data) {
                     Ok(def) => {
                         log::info!("[kira] event '{}' <- {}", stem, path.display());
@@ -508,22 +513,19 @@ impl AudioBackend for KiraBackend {
         self.last_listener = *listener;
         if let Some(m) = self.manager.as_mut() {
             if (volume - self.last_volume).abs() > 0.001 {
-                m.main_track().set_volume(
-                    volume.clamp(0.0, 1.0) as f64,
-                    Tween::default(),
-                );
+                m.main_track()
+                    .set_volume(volume.clamp(0.0, 1.0) as f64, Tween::default());
                 self.last_volume = volume;
             }
         }
         for (key, origin) in attached {
             if let Some(handle) = self.attached.get_mut(key) {
-                let (atten, pan) =
-                    Self::spatial_gain_pan(
-                        listener.position,
-                        listener.forward,
-                        listener.up,
-                        *origin,
-                    );
+                let (atten, pan) = Self::spatial_gain_pan(
+                    listener.position,
+                    listener.forward,
+                    listener.up,
+                    *origin,
+                );
                 handle.set_volume(atten.clamp(0.0, 2.0) as f64, Tween::default());
                 handle.set_panning(pan, Tween::default());
             }
@@ -594,13 +596,12 @@ impl AudioBackend for KiraBackend {
         };
         let pr = def.pitch_range();
         let pitch = rng.gen_range(pr.min..=pr.max);
-        let (atten, pan) =
-            Self::spatial_gain_pan(
-                self.last_listener.position,
-                self.last_listener.forward,
-                self.last_listener.up,
-                origin,
-            );
+        let (atten, pan) = Self::spatial_gain_pan(
+            self.last_listener.position,
+            self.last_listener.forward,
+            self.last_listener.up,
+            origin,
+        );
         let settings = StaticSoundSettings::new()
             .volume((def.base_volume() * volume * atten).clamp(0.0, 2.0) as f64)
             .playback_rate(pitch.clamp(0.1, 4.0) as f64)

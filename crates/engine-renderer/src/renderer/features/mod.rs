@@ -4,6 +4,7 @@
 pub mod debug;
 pub mod hud;
 pub mod mesh;
+pub mod particles;
 pub mod post;
 pub mod prep;
 pub mod sky;

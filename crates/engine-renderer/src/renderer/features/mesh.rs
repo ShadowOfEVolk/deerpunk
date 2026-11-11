@@ -22,11 +22,56 @@ use crate::snapshot::MeshTexture;
 
 type MeshPipelineKey = (u32, bool, bool);
 
-struct MeshMdiSegment {
+pub(in crate::renderer) struct MeshMdiSegment {
     buffer_id: u32,
     byte_offset: u64,
     cmd_count: u32,
     index_count: u32,
+}
+
+/// Invalidation key for the retained static batch plan. The fingerprint is
+/// order-sensitive over the snapshot draw view, so any add/remove/reorder/
+/// remesh of the draw list produces a different key.
+#[derive(Clone, Copy, PartialEq)]
+pub(in crate::renderer) struct StaticPlanCacheKey {
+    len: usize,
+    occlusion_active: bool,
+    occlusion_epoch: u64,
+    batching: bool,
+    fingerprint: u64,
+}
+
+/// Invalidation key for the retained MDI indirect-command build. The MDI
+/// commands additionally depend on the camera (cardinal face cull) and on
+/// GPU mesh pool events, so those join the plan key.
+#[derive(Clone, Copy, PartialEq)]
+pub(in crate::renderer) struct StaticMdiCacheKey {
+    plan: StaticPlanCacheKey,
+    camera: [u32; 3],
+    gpu_upload_serial: u64,
+    mdi: bool,
+}
+
+/// Order-sensitive hash of the draw list covering everything the batch plan
+/// (`hash_batch_draw` fields) and the MDI commands (`first_index`, `face`,
+/// bounds for the cardinal cull) consume.
+fn static_pass_fingerprint(len: usize, meshes: &MeshDrawListView<'_>) -> u64 {
+    let mut h = len as u64;
+    for i in 0..len {
+        let md = meshes.get(i);
+        h = hash_batch_draw(h, md);
+        h = h.wrapping_mul(31).wrapping_add(md.first_index as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.index_count as u64);
+        h = h.wrapping_mul(31).wrapping_add(md.face as u64);
+        let b = &md.world_bounds;
+        h ^= b.min.x.to_bits() as u64;
+        h ^= b.min.y.to_bits() as u64;
+        h ^= b.min.z.to_bits() as u64;
+        h ^= b.max.x.to_bits() as u64;
+        h ^= b.max.y.to_bits() as u64;
+        h ^= b.max.z.to_bits() as u64;
+    }
+    h | 1
 }
 
 macro_rules! render_scope {
@@ -320,6 +365,33 @@ fn mesh_index_span(first_index: u32, index_count: u32, handle_idx_count: u32) ->
     }
 }
 
+/// One resolved draw of a non-MDI batch group (`draw_static_batch` fallback).
+pub(in crate::renderer) struct FallbackBatchDraw {
+    /// Snapshot draw index, passed through as the instance id.
+    instance: u32,
+    /// GPU slab the mesh lives in; drives the whole-buffer bind switch.
+    handle: crate::mesh_allocator::MeshHandle,
+    /// Mesh-relative first index from the draw list.
+    first_index: u32,
+    count: u32,
+}
+
+/// Index range and base vertex for a whole-pool-buffer bind. `first_index` is
+/// relative to the mesh's slab range — `draw_mesh_range` keeps it so by
+/// binding the per-mesh index slice — so binding the whole buffer needs the
+/// pool-absolute shift `handle.idx_offset` (the same one
+/// `push_mesh_indirect_cmd` applies). The stored index values stay mesh-local
+/// vertex ids, so the draw carries `handle.vert_offset` as `base_vertex`,
+/// matching the per-mesh vertex slice.
+fn whole_buffer_draw_range(
+    handle: &crate::mesh_allocator::MeshHandle,
+    first_index: u32,
+    count: u32,
+) -> (std::ops::Range<u32>, i32) {
+    let first = handle.idx_offset.saturating_add(first_index);
+    (first..first + count, handle.vert_offset as i32)
+}
+
 fn snapshot_depth_load(load: deerpunk_engine_common::components::DepthLoad) -> wgpu::LoadOp<f32> {
     match load {
         deerpunk_engine_common::components::DepthLoad::Clear(v) => wgpu::LoadOp::Clear(v),
@@ -360,7 +432,7 @@ fn begin_geometry_pass<'a>(
     })
 }
 
-struct StaticDrawStats<'a> {
+pub(in crate::renderer) struct StaticDrawStats<'a> {
     bins: &'a mut HashMap<(u32, bool), (u32, u64)>,
     sample_set: &'a mut bool,
 }
@@ -674,9 +746,13 @@ impl Renderer {
         shader_bins: &mut HashMap<(u32, bool), (u32, u64)>,
         sample_set: &mut bool,
     ) {
+        let cache_key = {
+            let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
+            self.static_mdi_cache_key(&meshes, occlusion_active, ctx.snapshot.camera_pos)
+        };
         let (draw_order, batch_groups, batch_for_index) =
-            self.static_batch_plan(ctx, occlusion_active);
-        let batch_mdi = self.build_static_mdi(ctx, &batch_groups, occlusion_active);
+            self.static_batch_plan(ctx, occlusion_active, cache_key);
+        let batch_mdi = self.build_static_mdi(ctx, &batch_groups, occlusion_active, cache_key);
         let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
 
         ctx.draw_acc.note_pass();
@@ -697,7 +773,7 @@ impl Renderer {
         let mut globals_bound = false;
         let mut last_g1: Option<u32> = None;
         let mut last_g2: Option<(u32, u32, u32)> = None;
-        let mut emitted = std::collections::HashSet::new();
+        let mut emitted = std::mem::take(&mut self.mesh_batch_emitted_scratch);
         let mut stats = StaticDrawStats {
             bins: shader_bins,
             sample_set,
@@ -746,33 +822,68 @@ impl Renderer {
         self.mesh_batch_order = draw_order;
         self.mesh_batch_groups = batch_groups;
         self.mesh_batch_for_index = batch_for_index;
+        self.mesh_batch_mdi_map = batch_mdi;
+        emitted.clear();
+        self.mesh_batch_emitted_scratch = emitted;
         crate::bind_log::end_pass();
+    }
+
+    /// Batch-plan key over the current snapshot view.
+    fn static_mdi_cache_key(
+        &self,
+        meshes: &MeshDrawListView<'_>,
+        occlusion_active: bool,
+        camera_pos: [f32; 3],
+    ) -> StaticMdiCacheKey {
+        let len = meshes.len();
+        StaticMdiCacheKey {
+            plan: StaticPlanCacheKey {
+                len,
+                occlusion_active,
+                occlusion_epoch: self.mesh_occlusion.visibility_epoch(),
+                batching: self.mesh_draw_batching,
+                fingerprint: static_pass_fingerprint(len, meshes),
+            },
+            camera: camera_pos.map(f32::to_bits),
+            gpu_upload_serial: self.mesh_gpu_upload_serial,
+            mdi: self.mesh_batch_mdi,
+        }
     }
 
     pub(in crate::renderer) fn static_batch_plan(
         &mut self,
         ctx: &FrameCtx<'_>,
         occlusion_active: bool,
+        cache_key: StaticMdiCacheKey,
     ) -> (
         Vec<usize>,
         HashMap<MeshBatchKey, Vec<usize>>,
         Vec<Option<MeshBatchKey>>,
     ) {
+        let plan_key = cache_key.plan;
+        if self.mesh_batch_plan_cache == Some(plan_key) {
+            // Unchanged draw list: the plan computed last frame is still exact.
+            // The vectors are handed out and stored back by `encode_static_mesh_pass`.
+            return (
+                std::mem::take(&mut self.mesh_batch_order),
+                std::mem::take(&mut self.mesh_batch_groups),
+                std::mem::take(&mut self.mesh_batch_for_index),
+            );
+        }
         render_scope!("static_batch_plan");
         let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
         let len = meshes.len();
-        let visible: Vec<bool> = if occlusion_active {
-            (0..len)
-                .map(|i| {
-                    let md = meshes.get(i);
-                    self.static_draw_visible(true, i, md)
-                })
-                .collect()
+        let scratch = &mut self.mesh_batch_visible_scratch;
+        let occlusion = &self.mesh_occlusion;
+        scratch.clear();
+        let visible: &[bool] = if occlusion_active {
+            scratch.extend((0..len).map(|i| occlusion.draw_visible_static(i, meshes.get(i))));
+            scratch.as_slice()
         } else {
-            Vec::new()
+            &[]
         };
         let batching = self.mesh_draw_batching;
-        run_static_batch_plan(
+        let plan = run_static_batch_plan(
             &mut self.mesh_batch_opaque_count,
             &mut self.mesh_batch_order,
             &mut self.mesh_batch_groups,
@@ -781,8 +892,10 @@ impl Renderer {
             len,
             |i| meshes.get(i),
             batching,
-            |i, _| visible.is_empty() || visible[i],
-        )
+            |i, _| visible.get(i).copied().unwrap_or(true),
+        );
+        self.mesh_batch_plan_cache = Some(plan_key);
+        plan
     }
 
     pub(in crate::renderer) fn build_static_mdi(
@@ -790,15 +903,33 @@ impl Renderer {
         ctx: &FrameCtx<'_>,
         batch_groups: &HashMap<MeshBatchKey, Vec<usize>>,
         occlusion_active: bool,
+        cache_key: StaticMdiCacheKey,
     ) -> HashMap<MeshBatchKey, Vec<MeshMdiSegment>> {
-        render_scope!("build_static_mdi");
-        let mut out = HashMap::new();
         if !(self.mesh_draw_batching
             && self.mesh_batch_mdi
             && self.gpu.multi_draw_indirect
             && self.gpu.indirect_first_instance)
         {
-            return out;
+            return HashMap::new();
+        }
+        if self.mesh_batch_mdi_cache == Some(cache_key)
+            && !self.mesh_indirect_cmd_scratch.is_empty()
+        {
+            // Same draws, camera, visibility, and GPU pool: the indirect commands
+            // built earlier are still exact. Re-push them into this frame's ring
+            // slot (that buffer slot was last written FRAME_UNIFORM_RING frames ago).
+            self.ensure_mesh_indirect_capacity(self.mesh_indirect_cmd_scratch.len());
+            self.gpu.queue.write_buffer(
+                &self.mesh_indirect_bufs[self.frame_uniform_ring as usize],
+                0,
+                bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
+            );
+            return std::mem::take(&mut self.mesh_batch_mdi_map);
+        }
+        render_scope!("build_static_mdi");
+        let mut out = std::mem::take(&mut self.mesh_batch_mdi_map);
+        for segs in out.values_mut() {
+            segs.clear();
         }
         let meshes = MeshDrawListView::new(ctx.snapshot, ctx.geometry);
         let stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
@@ -871,6 +1002,7 @@ impl Renderer {
                 bytemuck::cast_slice(&self.mesh_indirect_cmd_scratch),
             );
         }
+        self.mesh_batch_mdi_cache = Some(cache_key);
         out
     }
 
@@ -953,6 +1085,10 @@ impl Renderer {
             .mesh_vertex_layout();
         let mut draws = 0u32;
         let mut tris = 0u64;
+        // Non-MDI fallback: resolve + cull first, then encode with whole
+        // pool-buffer binds instead of per-draw slices. Slab-clustered like
+        // the MDI run split, so binds track buffer_id changes.
+        let mut batch = std::mem::take(&mut self.mesh_batch_draws);
         for &gi in group {
             let md = meshes.get(gi);
             if !self.static_draw_visible(occlusion_active, gi, md) {
@@ -966,10 +1102,44 @@ impl Renderer {
             if count == 0 {
                 continue;
             }
-            self.draw_mesh_range(ctx, pass, handle, md.first_index, count, gi as u32);
-            draws += 1;
-            tris += count as u64;
+            batch.push(FallbackBatchDraw {
+                instance: gi as u32,
+                handle,
+                first_index: md.first_index,
+                count,
+            });
         }
+        batch.sort_by_key(|entry| entry.handle.buffer_id);
+        // Bind state persists within one RenderPass; this resets per group.
+        // 0 is the reserved invalid buffer id, so the first draw always binds.
+        let mut bound_buffer = 0u32;
+        for entry in &batch {
+            if bound_buffer != entry.handle.buffer_id {
+                ctx.draw_acc.note_vertex_buffer();
+                pass.set_vertex_buffer(
+                    0,
+                    self.mesh_pool
+                        .vertex_buffer(entry.handle.buffer_id)
+                        .slice(..),
+                );
+                ctx.draw_acc.note_index_buffer();
+                pass.set_index_buffer(
+                    self.mesh_pool
+                        .index_buffer(entry.handle.buffer_id)
+                        .slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                bound_buffer = entry.handle.buffer_id;
+            }
+            let (indices, base_vertex) =
+                whole_buffer_draw_range(&entry.handle, entry.first_index, entry.count);
+            pass.draw_indexed(indices, base_vertex, entry.instance..entry.instance + 1);
+            ctx.draw_acc.note_draw_indexed(entry.count);
+            ctx.prof.mesh_index_count += entry.count as u64;
+            draws += 1;
+            tris += entry.count as u64;
+        }
+        self.mesh_batch_draws = batch;
         stats.record(
             ctx,
             key.shader_id,
@@ -1455,7 +1625,9 @@ impl Renderer {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     strip_index_format: None,
                     front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
+                    // Transparent quads (billboards) spin and flip winding;
+                    // culling halves them and makes spinning ones pop.
+                    cull_mode: (!transparent).then_some(wgpu::Face::Back),
                     polygon_mode: if self.wireframe {
                         wgpu::PolygonMode::Line
                     } else {
@@ -1553,6 +1725,7 @@ impl Renderer {
         else {
             return;
         };
+        self.mesh_gpu_upload_serial += 1;
         if let Some(alloc) = self.mesh_allocators.get_mut(allocator_id as usize) {
             for handle in handles {
                 alloc.free(handle);
@@ -1562,6 +1735,7 @@ impl Renderer {
 
     pub fn mesh_release(&mut self, content_id: u64) {
         if let Some((allocator_id, handles)) = self.mesh_gpu.release(content_id) {
+            self.mesh_gpu_upload_serial += 1;
             if let Some(alloc) = self.mesh_allocators.get_mut(allocator_id as usize) {
                 for handle in handles {
                     alloc.free(handle);
@@ -1576,6 +1750,10 @@ impl Renderer {
         self.uploaded_mesh_revs.clear();
         self.mdi_draw_gpu.clear();
         self.mdi_shader_ok.clear();
+        self.mesh_gpu_upload_serial += 1;
+        self.mesh_batch_plan_cache = None;
+        self.mesh_batch_mdi_cache = None;
+        self.mesh_indirect_cmd_scratch.clear();
         let freed = self.mesh_gpu.drain_for_free();
         for (allocator_id, handle) in freed {
             if let Some(alloc) = self.mesh_allocators.get_mut(allocator_id as usize) {
@@ -1623,6 +1801,7 @@ impl Renderer {
             self.mesh_gpu
                 .set_uploaded(content_id, layout_key, handle, revision);
             self.frame_mesh_gpu_uploads += 1;
+            self.mesh_gpu_upload_serial += 1;
         } else {
             self.frame_mesh_gpu_cached += 1;
         }
@@ -1651,12 +1830,13 @@ impl Renderer {
     }
 
     /// `mesh_revisions[idx]` differs from the revision last sent to the GPU.
-    /// Does not touch the mesh allocation or the GPU-slot map.
+    /// Does not touch the mesh allocation or the GPU-slot map. Called per visible
+    /// mesh from `get_meshes_to_upload` — no per-item zone, that loop is spanned
+    /// by `render/get_meshes_to_upload`.
     pub(in crate::renderer) fn mesh_needs_gpu_upload(
         &self,
         mesh: deerpunk_engine_common::resource::mesh_handle::MeshHandle,
     ) -> bool {
-        render_scope!("render/mesh_needs_gpu_upload");
         let revision = self.mesh_revision(mesh);
         revision != 0 && self.uploaded_mesh_rev(mesh.idx() as usize) != revision
     }
@@ -2245,7 +2425,9 @@ impl Renderer {
 
 #[cfg(test)]
 mod batch_tests {
-    use super::{mdi_gpu_cache_hit, push_mesh_indirect_cmd};
+    use super::{
+        mdi_gpu_cache_hit, mesh_index_span, push_mesh_indirect_cmd, whole_buffer_draw_range,
+    };
     use crate::aabb::Aabb;
     use crate::mesh_allocator::MeshHandle as GpuMesh;
     use crate::snapshot::MeshDraw;
@@ -2322,5 +2504,40 @@ mod batch_tests {
         assert_eq!(scratch[1].first_index, 806);
         assert_eq!(scratch[1].index_count, 30);
         assert_eq!(scratch[1].first_instance, 7);
+    }
+
+    /// A whole pool-buffer bind must address the same index bytes and resolve
+    /// the same vertices as the per-mesh slice bind `draw_mesh_range` used.
+    #[test]
+    fn fallback_whole_buffer_bind_addresses_same_data_as_slice_bind() {
+        let gpu = GpuMesh {
+            buffer_id: 2,
+            vert_offset: 300,
+            vert_count: 24,
+            idx_offset: 900,
+            idx_count: 36,
+            stride: 32,
+        };
+        let first_index = 6u32;
+        let count = mesh_index_span(first_index, 12, gpu.idx_count);
+        assert_eq!(count, 12);
+
+        let (indices, base_vertex) = whole_buffer_draw_range(&gpu, first_index, count);
+        // Slice bind: slice starts at idx_offset*4 bytes, draw first..first+count
+        // relative to it → absolute index i = idx_offset + first_index + i.
+        // Whole-buffer bind must produce the same absolute range.
+        assert_eq!(
+            indices,
+            (gpu.idx_offset + first_index)..(gpu.idx_offset + first_index + count)
+        );
+        // Slice bind: vertex fetch index v reads pool vertex vert_offset + v.
+        // Whole-buffer bind resolves the same mesh-local v through base_vertex.
+        assert_eq!(base_vertex, gpu.vert_offset as i32);
+
+        // index_count == 0 draws the full span from first_index, same relative
+        // start as the old slice bind → absolute 906..(906+36).
+        let whole = mesh_index_span(first_index, 0, gpu.idx_count);
+        let (whole_indices, _) = whole_buffer_draw_range(&gpu, first_index, whole);
+        assert_eq!(whole_indices, 906..942);
     }
 }

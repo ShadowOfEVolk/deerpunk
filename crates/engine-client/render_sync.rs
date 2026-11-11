@@ -50,6 +50,9 @@ pub fn apply_renderer_cvars(cvar: &CvarSystem, client: &mut ClientEngine) {
     deerpunk_engine_renderer::bind_log::set_enabled(cvar.get_usize_or("r_logbindgroups", 0) != 0);
     r.set_mesh_batch_mdi(cvar.get_bool_or("r_mesh_batch_mdi", true));
     client.set_draw_ui(cvar.get_bool_or("r_drawui", true));
+    client
+        .particles
+        .set_capacity(cvar.get_usize_or("r_particles_max", 1 << 20));
 }
 
 pub fn build_debug_draw(

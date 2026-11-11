@@ -7,8 +7,8 @@
 
 use std::ffi::c_void;
 
-use glam::Vec3;
 use deerpunk_engine_particles::SpawnPayload;
+use glam::Vec3;
 
 /// FFI raycast hook: `origin`/`dir` are `*const f32[3]`, `dir` is unit length.
 /// On hit the implementor writes `point[3]`, `normal[3]`, `dist` (7 floats)

@@ -9,10 +9,6 @@ const FILES: &[(&str, &str)] = &[
         "shaders/inc/mesh_uniform_slot.wgsl",
         include_str!("../assets/internal/shaders/inc/mesh_uniform_slot.wgsl"),
     ),
-    (
-        "shaders/particles/billboard.wgsl",
-        include_str!("../assets/internal/shaders/particles/billboard.wgsl"),
-    ),
 ];
 
 /// Normalize `internal://` path: forward slashes, no leading `/`.

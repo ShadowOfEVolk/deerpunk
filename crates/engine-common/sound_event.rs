@@ -44,6 +44,10 @@ pub enum SoundEventDef {
         params: HashMap<String, SoundParamMap>,
         #[serde(default)]
         r#loop: bool,
+        /// Stream from disk (chunked background decode) instead of loading
+        /// the whole clip into memory. For long tracks (music).
+        #[serde(default)]
+        stream: bool,
     },
     /// Pick a clip at random each play.
     Random {
@@ -56,6 +60,9 @@ pub enum SoundEventDef {
         params: HashMap<String, SoundParamMap>,
         #[serde(default)]
         r#loop: bool,
+        /// See [`SoundEventDef::Single`].
+        #[serde(default)]
+        stream: bool,
     },
 }
 
@@ -117,6 +124,15 @@ impl SoundEventDef {
         match self {
             Self::Single { r#loop, .. } => *r#loop,
             Self::Random { r#loop, .. } => *r#loop,
+        }
+    }
+
+    /// `stream: true` in the bank: play from disk with chunked background
+    /// decode instead of a full in-memory load.
+    pub fn is_stream(&self) -> bool {
+        match self {
+            Self::Single { stream, .. } => *stream,
+            Self::Random { stream, .. } => *stream,
         }
     }
 

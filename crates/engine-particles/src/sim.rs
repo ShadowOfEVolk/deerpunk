@@ -1,16 +1,20 @@
-//! Per-effect runtime: particle pool, spawn, integration.
+//! Per-effect spawn state: emission sampling into the shared pool.
 //!
-//! One `ParticleSim` per live effect instance group is overkill for v1; the
-//! pool stores particles from any effect (each carries the data the mesh
-//! builder needs). The engine client keeps one sim per texture group.
+//! Particles live in the one shared [`ParticlePool`]; a [`ParticleSim`]
+//! holds the resolved effect template (affectors, emitter, sprite) plus the
+//! stream accumulator, and spawns resolved [`Particle`]s into the pool.
+//! Integration happens in the pool, once per frame for all instances.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::affector::{apply_affectors, collide_world, Affector, AffectorRegistry, ApplyCtx};
-use crate::collider::WorldCollider;
-use crate::format::{EffectDef, EmitterKind};
-use crate::particle::{Particle, ParticleState};
+use crate::affector::{Affector, AffectorRegistry};
 use crate::emitter::{Sample, SpawnPayload};
+use crate::format::{EffectDef, EmitterKind, SpriteSource};
+use crate::particle::{Particle, ParticleState};
+use crate::pool::ParticlePool;
 
 /// Deterministic xorshift — reproducible spawns in tests, no rand dep.
 #[derive(Clone)]
@@ -38,12 +42,20 @@ impl Rng {
     }
 }
 
-/// CPU particle pool + spawn state for one effect template.
+/// Effect-instance tags for per-effect quota accounting in the shared pool.
+static NEXT_TAG: AtomicU32 = AtomicU32::new(1);
+
+/// Spawn state for one effect template. Owns no particles — spawns into the
+/// shared [`ParticlePool`].
 pub struct ParticleSim {
     pub def: EffectDef,
     pub affectors: Vec<Affector>,
+    /// Affectors cloned into every spawned particle (per-particle
+    /// integration in the shared pool).
+    affectors_shared: Arc<[Affector]>,
     pub reg: AffectorRegistry,
-    pub particles: Vec<Particle>,
+    /// Pool tag of this instance (per-effect quota accounting).
+    pub tag: u32,
     rng: Rng,
     /// Stream spawn accumulator (fractional particles owed).
     stream_acc: f32,
@@ -63,22 +75,37 @@ impl ParticleSim {
         if needs_collider && !has_collider {
             return Err("effect uses collide_world but no WorldCollider is registered".into());
         }
+        // Loadable effects always carry a texture uri (`procedural` sprites
+        // fail at parse); reject anyway so the pool never sees a uri-less
+        // particle.
+        if def.sprite.texture_uri().is_none() {
+            return Err("effect sprite has no texture uri".into());
+        }
+        let affectors_shared: Arc<[Affector]> = affectors.as_slice().into();
         Ok(Self {
             def,
             affectors,
+            affectors_shared,
             reg: reg.clone(),
-            particles: Vec::new(),
+            tag: NEXT_TAG.fetch_add(1, Ordering::Relaxed),
             rng: Rng::new(0x9E37_79B9_7F4A_7C15),
             stream_acc: 0.0,
             spawned: 0,
         })
     }
 
-    /// Spawn one burst at `pos`. Payload `None` fields fall back to the
-    /// template. Honors `quota`.
-    pub fn spawn_burst(&mut self, pos: Vec3, base_vel: Vec3, payload: &SpawnPayload, time: f32) {
+    /// Spawn one burst at `pos` into `pool`. Payload `None` fields fall back
+    /// to the template. Honors the effect quota.
+    pub fn spawn_burst(
+        &mut self,
+        pool: &mut ParticlePool,
+        pos: Vec3,
+        base_vel: Vec3,
+        payload: &SpawnPayload,
+        time: f32,
+    ) {
         if self.def.emitter.kind != EmitterKind::Burst {
-            // Streams ignore explicit bursts; use tick() with enabled stream.
+            // Streams ignore explicit bursts; use stream_owed() to drive them.
             return;
         }
         let count = Sample {
@@ -87,14 +114,27 @@ impl ParticleSim {
             payload,
         }
         .count(self.rng.next_f32());
-        self.spawn_n(count, pos, base_vel, payload, time);
+        self.spawn_n(pool, count, pos, base_vel, payload, time);
     }
 
-    fn spawn_n(&mut self, count: u32, pos: Vec3, base_vel: Vec3, payload: &SpawnPayload, _time: f32) {
+    fn spawn_n(
+        &mut self,
+        pool: &mut ParticlePool,
+        count: u32,
+        pos: Vec3,
+        base_vel: Vec3,
+        payload: &SpawnPayload,
+        _time: f32,
+    ) {
+        // The pool resolves custom affectors at integrate time; adopt this
+        // effect's registry if the pool has none yet.
+        if pool.reg_is_empty() && !self.reg.is_empty() {
+            pool.set_registry(self.reg.clone());
+        }
         let inherit = self.def.emitter.inherit_velocity;
         let tile_count = crate::emitter::Sample::tile_count(&self.def.sprite);
         let def_tile = match self.def.sprite {
-            crate::format::SpriteSource::Atlas { tile, .. } => tile,
+            SpriteSource::Atlas { tile, .. } => tile,
             _ => 1,
         };
         // Payload sprite override → fixed UV rect for every particle of this
@@ -105,8 +145,23 @@ impl ParticleSim {
                 crate::emitter::atlas_uv_rect(def_tile.max(1), *index as usize)
             }
         });
+        // Payload texture override replaces the effect's bound sprite texture
+        // (see [`SpawnPayload::texture`]): the sprite UVs then address the
+        // override, so the effect texture's atlas-frame slicing is off.
+        let texture_override = payload.texture.is_some();
+        let tex_uri: Arc<str> = match payload
+            .texture
+            .as_deref()
+            .map(Arc::from)
+            .or_else(|| self.def.sprite.texture_uri().map(Arc::from))
+        {
+            Some(uri) => uri,
+            // Hard-errored in `new`; unreachable for a constructed sim.
+            None => return,
+        };
+        let use_gradient = self.def.particle.color.start != self.def.particle.color.end;
         for _ in 0..count {
-            if self.particles.len() >= self.def.quota {
+            if pool.live_for_tag(self.tag) as usize >= self.def.quota {
                 log::debug!(
                     "particles: quota {} reached, dropping spawn",
                     self.def.quota
@@ -128,38 +183,59 @@ impl ParticleSim {
             let tint = s.start_tint();
             let ttl = s.ttl(r.next_f32());
             let size = s.size(r.next_f32());
-            self.particles.push(Particle {
+            let rot = r.range(0.0, std::f32::consts::TAU);
+            let frame = r.range(0.0, tile_count as f32);
+            let phase = r.range(0.0, std::f32::consts::TAU);
+            // UV rect resolved at spawn: override, atlas frame, or full
+            // texture. With a texture override the UVs address the override
+            // texture — no atlas slicing (full rect unless the caller
+            // supplies an explicit rect override).
+            let uv_rect = uv_override.unwrap_or_else(|| {
+                if texture_override {
+                    [0.0, 0.0, 1.0, 1.0]
+                } else {
+                    match self.def.sprite {
+                        SpriteSource::Atlas { tile, .. } => {
+                            crate::emitter::atlas_uv_rect(tile.max(1), frame as usize)
+                        }
+                        _ => [0.0, 0.0, 1.0, 1.0],
+                    }
+                }
+            });
+            let pushed = pool.spawn(Particle {
                 pos,
                 vel,
                 age: 0.0,
                 ttl,
                 size,
-                tint,
                 spin: self.def.particle.spin,
-                rot: r.range(0.0, std::f32::consts::TAU),
-                frame: r.range(0.0, tile_count as f32),
-                uv: uv_override,
+                rot,
+                uv_rect,
+                tex_uri: Arc::clone(&tex_uri),
+                tint_rgb: [tint[0], tint[1], tint[2]],
+                tint_a: tint[3],
+                grad: use_gradient.then_some(self.def.particle.color),
+                opacity: self.def.particle.opacity,
+                fade_out: self.def.particle.fade_out,
+                tag: self.tag,
                 state: ParticleState::Air,
-                phase: r.range(0.0, std::f32::consts::TAU),
+                phase,
+                affectors: Arc::clone(&self.affectors_shared),
             });
+            if !pushed {
+                log::debug!("particles: pool full, dropping spawn");
+                return;
+            }
             self.spawned += 1;
         }
     }
 
-    /// Advance `dt` seconds: age, integrate, remove dead. Stream spawning is
-    /// driven by the caller (`stream_owed` + `spawn_stream_at`) since the
-    /// emitter position lives on the entity component.
-    pub fn tick(&mut self, dt: f32, time: f32, collider: Option<&dyn WorldCollider>) {
-        if dt <= 0.0 {
-            return;
-        }
-        self.integrate(dt, time, collider);
-    }
-
-    /// Stream spawn from an external position (the emitter entity's transform).
-    /// Called by the engine system per frame with the accumulated count.
+    /// Stream spawn from an external position (the emitter entity's transform)
+    /// into `pool`. Called by the engine system per frame with the accumulated
+    /// count from [`ParticleSim::stream_owed`].
     pub fn spawn_stream_at(
         &mut self,
+        pool: &mut ParticlePool,
         pos: Vec3,
         base_vel: Vec3,
         count: u32,
@@ -169,7 +245,7 @@ impl ParticleSim {
         if self.def.emitter.kind != EmitterKind::Stream {
             return;
         }
-        self.spawn_n(count, pos, base_vel, payload, time);
+        self.spawn_n(pool, count, pos, base_vel, payload, time);
     }
 
     /// How many particles a stream emitter owes for `dt` (for the system tick).
@@ -183,62 +259,8 @@ impl ParticleSim {
         owed.min(self.def.quota as u32)
     }
 
-    /// Age + integrate all particles. Remove dead. `collide_world` runs a
-    /// segment test from the pre-step position.
-    fn integrate(&mut self, dt: f32, time: f32, collider: Option<&dyn WorldCollider>) {
-        let mut i = 0;
-        while i < self.particles.len() {
-            let p = &mut self.particles[i];
-            p.age += dt;
-            if p.age >= p.ttl {
-                self.particles.swap_remove(i);
-                continue;
-            }
-            if p.state == ParticleState::Rest {
-                i += 1;
-                continue;
-            }
-            p.rot += p.spin * dt;
-            let prev = p.pos;
-            let mut ctx = ApplyCtx {
-                time,
-                dt,
-                collider,
-                want_collide: false,
-            };
-            apply_affectors(&self.affectors, &self.reg, p, &mut ctx);
-            p.pos += p.vel * dt;
-            if ctx.want_collide {
-                let bounce = self
-                    .affectors
-                    .iter()
-                    .find_map(|a| match a {
-                        Affector::CollideWorld {
-                            bounce,
-                            friction,
-                            rest,
-                        } => Some((*bounce, *friction, *rest)),
-                        _ => None,
-                    })
-                    .unwrap();
-                let settled = collide_world(
-                    p,
-                    prev,
-                    bounce.0,
-                    bounce.1,
-                    bounce.2,
-                    collider.expect("collide_world without collider"),
-                );
-                if settled {
-                    self.particles.swap_remove(i);
-                    continue;
-                }
-            }
-            i += 1;
-        }
-    }
-
-    pub fn live(&self) -> usize {
-        self.particles.len()
+    /// Live particles of this effect instance in `pool`.
+    pub fn live(&self, pool: &ParticlePool) -> usize {
+        pool.live_for_tag(self.tag) as usize
     }
 }

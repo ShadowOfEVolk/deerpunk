@@ -74,7 +74,8 @@ impl Host {
                 PendingNetCmd::Connect(addr_s) => {
                     match net::parse_addr(&addr_s, net::DEFAULT_PORT) {
                         Ok(addr) => {
-                            let port = self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
+                            let port =
+                                self.cvar.get_f32_or("sv_port", net::DEFAULT_PORT as f32) as u16;
                             #[cfg(any(feature = "client", feature = "full"))]
                             if self.client_engine.is_some()
                                 && self.listen_server_enabled()

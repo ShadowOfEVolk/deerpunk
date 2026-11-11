@@ -1960,7 +1960,12 @@ impl crate::Host {
     }
 
     #[methoddb::bind(name = "query_matches")]
-    pub fn api_world_query_matches(&self, _entity: u64, _require: &[u64], _exclude: &[u64]) -> bool {
+    pub fn api_world_query_matches(
+        &self,
+        _entity: u64,
+        _require: &[u64],
+        _exclude: &[u64],
+    ) -> bool {
         false
     }
 
@@ -2067,7 +2072,13 @@ impl crate::Host {
     }
 
     #[methoddb::bind(name = "set_body_linvel")]
-    pub fn api_physics_set_body_linvel(&mut self, _entity: u64, _vx: f32, _vy: f32, _vz: f32) -> i32 {
+    pub fn api_physics_set_body_linvel(
+        &mut self,
+        _entity: u64,
+        _vx: f32,
+        _vy: f32,
+        _vz: f32,
+    ) -> i32 {
         0
     }
 
@@ -2089,7 +2100,12 @@ impl crate::Host {
 #[methoddb::namespace(name = "v1:schedule", on_host, scope = ["server", "client"])]
 impl crate::Host {
     #[methoddb::bind(name = "add_system")]
-    pub fn api_schedule_add_system(&mut self, _system_fn: ScheduleSystemFn, _user_data: *mut c_void) {}
+    pub fn api_schedule_add_system(
+        &mut self,
+        _system_fn: ScheduleSystemFn,
+        _user_data: *mut c_void,
+    ) {
+    }
 
     #[methoddb::bind(name = "clear")]
     pub fn api_schedule_clear(&mut self) {}

@@ -151,6 +151,21 @@ impl FrameDrawAccum {
     }
 }
 
+/// `tonemap_ui` pass CPU sub-timings (`r_speeds`), ms.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TonemapUiTimings {
+    /// Bloom/tonemap/godray chain encode (`encode_tonemap_chain`).
+    pub chain_ms: f32,
+    /// One-shot capture copy encode.
+    pub capture_ms: f32,
+    /// UI texture sync + mesh buffer creation (compile-time work).
+    pub ui_sync_ms: f32,
+    /// UI translations write + hud draw loop encode.
+    pub ui_draw_ms: f32,
+    /// UI hud → surface blit encode.
+    pub ui_blit_ms: f32,
+}
+
 /// Last completed frame (updated in `Renderer::encode_frame`).
 #[derive(Clone, Debug, Default)]
 pub struct RenderFrameProfile {
@@ -197,6 +212,8 @@ pub struct RenderFrameProfile {
     /// Forward render-graph pass timings ([`crate::render_graph::FORWARD_PASSES`] order).
     pub graph_nodes: Vec<GraphNodeTiming>,
     pub total_encode_ms: f32,
+    /// `tonemap_ui` pass sub-timings (see [`TonemapUiTimings`]).
+    pub tonemap_ui: TonemapUiTimings,
 
     pub width: u32,
     pub height: u32,

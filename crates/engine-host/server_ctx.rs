@@ -17,7 +17,9 @@ use deerpunk_engine_common::cvar::CvarSystem;
 use deerpunk_engine_common::network::protocol::{CLC, SVC};
 use deerpunk_engine_common::network::sound_event::{SoundPlayRpc, SoundStopRpc};
 use deerpunk_engine_common::network::user_message::UserMessageRpc;
-use deerpunk_engine_common::network::{HostCommand, NetLoopback, UserCmd, UserCmdAckRpc, USERCMD_SIZE};
+use deerpunk_engine_common::network::{
+    HostCommand, NetLoopback, UserCmd, UserCmdAckRpc, USERCMD_SIZE,
+};
 use deerpunk_engine_common::resource::{MeshRegistry, ResourceManager};
 use deerpunk_engine_common::world::World;
 
@@ -304,7 +306,9 @@ impl ServerThreadCtx {
                     log::warn!("[sv] bad ClientCommand from slot={slot}");
                     return;
                 };
-                engine.pending_client_commands.push((slot, line.to_string()));
+                engine
+                    .pending_client_commands
+                    .push((slot, line.to_string()));
             }
         }
     }
@@ -341,7 +345,8 @@ impl ServerThreadCtx {
 
     fn disconnect_all_server_net(&mut self) {
         self.engine.network.disconnect();
-        self.enabled_flag.store(self.engine.enabled, Ordering::Relaxed);
+        self.enabled_flag
+            .store(self.engine.enabled, Ordering::Relaxed);
     }
 
     /// Server simulation net tick: listen socket + LAN + C2S.
@@ -442,7 +447,12 @@ impl ServerThreadCtx {
         if packets.is_empty() {
             return;
         }
-        let is_local = self.engine.players.get(slot).map(|p| p.local).unwrap_or(false);
+        let is_local = self
+            .engine
+            .players
+            .get(slot)
+            .map(|p| p.local)
+            .unwrap_or(false);
         let via = if is_local {
             format!("s2c slot={slot} local")
         } else {
@@ -693,8 +703,12 @@ impl ServerThreadCtx {
     /// the sim thread — kept that way).
     fn players_value(&self) -> serde_json::Value {
         use serde_json::json;
-        let remote_addrs: std::collections::HashMap<u32, String> =
-            self.engine.network.remote_slot_debug().into_iter().collect();
+        let remote_addrs: std::collections::HashMap<u32, String> = self
+            .engine
+            .network
+            .remote_slot_debug()
+            .into_iter()
+            .collect();
         let players: Vec<serde_json::Value> = self
             .engine
             .players
@@ -837,7 +851,11 @@ impl ServerThreadCtx {
             return 0;
         }
         let dir = [delta[0] / len, delta[1] / len, delta[2] / len];
-        match self.engine.physics.cast_ray(origin, dir, len, exclude_entity) {
+        match self
+            .engine
+            .physics
+            .cast_ray(origin, dir, len, exclude_entity)
+        {
             Some(h) => {
                 *out = crate::physics_trace::PhysicsTraceResult {
                     hit: 1,
@@ -948,7 +966,10 @@ impl ServerThreadCtx {
     }
 
     #[methoddb::bind(name = "component_register")]
-    pub fn api_world_component_register(&mut self, desc: &deerpunk_engine_ffi::ComponentRegisterDesc) -> u64 {
+    pub fn api_world_component_register(
+        &mut self,
+        desc: &deerpunk_engine_ffi::ComponentRegisterDesc,
+    ) -> u64 {
         self.register_component_desc(desc)
     }
 }
@@ -1160,9 +1181,7 @@ impl ServerThreadCtx {
 
     #[methoddb::bind(name = "set_body_linvel")]
     pub fn api_physics_set_body_linvel(&mut self, entity: u64, vx: f32, vy: f32, vz: f32) -> i32 {
-        self.engine
-            .physics
-            .set_body_linvel(entity, [vx, vy, vz]);
+        self.engine.physics.set_body_linvel(entity, [vx, vy, vz]);
         0
     }
 
@@ -1301,7 +1320,12 @@ impl ServerThreadCtx {
     /// ask the main thread for a same-name console proxy (which forwards
     /// typed lines back here via `ServerThreadCmd::ExecCmd`).
     #[methoddb::bind(name = "register")]
-    pub fn api_cmd_register(&mut self, name: &str, callback: CmdCallback, user: *mut c_void) -> i32 {
+    pub fn api_cmd_register(
+        &mut self,
+        name: &str,
+        callback: CmdCallback,
+        user: *mut c_void,
+    ) -> i32 {
         let name = name.trim();
         if name.is_empty() {
             log::error!("[cmd] register: empty name");
@@ -1376,11 +1400,13 @@ impl ServerThreadCtx {
 #[methoddb::namespace(name = "v1:schedule", on_host, ctx = "server", scope = ["server", "client"])]
 impl ServerThreadCtx {
     #[methoddb::bind(name = "add_system")]
-    pub fn api_schedule_add_system(&mut self, system_fn: crate::gamelib_abi::ScheduleSystemFn, user_data: *mut c_void) {
-        self.gamelib_schedule.add_named(
-            "gamelib",
-            CallbackSystem::new(system_fn, user_data),
-        );
+    pub fn api_schedule_add_system(
+        &mut self,
+        system_fn: crate::gamelib_abi::ScheduleSystemFn,
+        user_data: *mut c_void,
+    ) {
+        self.gamelib_schedule
+            .add_named("gamelib", CallbackSystem::new(system_fn, user_data));
     }
 
     #[methoddb::bind(name = "clear")]
@@ -1475,7 +1501,9 @@ impl ServerThreadCtx {
     #[methoddb::bind(name = "play_2d")]
     pub fn api_audio_play_2d(&mut self, event: &str, volume_u8: u32) -> u32 {
         let id = self.alloc_sound_id();
-        self.queue_sound_packet(SoundPlayRpc::play_2d(id, event, volume_u8 as f32 / 255.0, Vec::new()).to_packet());
+        self.queue_sound_packet(
+            SoundPlayRpc::play_2d(id, event, volume_u8 as f32 / 255.0, Vec::new()).to_packet(),
+        );
         id
     }
 
@@ -1603,7 +1631,10 @@ impl ServerThreadCtx {
 
     /// "Both" component registration lands on the server world here.
     #[methoddb::bind(name = "component_register")]
-    pub fn api_client_world_component_register(&self, desc: &deerpunk_engine_ffi::ComponentRegisterDesc) -> u64 {
+    pub fn api_client_world_component_register(
+        &self,
+        desc: &deerpunk_engine_ffi::ComponentRegisterDesc,
+    ) -> u64 {
         let Some(reg) = crate::engine_api::components::build_component_descriptor(desc) else {
             return 0;
         };

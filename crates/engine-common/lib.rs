@@ -26,6 +26,7 @@ pub mod frame;
 pub mod loader_queue;
 pub mod material;
 pub mod mesh_submit;
+pub mod particle_gpu;
 pub mod physics;
 pub use deerpunk_engine_resource as resource;
 pub mod scheduler;

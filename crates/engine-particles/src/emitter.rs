@@ -24,6 +24,14 @@ pub struct SpawnPayload {
     pub dir: Option<[f32; 3]>,
     /// Sprite override (dynamic atlas rect or explicit frame).
     pub sprite: Option<SpriteOverride>,
+    /// Override the effect's bound sprite texture (e.g. a dedicated
+    /// whole-sprite file instead of the shared atlas). Contract: the sprite
+    /// UVs then address *this* texture — the caller supplies them via
+    /// [`SpriteOverride::Rect`]; without a rect, particles sample the full
+    /// `[0, 0, 1, 1]` rect (no atlas-frame slicing). The URI must resolve
+    /// through the resource manager and gets uploaded/registered on first
+    /// use like any other particle texture.
+    pub texture: Option<String>,
 }
 
 /// Sprite override: game-resolved UV rect in the bound texture, or a frame
@@ -68,8 +76,12 @@ impl<'a> Sample<'a> {
     pub fn dir(&self, u_cone: f32, u_ang: f32, u_spread: f32) -> Vec3 {
         let base = match self.payload.dir {
             Some(d) => Vec3::new(d[0], d[1], d[2]).normalize_or_zero(),
-            None => Vec3::new(self.emitter.dir[0], self.emitter.dir[1], self.emitter.dir[2])
-                .normalize_or_zero(),
+            None => Vec3::new(
+                self.emitter.dir[0],
+                self.emitter.dir[1],
+                self.emitter.dir[2],
+            )
+            .normalize_or_zero(),
         };
         if base.length_squared() < 1e-8 {
             return Vec3::Z;
@@ -118,16 +130,6 @@ impl<'a> Sample<'a> {
         match self.payload.tint {
             Some(t) => t,
             None => self.particle.color.start,
-        }
-    }
-
-    /// Sprite frame info for the mesh builder: resolved UV rect for a given
-    /// particle frame index, when the source is static or the payload overrides.
-    pub fn uv_rect(&self, frame: usize, atlas: &impl Fn(usize) -> [f32; 4]) -> [f32; 4] {
-        match self.payload.sprite.as_ref() {
-            Some(SpriteOverride::Rect { uv }) => *uv,
-            Some(SpriteOverride::Frame { index }) => atlas(*index as usize),
-            None => atlas(frame),
         }
     }
 

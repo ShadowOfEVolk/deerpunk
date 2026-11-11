@@ -4,11 +4,22 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
-use deerpunk_engine_common::ui_draw::{UiFrame, UiVertex};
+use deerpunk_engine_common::ui_draw::{UiFrame, UiMesh, UiVertex};
+
+macro_rules! render_scope {
+    ($label:literal) => {
+        #[cfg(any(feature = "tracy", feature = "puffin"))]
+        let _render_profile =
+            crate::profile_active().then(|| crate::gamelib_profile::zone_scope($label));
+    };
+}
 
 use crate::render_profile::{lap_ms, RenderFrameProfile};
 
 const UI_TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// One `vec2<f32>` translation in the per-draw storage buffer.
+const TRANSLATION_BYTES: u64 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -41,8 +52,9 @@ impl From<UiVertex> for GpuUiVertex {
 }
 
 struct CachedMesh {
-    verts: Vec<GpuUiVertex>,
-    indices: Vec<u32>,
+    vbo: wgpu::Buffer,
+    ibo: wgpu::Buffer,
+    index_count: u32,
 }
 
 struct HudTarget {
@@ -61,18 +73,21 @@ pub struct UiPass {
     globals_buf: wgpu::Buffer,
     globals_bg: wgpu::BindGroup,
     tex_layout: wgpu::BindGroupLayout,
+    /// Read-only per-draw translations, bound as group 2.
+    draws_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     sampler_linear: wgpu::Sampler,
     sampler_nearest: wgpu::Sampler,
-    vbo: wgpu::Buffer,
-    ibo: wgpu::Buffer,
-    vbo_cap: u64,
-    ibo_cap: u64,
+    /// Per-draw translations. Element 0 is reserved: it stays zero and the
+    /// hud blit quad draws with instance 0. UI draws use `instance_index`.
+    draws_buf: wgpu::Buffer,
+    draws_bg: wgpu::BindGroup,
     textures: HashMap<u32, (wgpu::Texture, wgpu::BindGroup)>,
     shader: String,
-    gpu_vert_scratch: Vec<GpuUiVertex>,
-    index_scratch: Vec<u32>,
-    /// Compiled RmlUi meshes. Positions are local; draws add translation.
+    /// Packed per-draw translations for one `write_buffer` per flush.
+    draw_scratch: Vec<[f32; 2]>,
+    /// Compiled RmlUi meshes with write-once GPU buffers; draws add the
+    /// translation from `draws_buf` in the vertex shader.
     meshes: HashMap<u32, CachedMesh>,
     hud: Option<HudTarget>,
     blit_vbo: wgpu::Buffer,
@@ -114,9 +129,26 @@ impl UiPass {
                 },
             ],
         });
+        let draws_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ui draws layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(TRANSLATION_BYTES),
+                },
+                count: None,
+            }],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ui pipeline layout"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&tex_layout)],
+            bind_group_layouts: &[
+                Some(&globals_layout),
+                Some(&tex_layout),
+                Some(&draws_layout),
+            ],
             immediate_size: 0,
         });
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -145,18 +177,22 @@ impl UiPass {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        const UI_VBO_INIT: u64 = 256 * 1024;
-        let vbo = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ui vbo"),
-            size: UI_VBO_INIT,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        // Element 0 stays zero (reserved for the blit quad); UI translations
+        // are written from offset 8 on flush.
+        const UI_DRAWS_INIT: u64 = 256 * TRANSLATION_BYTES;
+        let draws_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui draws"),
+            size: UI_DRAWS_INIT,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let ibo = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ui ibo"),
-            size: UI_VBO_INIT,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        let draws_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui draws bg"),
+            layout: &draws_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: draws_buf.as_entire_binding(),
+            }],
         });
         let blit_vbo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ui hud blit"),
@@ -171,17 +207,15 @@ impl UiPass {
             globals_buf,
             globals_bg,
             tex_layout,
+            draws_layout,
             pipeline_layout,
             sampler_linear,
             sampler_nearest,
-            vbo,
-            ibo,
-            vbo_cap: UI_VBO_INIT,
-            ibo_cap: UI_VBO_INIT,
+            draws_buf,
+            draws_bg,
             textures: HashMap::new(),
             shader: shader_source,
-            gpu_vert_scratch: Vec::new(),
-            index_scratch: Vec::new(),
+            draw_scratch: Vec::new(),
             meshes: HashMap::new(),
             hud: None,
             blit_vbo,
@@ -248,30 +282,6 @@ impl UiPass {
         }
         self.composite_pipeline = Some(self.make_pipeline(device, format));
         self.composite_format = Some(format);
-    }
-
-    fn ensure_buffer(
-        device: &wgpu::Device,
-        buf: &mut wgpu::Buffer,
-        cap: &mut u64,
-        need: u64,
-        usage: wgpu::BufferUsages,
-        label: &str,
-    ) {
-        let have = buf.size();
-        if need <= have {
-            *cap = have.max(*cap);
-            return;
-        }
-        // Headroom so a single heavy UI frame (console, inventory) does not resize every frame.
-        let new_cap = (need * 3 / 2).next_power_of_two().max(256 * 1024);
-        *buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: new_cap,
-            usage,
-            mapped_at_creation: false,
-        });
-        *cap = new_cap;
     }
 
     pub fn sync_textures(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &UiFrame) {
@@ -376,6 +386,72 @@ impl UiPass {
         self.textures.insert(id, (texture, bg));
     }
 
+    /// Upload one compiled mesh into its own GPU buffers (write-once at
+    /// compile time; later draws reuse them). Empty meshes are dropped so
+    /// draws referencing them skip.
+    fn upload_mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mesh: &UiMesh) {
+        if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            self.meshes.remove(&mesh.id);
+            return;
+        }
+        let verts: Vec<GpuUiVertex> = mesh.vertices.iter().map(|v| (*v).into()).collect();
+        let vbytes = (verts.len() * std::mem::size_of::<GpuUiVertex>()) as u64;
+        let ibytes = (mesh.indices.len() * std::mem::size_of::<u32>()) as u64;
+        // Reuse the cached buffers when capacity allows: dirty text meshes
+        // change every frame and per-frame buffer reallocation dominated
+        // `tonemap_ui/ui_meshes` (allocate/grow only, never shrink).
+        let (vbo, ibo) = match self.meshes.remove(&mesh.id) {
+            Some(old) if old.vbo.size() >= vbytes && old.ibo.size() >= ibytes => (old.vbo, old.ibo),
+            _ => (
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ui mesh vbo"),
+                    size: vbytes.max(64),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ui mesh ibo"),
+                    size: ibytes.max(64),
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+            ),
+        };
+        queue.write_buffer(&vbo, 0, bytemuck::cast_slice(&verts));
+        queue.write_buffer(&ibo, 0, bytemuck::cast_slice(&mesh.indices));
+        self.meshes.insert(
+            mesh.id,
+            CachedMesh {
+                vbo,
+                ibo,
+                index_count: mesh.indices.len() as u32,
+            },
+        );
+    }
+
+    fn ensure_draws_capacity(&mut self, device: &wgpu::Device, need_bytes: u64) {
+        if need_bytes <= self.draws_buf.size() {
+            return;
+        }
+        let size = need_bytes.next_power_of_two();
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui draws"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui draws bg"),
+            layout: &self.draws_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buf.as_entire_binding(),
+            }],
+        });
+        self.draws_buf = buf;
+        self.draws_bg = bg;
+    }
+
     pub fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -394,88 +470,46 @@ impl UiPass {
         let w = frame.screen[0].max(1);
         let h = frame.screen[1].max(1);
         if upload && !frame.is_empty() {
-            self.ensure_geom_pipeline(device);
-            self.sync_textures(device, queue, frame);
-            for id in &frame.released_meshes {
-                self.meshes.remove(id);
-            }
-            for mesh in &frame.meshes {
-                let verts: Vec<GpuUiVertex> = mesh
-                    .vertices
-                    .iter()
-                    .copied()
-                    .map(GpuUiVertex::from)
-                    .collect();
-                self.meshes.insert(
-                    mesh.id,
-                    CachedMesh {
-                        verts,
-                        indices: mesh.indices.clone(),
-                    },
-                );
-            }
-            if frame.draws.is_empty() {
-                if let Some(_p) = prof.as_mut() {
-                    lap_ms(&mut lap);
+            {
+                render_scope!("tonemap_ui/ui_sync");
+                self.ensure_geom_pipeline(device);
+                render_scope!("tonemap_ui/ui_textures");
+                self.sync_textures(device, queue, frame);
+                for id in &frame.released_meshes {
+                    self.meshes.remove(id);
                 }
+                render_scope!("tonemap_ui/ui_meshes");
+                for mesh in &frame.meshes {
+                    self.upload_mesh(device, queue, mesh);
+                }
+                if let Some(p) = prof.as_mut() {
+                    p.tonemap_ui.ui_sync_ms = lap_ms(&mut lap);
+                }
+            }
+            render_scope!("tonemap_ui/ui_draw");
+            if frame.draws.is_empty() {
+                render_scope!("tonemap_ui/ui_blit");
+                if let Some(p) = prof.as_mut() {
+                    p.tonemap_ui.ui_draw_ms = lap_ms(&mut lap);
+                }
+                let blit_at = std::time::Instant::now();
                 self.blit(device, encoder, target, format, w, h);
+                if let Some(p) = prof.as_mut() {
+                    p.tonemap_ui.ui_blit_ms = blit_at.elapsed().as_secs_f32() * 1000.0;
+                }
                 return;
             }
             self.ensure_hud(device, w, h);
-            self.gpu_vert_scratch.clear();
-            self.index_scratch.clear();
-            let mut ranges: Vec<(u32, u32, u32, Option<[i32; 4]>)> = Vec::new();
-            for draw in &frame.draws {
-                let Some(mesh) = self.meshes.get(&draw.mesh_id) else {
-                    continue;
-                };
-                let base = self.gpu_vert_scratch.len() as u32;
-                for v in &mesh.verts {
-                    let mut out = *v;
-                    out.pos[0] += draw.translation[0];
-                    out.pos[1] += draw.translation[1];
-                    self.gpu_vert_scratch.push(out);
-                }
-                let index_start = self.index_scratch.len() as u32;
-                for i in &mesh.indices {
-                    self.index_scratch.push(base + *i);
-                }
-                let index_count = self.index_scratch.len() as u32 - index_start;
-                if let Some(last) = ranges.last_mut() {
-                    if last.0 == draw.texture_id && last.3 == draw.scissor {
-                        last.2 += index_count;
-                        continue;
-                    }
-                }
-                ranges.push((draw.texture_id, index_start, index_count, draw.scissor));
-            }
-            if self.gpu_vert_scratch.is_empty() || self.index_scratch.is_empty() {
-                if let Some(_p) = prof.as_mut() {
-                    lap_ms(&mut lap);
-                }
-                self.blit(device, encoder, target, format, w, h);
-                return;
-            }
-            let v_bytes = bytemuck::cast_slice(&self.gpu_vert_scratch);
-            let i_bytes = bytemuck::cast_slice(&self.index_scratch);
-            Self::ensure_buffer(
-                device,
-                &mut self.vbo,
-                &mut self.vbo_cap,
-                v_bytes.len() as u64,
-                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                "ui vbo",
-            );
-            Self::ensure_buffer(
-                device,
-                &mut self.ibo,
-                &mut self.ibo_cap,
-                i_bytes.len() as u64,
-                wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                "ui ibo",
-            );
-            queue.write_buffer(&self.vbo, 0, v_bytes);
-            queue.write_buffer(&self.ibo, 0, i_bytes);
+            // Per-draw translations only: geometry lives in per-mesh GPU
+            // buffers and the vertex shader adds `draws[instance_index]`.
+            // Element 0 stays zero for the blit quad, so writes start at 8.
+            self.draw_scratch.clear();
+            self.draw_scratch
+                .extend(frame.draws.iter().map(|d| d.translation));
+            let translation_bytes_len = self.draw_scratch.len() as u64 * TRANSLATION_BYTES;
+            self.ensure_draws_capacity(device, translation_bytes_len + TRANSLATION_BYTES);
+            let translation_bytes = bytemuck::cast_slice(&self.draw_scratch) as &[u8];
+            queue.write_buffer(&self.draws_buf, TRANSLATION_BYTES, translation_bytes);
             queue.write_buffer(
                 &self.globals_buf,
                 0,
@@ -504,39 +538,61 @@ impl UiPass {
             });
             pass.set_pipeline(geom);
             pass.set_bind_group(0, &self.globals_bg, &[]);
-            pass.set_vertex_buffer(0, self.vbo.slice(..));
-            pass.set_index_buffer(self.ibo.slice(..), wgpu::IndexFormat::Uint32);
-            for (texture_id, index_start, index_count, scissor) in &ranges {
-                if *index_count == 0 {
-                    continue;
-                }
-                let Some((_, bg)) = self.textures.get(texture_id) else {
+            pass.set_bind_group(2, &self.draws_bg, &[]);
+            let mut bound_texture: Option<u32> = None;
+            let mut bound_scissor: Option<[i32; 4]> = None;
+            let mut clip_all = false;
+            for (di, draw) in frame.draws.iter().enumerate() {
+                let Some(mesh) = self.meshes.get(&draw.mesh_id) else {
                     continue;
                 };
-                if let Some([x, y, sw, sh]) = *scissor {
-                    let x0 = x.clamp(0, w as i32) as u32;
-                    let y0 = y.clamp(0, h as i32) as u32;
-                    let x1 = (x + sw).clamp(0, w as i32) as u32;
-                    let y1 = (y + sh).clamp(0, h as i32) as u32;
-                    if x1 <= x0 || y1 <= y0 {
-                        continue;
-                    }
-                    pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
-                } else {
-                    pass.set_scissor_rect(0, 0, w, h);
+                if mesh.index_count == 0 {
+                    continue;
                 }
-                pass.set_bind_group(1, bg, &[]);
-                pass.draw_indexed(*index_start..*index_start + *index_count, 0, 0..1);
+                let Some((_, bg)) = self.textures.get(&draw.texture_id) else {
+                    continue;
+                };
+                if bound_texture != Some(draw.texture_id) {
+                    pass.set_bind_group(1, bg, &[]);
+                    bound_texture = Some(draw.texture_id);
+                }
+                if bound_scissor != draw.scissor {
+                    bound_scissor = draw.scissor;
+                    clip_all = false;
+                    match draw.scissor {
+                        Some([x, y, sw, sh]) => {
+                            let x0 = x.clamp(0, w as i32) as u32;
+                            let y0 = y.clamp(0, h as i32) as u32;
+                            let x1 = (x + sw).clamp(0, w as i32) as u32;
+                            let y1 = (y + sh).clamp(0, h as i32) as u32;
+                            if x1 > x0 && y1 > y0 {
+                                pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+                            } else {
+                                clip_all = true;
+                            }
+                        }
+                        None => pass.set_scissor_rect(0, 0, w, h),
+                    }
+                }
+                if clip_all {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vbo.slice(..));
+                pass.set_index_buffer(mesh.ibo.slice(..), wgpu::IndexFormat::Uint32);
+                let instance = di as u32 + 1; // element 0 is the blit translation
+                pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
             }
             drop(pass);
             self.write_blit(queue, w, h);
         }
-        if let Some(_p) = prof.as_mut() {
-            lap_ms(&mut lap);
+        if let Some(p) = prof.as_mut() {
+            p.tonemap_ui.ui_draw_ms = lap_ms(&mut lap);
         }
+        render_scope!("tonemap_ui/ui_blit");
+        let blit_at = std::time::Instant::now();
         self.blit(device, encoder, target, format, w, h);
-        if let Some(_p) = prof.as_mut() {
-            lap_ms(&mut lap);
+        if let Some(p) = prof.as_mut() {
+            p.tonemap_ui.ui_blit_ms = blit_at.elapsed().as_secs_f32() * 1000.0;
         }
     }
 
@@ -635,6 +691,7 @@ impl UiPass {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.globals_bg, &[]);
         pass.set_bind_group(1, &hud.bg, &[]);
+        pass.set_bind_group(2, &self.draws_bg, &[]);
         pass.set_vertex_buffer(0, self.blit_vbo.slice(..));
         pass.set_scissor_rect(0, 0, w, h);
         pass.draw(0..6, 0..1);

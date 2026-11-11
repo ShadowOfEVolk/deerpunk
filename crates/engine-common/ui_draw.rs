@@ -67,6 +67,12 @@ impl UiFrame {
     /// frame. Without this, producing frames faster than the render thread
     /// consumes them silently drops mesh/texture uploads, and every draw
     /// referencing them is skipped forever.
+    ///
+    /// Only fold frames that have NOT reached the renderer's UI pass yet: once
+    /// consumed, this frame's resource entries are already in the GPU caches
+    /// and folding would re-carry them, making every later upload replay the
+    /// whole accumulated set. Callers that can observe consumption (the
+    /// renderer's upload flag) should use [`Self::absorb_delta`] instead.
     pub fn absorb(&mut self, next: UiFrame) {
         for mesh in next.meshes {
             match self.meshes.iter_mut().find(|m| m.id == mesh.id) {
@@ -86,6 +92,23 @@ impl UiFrame {
         }
         self.released.extend(next.released);
         self.screen = next.screen;
+    }
+
+    /// Merge a newer frame into this one, retiring already-consumed resources.
+    ///
+    /// When `prev_consumed` is `true` the renderer's UI pass already uploaded
+    /// this frame's resource entries into its GPU caches, so they are dropped
+    /// before folding — the merge carries only `next`'s delta and the next
+    /// upload replays just what changed. When `false` this behaves exactly
+    /// like [`Self::absorb`] (older deltas kept, nothing lost).
+    pub fn absorb_delta(&mut self, next: UiFrame, prev_consumed: bool) {
+        if prev_consumed {
+            self.meshes.clear();
+            self.released_meshes.clear();
+            self.textures.clear();
+            self.released.clear();
+        }
+        self.absorb(next);
     }
 }
 
@@ -149,5 +172,97 @@ mod tests {
         a.absorb(b);
         assert!(a.meshes.is_empty(), "released-before-upload nets out");
         assert_eq!(a.released_meshes, vec![7]);
+    }
+
+    fn tex_upload(id: u32) -> (u32, UiTextureUpload) {
+        (
+            id,
+            UiTextureUpload {
+                width: 4,
+                height: 4,
+                rgba: vec![0; 4 * 4 * 4],
+                filter_nearest: false,
+            },
+        )
+    }
+
+    /// The per-frame upload contract: once the renderer's UI pass consumed a
+    /// frame, folding the next delta must retire the consumed entries so the
+    /// upload only carries what actually changed (otherwise every frame
+    /// replays the whole accumulated mesh/texture set).
+    #[test]
+    fn absorb_delta_retires_consumed_resources() {
+        let mut pending = UiFrame {
+            meshes: vec![mesh(1), mesh(2)],
+            textures: [tex_upload(9)].into_iter().collect(),
+            draws: vec![UiDraw {
+                mesh_id: 1,
+                translation: [0.0, 0.0],
+                texture_id: 9,
+                scissor: None,
+            }],
+            released_meshes: vec![3],
+            released: vec![4],
+            screen: [100, 100],
+            ..Default::default()
+        };
+        // UI pass consumed `pending`; a new frame carries one changed mesh.
+        let next = UiFrame {
+            meshes: vec![mesh(5)],
+            draws: vec![UiDraw {
+                mesh_id: 5,
+                translation: [0.0, 0.0],
+                texture_id: 9,
+                scissor: None,
+            }],
+            screen: [100, 100],
+            ..Default::default()
+        };
+        pending.absorb_delta(next, true);
+        assert_eq!(
+            pending.meshes.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![5],
+            "consumed entries must not be re-uploaded"
+        );
+        assert!(pending.textures.is_empty(), "consumed textures retired");
+        assert!(
+            pending.released_meshes.is_empty(),
+            "consumed releases retired"
+        );
+        assert!(pending.released.is_empty());
+        assert_eq!(pending.draws.len(), 1, "newer draw list wins");
+        assert_eq!(pending.draws[0].mesh_id, 5);
+    }
+
+    /// Without a consumption signal the old absorb semantics must hold: older
+    /// deltas survive so a frame produced while the UI pass was not reached is
+    /// never lost.
+    #[test]
+    fn absorb_delta_keeps_unconsumed_resources() {
+        let mut pending = UiFrame {
+            meshes: vec![mesh(1)],
+            textures: [tex_upload(9)].into_iter().collect(),
+            screen: [100, 100],
+            ..Default::default()
+        };
+        let next = UiFrame {
+            meshes: vec![mesh(5)],
+            draws: vec![UiDraw {
+                mesh_id: 5,
+                translation: [0.0, 0.0],
+                texture_id: 9,
+                scissor: None,
+            }],
+            screen: [100, 100],
+            ..Default::default()
+        };
+        pending.absorb_delta(next, false);
+        assert_eq!(
+            pending.meshes.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![1, 5],
+            "unconsumed upload must survive"
+        );
+        assert_eq!(pending.textures.len(), 1);
+        assert_eq!(pending.draws[0].mesh_id, 5);
     }
 }

@@ -26,6 +26,9 @@ pub fn node_enabled(pass: ForwardPass, phase: Phase) -> bool {
             ForwardPass::ClearHdr => true,
             ForwardPass::Sprites3d => pass_mask & cam_pass::SPRITES_3D != 0,
             ForwardPass::Mesh => pass_mask & cam_pass::MESH != 0,
+            // Additive GPU billboards over the opaque scene: same world pass as
+            // meshes (the old particles were mesh_transparent queue draws).
+            ForwardPass::Particles => pass_mask & cam_pass::MESH != 0,
             ForwardPass::Debug => pass_mask & cam_pass::DEBUG != 0,
             ForwardPass::Hud | ForwardPass::TonemapUi => false,
         },

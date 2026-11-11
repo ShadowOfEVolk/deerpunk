@@ -69,9 +69,7 @@ pub(crate) fn register_client_component_desc(
         return 0;
     };
     let Some(world) = host.client_engine.as_ref().map(|c| &c.world) else {
-        log::trace!(
-            "[client_world] component_register: skipped (no client world on this host)"
-        );
+        log::trace!("[client_world] component_register: skipped (no client world on this host)");
         return 0;
     };
     world.component_init_raw(&reg)

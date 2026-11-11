@@ -5,6 +5,14 @@ use crate::render_profile::lap_ms;
 use crate::renderer::Renderer;
 use deerpunk_engine_common::frame::{frame_height, frame_width};
 
+macro_rules! render_scope {
+    ($label:literal) => {
+        #[cfg(any(feature = "tracy", feature = "puffin"))]
+        let _render_profile =
+            crate::profile_active().then(|| crate::gamelib_profile::zone_scope($label));
+    };
+}
+
 impl Renderer {
     pub(crate) fn pass_tonemap_and_ui(
         &mut self,
@@ -13,7 +21,10 @@ impl Renderer {
     ) {
         // --- Bloom → tonemap → grain → surface ---
         if let Some(surface_view) = ctx.surface_view {
+            // Sub-timings for `r_speeds`; multiple cameras overwrite (last run wins).
+            ctx.prof.tonemap_ui = Default::default();
             self.ensure_tonemap_pipeline(ctx.surface_format);
+            render_scope!("tonemap_ui/chain");
             let hdr_view_ref = self.hdr.view.as_ref().expect("HDR texture not initialized");
             let w = frame_width();
             let h = frame_height();
@@ -38,14 +49,17 @@ impl Renderer {
                 ctx.snapshot.camera_pos,
                 Some(ctx.prof),
             );
-            lap_ms(ctx.lap);
-
+            ctx.prof.tonemap_ui.chain_ms = lap_ms(ctx.lap);
             // One-shot capture: the surface holds the tonemapped scene and no
             // UI has been drawn yet (this is the only tonemap path — the
             // deferred-submit branch reuses this same encoder).
+            render_scope!("tonemap_ui/capture");
+            let capture_at = std::time::Instant::now();
             self.encode_capture_copy(encoder);
+            ctx.prof.tonemap_ui.capture_ms = capture_at.elapsed().as_secs_f32() * 1000.0;
 
             // UI overlay (RmlUi geometry) on LDR surface
+            render_scope!("tonemap_ui/ui");
             if let Some(ui) = self.pending_ui.as_ref() {
                 let upload = std::mem::take(&mut self.ui_upload);
                 let device = &self.gpu.device;

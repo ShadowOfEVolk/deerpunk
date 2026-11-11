@@ -799,6 +799,7 @@ dependencies = [
  "bincode",
  "bindgen 0.71.1",
  "bitflags 2.13.1",
+ "bytemuck",
  "cc",
  "ciborium",
  "deerpunk-engine-ffi",
@@ -874,7 +875,6 @@ name = "deerpunk-engine-particles"
 version = "0.1.0"
 dependencies = [
  "deerpunk-engine-common",
- "deerpunk-engine-resource",
  "glam 0.33.3",
  "log",
  "serde",

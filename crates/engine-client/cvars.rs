@@ -1,7 +1,14 @@
-//! Client HUD / audio cvars (not `r_*` — those live in `deerpunk-engine-renderer`).
+//! Client HUD / audio cvars plus client-owned `r_*` knobs (renderer-internal
+//! `r_*` cvars live in `deerpunk-engine-renderer`).
 
 use deerpunk_engine_common::cvar_def::{ARCHIVE, RENDERINFO};
 
+deerpunk_engine_common::cvar_def!(
+    "r_particles_max",
+    "1048576",
+    "Particle pool capacity in particles (client sim; applied by recreating the pool).",
+    RENDERINFO
+);
 deerpunk_engine_common::cvar_def!(
     "cl_showfps",
     "0",

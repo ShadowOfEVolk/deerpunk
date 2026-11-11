@@ -91,6 +91,13 @@ fn run_forward_pass(
             render_scope!("render/mesh");
             r.pass_mesh(ctx, encoder);
         }
+        ForwardPass::Particles => {
+            if !ctx.primary {
+                return;
+            }
+            render_scope!("render/particles");
+            r.pass_particles(ctx, encoder);
+        }
         ForwardPass::Debug => {
             render_scope!("render/debug");
             if ctx.snapshot.pass_mask & cam_features::DEBUG != 0 {
@@ -142,12 +149,13 @@ pub fn format_graph_speeds_lines(
 ) -> Vec<String> {
     use crate::render_graph::ForwardPass;
 
-    const CAM: [ForwardPass; 6] = [
+    const CAM: [ForwardPass; 7] = [
         ForwardPass::UploadPrep,
         ForwardPass::Sky,
         ForwardPass::ClearHdr,
         ForwardPass::Sprites3d,
         ForwardPass::Mesh,
+        ForwardPass::Particles,
         ForwardPass::Debug,
     ];
     const POST: [ForwardPass; 2] = [ForwardPass::Hud, ForwardPass::TonemapUi];
@@ -255,7 +263,7 @@ mod speeds_tests {
         ];
         p.total_encode_ms = 4.0;
         let lines = format_graph_speeds_lines(&p);
-        assert_eq!(lines.len(), 12, "{lines:?}");
+        assert_eq!(lines.len(), 13, "{lines:?}");
         assert!(lines[0].starts_with("graph 3.60 ms"), "{})", lines[0]);
         assert_eq!(lines[1], "frame");
         assert!(lines[2].starts_with("|-- cam"), "{}", lines[2]);
@@ -271,6 +279,7 @@ mod speeds_tests {
             "clear_hdr",
             "sprites_3d",
             "mesh",
+            "particles",
             "debug",
             "hud",
             "tonemap_ui",

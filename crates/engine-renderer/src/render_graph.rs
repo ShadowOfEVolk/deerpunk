@@ -15,6 +15,7 @@ pub enum ForwardPass {
     ClearHdr,
     Sprites3d,
     Mesh,
+    Particles,
     Debug,
     Hud,
     TonemapUi,
@@ -28,6 +29,7 @@ impl ForwardPass {
             ForwardPass::ClearHdr => "clear_hdr",
             ForwardPass::Sprites3d => "sprites_3d",
             ForwardPass::Mesh => "mesh",
+            ForwardPass::Particles => "particles",
             ForwardPass::Debug => "debug",
             ForwardPass::Hud => "hud",
             ForwardPass::TonemapUi => "tonemap_ui",
@@ -38,12 +40,13 @@ impl ForwardPass {
 /// The forward frame (HDR → … → surface), in execution order. Static: every
 /// pass reads frame state through `FrameCtx`, so there is nothing to build or
 /// mutate per frame.
-pub const FORWARD_PASSES: [ForwardPass; 8] = [
+pub const FORWARD_PASSES: [ForwardPass; 9] = [
     ForwardPass::UploadPrep,
     ForwardPass::Sky,
     ForwardPass::ClearHdr,
     ForwardPass::Sprites3d,
     ForwardPass::Mesh,
+    ForwardPass::Particles,
     ForwardPass::Debug,
     ForwardPass::Hud,
     ForwardPass::TonemapUi,

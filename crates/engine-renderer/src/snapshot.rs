@@ -257,6 +257,9 @@ pub struct RenderSnapshot {
     pub instances: Vec<Instance>,
     /// HUD-примитивы в экранных пикселях (отрисовываются с ортографической проекцией).
     pub hud: Vec<Instance>,
+    /// Native instanced particles (one instance buffer, static quad, GPU billboards).
+    /// Shared per-frame `Arc`: every surface camera clones the pointer, not the data.
+    pub particles: std::sync::Arc<deerpunk_engine_common::particle_gpu::ParticleFrame>,
     /// View-projection матрица для3D-примитивов (column-major).
     pub view_proj: [[f32; 4]; 4],
     /// Inverse view-projection (computed from view_proj).
@@ -302,6 +305,7 @@ impl RenderSnapshot {
             clear: [0.0, 0.0, 0.0, 1.0],
             instances: Vec::new(),
             hud: Vec::new(),
+            particles: Default::default(),
             mesh_draws: Vec::new(),
             skinned_mesh_draws: Vec::new(),
             mesh_geometry_indices: Vec::new(),

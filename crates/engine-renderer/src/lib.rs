@@ -23,7 +23,7 @@ mod mesh_shader_instance;
 mod mesh_vertex_pack;
 mod occlusion;
 mod octree;
-pub mod postfx;
+mod postfx;
 pub mod puffin_lifecycle;
 pub mod render_graph;
 pub mod render_profile;

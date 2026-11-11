@@ -264,8 +264,7 @@ impl Inspector {
                 match client.socket.read_incoming() {
                     Ok(WsIncoming::Text(text)) => {
                         budget -= 1;
-                        match handle_message(text.trim(), ctx.as_ref(), &insp.collections, client)
-                        {
+                        match handle_message(text.trim(), ctx.as_ref(), &insp.collections, client) {
                             Ok(msgs) => {
                                 for m in msgs {
                                     responses.push((id, m));
@@ -315,7 +314,11 @@ impl Inspector {
             let fresh = share.entities_snapshot().map(|(g, _)| g > pending.wait_gen);
             match (fresh, share.entities_snapshot()) {
                 (Some(true), Some((_, value))) => {
-                    if client.socket.send_text(&proto::ok(&pending.request_id, (*value).clone())).is_err() {
+                    if client
+                        .socket
+                        .send_text(&proto::ok(&pending.request_id, (*value).clone()))
+                        .is_err()
+                    {
                         disconnected.push(id);
                     }
                     client.pending_entities_list = None;
@@ -346,7 +349,11 @@ impl Inspector {
             let fresh = share.players_snapshot().map(|(g, _)| g > pending.wait_gen);
             match (fresh, share.players_snapshot()) {
                 (Some(true), Some((_, value))) => {
-                    if client.socket.send_text(&proto::ok(&pending.request_id, (*value).clone())).is_err() {
+                    if client
+                        .socket
+                        .send_text(&proto::ok(&pending.request_id, (*value).clone()))
+                        .is_err()
+                    {
                         disconnected.push(id);
                     }
                     client.pending_players_list = None;
@@ -434,8 +441,9 @@ impl Inspector {
                         .get("players")
                         .and_then(|v| v.as_array())
                         .and_then(|arr| {
-                            arr.iter()
-                                .find(|v| v.get("index").and_then(|i| i.as_u64()) == Some(pending.index))
+                            arr.iter().find(|v| {
+                                v.get("index").and_then(|i| i.as_u64()) == Some(pending.index)
+                            })
                         })
                         .cloned();
                     Some(match found {
@@ -502,7 +510,11 @@ fn server_collection_rpc(
         }
         "get" => {
             let Some(index) = params.get("index").and_then(|v| v.as_u64()) else {
-                return Ok(vec![proto::err(id, proto::ERR_INVALID_PARAMS, "missing index")]);
+                return Ok(vec![proto::err(
+                    id,
+                    proto::ERR_INVALID_PARAMS,
+                    "missing index",
+                )]);
             };
             if col_id == "serverentities" {
                 // Ask for a fresh rows snapshot first so repeated gets stay

@@ -9,6 +9,7 @@
 //! - умеет два выхода: surface окна и offscreen + readback RGBA (headless).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
@@ -509,6 +510,18 @@ pub struct Renderer {
     map_bg: wgpu::BindGroup,
     map_texture: Option<(wgpu::Texture, u32, u32)>,
 
+    // Native particles: one static quad + one per-frame instance buffer.
+    particle_quad_vbuf: wgpu::Buffer,
+    particle_quad_ibuf: wgpu::Buffer,
+    particle_instance_buf: wgpu::Buffer,
+    particle_instance_cap: usize,
+    particle_view_buf: wgpu::Buffer,
+    particle_view_bg_layout: wgpu::BindGroupLayout,
+    particle_view_bg: wgpu::BindGroup,
+    particle_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// Particle `tex_uri` → texture slot (`None` = known unresolvable).
+    particle_tex_slots: HashMap<Arc<str>, Option<crate::MeshTexture>>,
+
     sprite_texture: wgpu::Texture,
     atlas: HashMap<usize, SpriteSlot>,
     free_cells: Vec<usize>,
@@ -554,6 +567,20 @@ pub struct Renderer {
     mesh_batch_groups: HashMap<MeshBatchKey, Vec<usize>>,
     /// Batchable draws, sorted by key. Reused so a changed visible set does not allocate.
     mesh_batch_pairs: Vec<(MeshBatchKey, u32)>,
+    /// Valid when it equals the current snapshot's static pass key: `mesh_batch_order`,
+    /// `mesh_batch_groups`, and `mesh_batch_for_index` then hold the exact plan.
+    mesh_batch_plan_cache: Option<crate::renderer::features::mesh::StaticPlanCacheKey>,
+    /// Valid when it equals the current snapshot's MDI key: `mesh_indirect_cmd_scratch`
+    /// then holds the exact indirect commands and `mesh_batch_mdi_map` the segments.
+    mesh_batch_mdi_cache: Option<crate::renderer::features::mesh::StaticMdiCacheKey>,
+    /// MDI segment map retained between frames to reuse the per-key `Vec`s.
+    mesh_batch_mdi_map: HashMap<MeshBatchKey, Vec<crate::renderer::features::mesh::MeshMdiSegment>>,
+    /// Per-frame "group already drawn" set for the static pass, capacity reused.
+    mesh_batch_emitted_scratch: std::collections::HashSet<MeshBatchKey>,
+    /// Occlusion visibility flags scratch for `static_batch_plan`.
+    mesh_batch_visible_scratch: Vec<bool>,
+    /// Bumped on every GPU mesh upload/free; part of the MDI cache key.
+    mesh_gpu_upload_serial: u64,
     /// `upload_prep` already ran for this frame (multi-camera).
     upload_prepped: bool,
     /// Per-frame lazy GPU mesh handles (index = snapshot draw index).
@@ -567,6 +594,8 @@ pub struct Renderer {
     mdi_draw_gpu: Vec<(usize, u64, crate::mesh_allocator::MeshHandle)>,
     /// Draw indices grouped by GPU buffer while building one MDI batch.
     mdi_by_buffer: Vec<(u32, usize)>,
+    /// Reused resolved-draw list for the non-MDI batch fallback encode.
+    mesh_batch_draws: Vec<features::mesh::FallbackBatchDraw>,
     /// `mesh_shader_supports_draw_slot` per shader. WGSL is not scanned again.
     mdi_shader_ok: HashMap<u32, bool>,
     mesh_occlusion: crate::occlusion::MeshOcclusion,
@@ -616,6 +645,20 @@ pub struct Renderer {
     frame_mesh_gpu_cached: u32,
     /// `MeshRegistry::mesh_revisions` value last uploaded, by handle index.
     uploaded_mesh_revs: Vec<u64>,
+    /// Epoch marks for the `visible_mesh_ids` dedupe (indexed by registry slot).
+    visible_seen_marks: Vec<u32>,
+    /// Current epoch id for `visible_seen_marks`.
+    visible_seen_epoch: u32,
+    /// Reused scratch: deduped visible mesh ids (upload_prep).
+    visible_ids_scratch: Vec<(
+        deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+        ShaderId,
+    )>,
+    /// Reused scratch: meshes that need a GPU upload this frame (upload_prep).
+    upload_list_scratch: Vec<(
+        deerpunk_engine_common::resource::mesh_handle::MeshHandle,
+        ShaderId,
+    )>,
     defer_surface_submit: bool,
     pending_surface_present: Option<PendingSurfacePresent>,
     /// Swapchain texture of the frame being composed (source for one-shot captures).
@@ -1267,6 +1310,55 @@ impl Renderer {
             ],
         });
 
+        // Native particles: static quad + instance buffer + view uniform.
+        let particle_quad_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("particle quad verts"),
+            contents: bytemuck::cast_slice(&features::particles::QUAD_VERTS),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let particle_quad_ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("particle quad indices"),
+            contents: bytemuck::cast_slice(&features::particles::QUAD_INDICES),
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let particle_instance_cap = features::particles::PARTICLE_INSTANCES_INIT;
+        let particle_instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle instances"),
+            size: (particle_instance_cap
+                * deerpunk_engine_common::particle_gpu::GPU_PARTICLE_STRIDE as usize)
+                as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let particle_view_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle view"),
+            size: std::mem::size_of::<MeshViewUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let particle_view_bg_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("particle view bg layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let particle_view_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("particle view bg"),
+            layout: &particle_view_bg_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_view_buf.as_entire_binding(),
+            }],
+        });
+
         let mesh_white_bg = {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("white 1x1"),
@@ -1376,6 +1468,16 @@ impl Renderer {
             sprite_bg,
             map_bg,
             map_texture: None,
+
+            particle_quad_vbuf,
+            particle_quad_ibuf,
+            particle_instance_buf,
+            particle_instance_cap,
+            particle_view_buf,
+            particle_view_bg_layout,
+            particle_view_bg,
+            particle_pipelines: HashMap::new(),
+            particle_tex_slots: HashMap::new(),
             sprite_texture,
             atlas: HashMap::new(),
             free_cells: (0..SPRITE_CELLS).collect(),
@@ -1407,12 +1509,19 @@ impl Renderer {
             mesh_batch_for_index: Vec::new(),
             mesh_batch_groups: HashMap::new(),
             mesh_batch_pairs: Vec::new(),
+            mesh_batch_plan_cache: None,
+            mesh_batch_mdi_cache: None,
+            mesh_batch_mdi_map: HashMap::new(),
+            mesh_batch_emitted_scratch: std::collections::HashSet::new(),
+            mesh_batch_visible_scratch: Vec::new(),
+            mesh_gpu_upload_serial: 0,
             upload_prepped: false,
             mesh_pass_static_handles: Vec::new(),
             mesh_pass_skinned_handles: Vec::new(),
             mesh_indirect_cmd_scratch: Vec::new(),
             mdi_draw_gpu: Vec::new(),
             mdi_by_buffer: Vec::new(),
+            mesh_batch_draws: Vec::new(),
             mdi_shader_ok: HashMap::new(),
             mesh_occlusion: crate::occlusion::MeshOcclusion::new(),
             mesh_draw_batching: true,
@@ -1448,6 +1557,10 @@ impl Renderer {
             frame_mesh_gpu_uploads: 0,
             frame_mesh_gpu_cached: 0,
             uploaded_mesh_revs: Vec::new(),
+            visible_seen_marks: Vec::new(),
+            visible_seen_epoch: 0,
+            visible_ids_scratch: Vec::new(),
+            upload_list_scratch: Vec::new(),
             defer_surface_submit: false,
             pending_surface_present: None,
             frame_surface_texture: None,
@@ -2252,7 +2365,7 @@ impl Renderer {
                 label: Some("frame encoder"),
             });
 
-        for cam in cameras {
+        for (cam_i, cam) in cameras.iter().enumerate() {
             let phase = Phase::Camera {
                 pass_mask: cam.pass_mask,
             };
@@ -2267,6 +2380,7 @@ impl Renderer {
                 prof: &mut prof,
                 draw_acc: &mut draw_acc,
                 lap: &mut lap,
+                primary: cam_i == 0,
             };
             crate::frame::executor::run_frame_graph(
                 self,
@@ -2289,6 +2403,7 @@ impl Renderer {
                 prof: &mut prof,
                 draw_acc: &mut draw_acc,
                 lap: &mut lap,
+                primary: false,
             };
             crate::frame::executor::run_frame_graph(
                 self,
@@ -2821,6 +2936,7 @@ impl Renderer {
             prof: &mut prof,
             draw_acc: &mut draw_acc,
             lap: &mut lap,
+            primary: true,
         };
 
         crate::frame::executor::run_frame_graph(
@@ -2873,16 +2989,30 @@ impl Renderer {
 
     /// Queue a UI frame to be drawn after tonemap on the next `encode_frame`.
     ///
-    /// The render thread may not have consumed the previous frame yet; its
-    /// resource uploads (meshes/textures) are merged into the new frame so a
-    /// fast producer can never orphan draws that reference never-uploaded
-    /// meshes (the UI pass silently skips those forever).
+    /// The previous frame's resource entries are retired once the UI pass has
+    /// consumed them: `ui_upload == false` here means the pass `take`n the flag
+    /// last frame, so its meshes/textures are already in the ui_pass GPU caches
+    /// and `next` replaces the pending frame — the next UI pass then uploads
+    /// only what actually changed, instead of replaying the whole accumulated
+    /// set (font atlas included) on every frame.
+    ///
+    /// Folding (`UiFrame::absorb`) only happens while `ui_upload` is still set
+    /// — i.e. the previous encode never reached the UI pass (surface
+    /// acquisition failure, UI hidden). Older deltas are kept then, so a fast
+    /// producer can never orphan draws that reference never-uploaded meshes
+    /// (the UI pass silently skips those forever).
     pub fn set_ui_frame(&mut self, frame: Option<deerpunk_engine_common::ui_draw::UiFrame>) {
         match frame {
             Some(next) => {
                 match self.pending_ui.take() {
+                    // `ui_upload == false` means the UI pass consumed the
+                    // previous pending frame (`take`n the flag there): its
+                    // entries are already in the ui_pass GPU caches, so
+                    // `absorb_delta` retires them and the next UI pass uploads
+                    // only this frame's actual delta instead of replaying the
+                    // whole accumulated set (font atlas included).
                     Some(mut prev) => {
-                        prev.absorb(next);
+                        prev.absorb_delta(next, !self.ui_upload);
                         self.pending_ui = Some(prev);
                     }
                     None => self.pending_ui = Some(next),

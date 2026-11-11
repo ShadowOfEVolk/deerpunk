@@ -217,6 +217,7 @@ impl RenderExtractor {
         &mut self,
         world: &World,
         registry: &MeshRegistry,
+        recycled_geometry: &mut deerpunk_engine_renderer::SceneGeometry,
         view_entity: Option<u64>,
         material_store: &mut MaterialStore,
         material_allocator: &mut MaterialAllocator,
@@ -237,17 +238,25 @@ impl RenderExtractor {
                 }
                 if h.is_valid() {
                     log::error!(
-                    "entity {ent:#x}: stale MeshHandle {:?} — skipping draw (refresh Mesh3D on entity)",
-                    h
-                );
+                        "entity {ent:#x}: stale MeshHandle {:?} — skipping draw (refresh Mesh3D on entity)",
+                        h
+                    );
                 } else {
                     log::warn!("entity {ent:#x}: invalid MeshHandle on Mesh3D — skipping draw",);
                 }
                 None
             };
         let mut scene = RenderScene::new();
+        // Rebuild into last frame's geometry: the Vec capacities (multi-MB once
+        // chunks are visible) survive instead of being re-grown every frame.
+        scene.geometry = std::mem::take(recycled_geometry);
         scene.geometry.mesh_draws.clear();
         scene.geometry.skinned_mesh_draws.clear();
+        scene.geometry.bone_palettes.clear();
+        scene.geometry.terrain_splat_draws.clear();
+        scene.geometry.point_lights.clear();
+        scene.geometry.sky = None;
+        scene.geometry.cull_serial = 0;
         let extract_body_start = std::time::Instant::now();
         let mut frustum_skip = 0u32;
 

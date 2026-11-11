@@ -21,4 +21,9 @@ pub struct FrameCtx<'a> {
     pub prof: &'a mut RenderFrameProfile,
     pub draw_acc: &'a mut FrameDrawAccum,
     pub lap: &'a mut std::time::Instant,
+    /// True only for the first camera of the compose frame. World-decoration
+    /// passes (particles) render once per frame; per-camera `write_buffer`s
+    /// land before the single frame submit, so per-camera view uniforms in
+    /// one buffer would alias (last write wins) across stacked cameras.
+    pub primary: bool,
 }
