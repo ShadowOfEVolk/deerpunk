@@ -500,3 +500,107 @@ int rmlui_load_font(const char* path)
 {
     return Rml::LoadFontFace(path) ? 1 : 0;
 }
+
+// ---- document tree dump (read-only; agent tooling) -----------------------
+
+#include <RmlUi/Core/ElementText.h>
+#include <RmlUi/Core/Log.h>
+#include <RmlUi/Core/Traits.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+static void rmlui_tree_append_classes(Rml::String& out, const Rml::String& classes)
+{
+    // `GetClassNames()` yields a space-separated list; emit `.a.b`.
+    size_t begin = 0;
+    while (begin < classes.size()) {
+        const size_t end = classes.find(' ', begin);
+        const size_t stop = (end == Rml::String::npos) ? classes.size() : end;
+        if (stop > begin) {
+            out.push_back('.');
+            out.append(classes, begin, stop - begin);
+        }
+        begin = stop + 1;
+    }
+}
+
+static void rmlui_tree_append_text(Rml::String& out, const Rml::String& raw)
+{
+    // Collapse whitespace runs to single spaces, drop leading/trailing.
+    Rml::String collapsed;
+    bool pending_space = false;
+    for (const char c : raw) {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            pending_space = !collapsed.empty();
+            continue;
+        }
+        if (pending_space) {
+            collapsed.push_back(' ');
+            pending_space = false;
+        }
+        collapsed.push_back(c);
+    }
+    if (collapsed.empty())
+        return;
+    static constexpr size_t kMaxText = 60;
+    if (collapsed.size() > kMaxText) {
+        size_t keep = kMaxText;
+        while (keep > 0 && (collapsed[keep] & 0xC0) == 0x80) // no UTF-8 code point splits
+            --keep;
+        collapsed.resize(keep);
+        collapsed.append("...");
+    }
+    out.append(" \"");
+    out.append(collapsed);
+    out.push_back('"');
+}
+
+static void rmlui_tree_walk(Rml::Element* el, int depth, int max_depth, Rml::String& out)
+{
+    out.append(static_cast<size_t>(depth) * 2, ' ');
+    out.append(el->GetTagName());
+    const Rml::String& id = el->GetId();
+    if (!id.empty()) {
+        out.push_back('#');
+        out.append(id);
+    }
+    rmlui_tree_append_classes(out, el->GetClassNames());
+
+    // Post-layout border box: position relative to the document (context px), size.
+    const Rml::Vector2f pos = el->GetAbsoluteOffset(Rml::BoxArea::Border);
+    const Rml::Vector2f size = el->GetBox().GetSize(Rml::BoxArea::Border);
+    char box[96];
+    std::snprintf(box, sizeof(box), " [%.0f,%.0f %.0fx%.0f]", pos.x, pos.y, size.x, size.y);
+    out.append(box);
+
+    if (const Rml::ElementText* text = rmlui_dynamic_cast<const Rml::ElementText*>(el))
+        rmlui_tree_append_text(out, text->GetText());
+    out.push_back('\n');
+
+    // max_depth = maximum nesting levels printed (1 = root only); <= 0 = unlimited.
+    if (max_depth > 0 && depth + 1 >= max_depth)
+        return;
+    const int num_children = el->GetNumChildren(false);
+    for (int i = 0; i < num_children; ++i)
+        rmlui_tree_walk(el->GetChild(i), depth + 1, max_depth, out);
+}
+
+char* rmlui_document_tree(rmlui_handle_t doc, int max_depth)
+{
+    auto* root = static_cast<Rml::ElementDocument*>(doc);
+    if (!root)
+        return nullptr;
+    Rml::String out;
+    rmlui_tree_walk(root, 0, max_depth, out);
+    char* buffer = static_cast<char*>(std::malloc(out.size() + 1));
+    if (!buffer)
+        return nullptr;
+    std::memcpy(buffer, out.c_str(), out.size() + 1);
+    return buffer;
+}
+
+void rmlui_free(void* ptr)
+{
+    std::free(ptr);
+}

@@ -126,6 +126,20 @@ void rmlui_process_text_input(rmlui_handle_t ctx, unsigned int codepoint);
 
 int rmlui_load_font(const char* path);
 
+/**
+ * Dump the post-layout document tree as text (read-only depth-first walk).
+ * One line per element: `TAG#id.class1.class2 [x,y w×h]` (2-space indent per
+ * nesting level; x/y = border-box position in context px, w×h = border-box
+ * size). Text elements (`#text`) append the first ~60 whitespace-collapsed
+ * characters in quotes. `max_depth` limits the nesting levels printed
+ * (1 = document root only); values <= 0 mean unlimited.
+ * @return malloc'd NUL-terminated UTF-8 buffer (free with rmlui_free) or
+ *         NULL if doc is NULL / out of memory.
+ */
+char* rmlui_document_tree(rmlui_handle_t doc, int max_depth);
+/** Free a buffer returned by rmlui_document_tree. NULL is ignored. */
+void rmlui_free(void* ptr);
+
 #ifdef __cplusplus
 }
 #endif

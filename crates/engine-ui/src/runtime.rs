@@ -190,6 +190,27 @@ impl UiDocument {
         ok
     }
 
+    /// Post-layout component tree as text (agent tooling): depth-first, one
+    /// element per line — `TAG#id.class1.class2 [x,y w×h]`, with a quoted
+    /// text snippet for `#text` nodes; 2-space indent per nesting level.
+    /// `max_depth` caps the nesting levels shown (1 = document root only);
+    /// `None` = unlimited. `None` if the runtime/document is gone.
+    pub fn tree_text(&self, max_depth: Option<u32>) -> Option<String> {
+        if self.handle.is_null() {
+            return None;
+        }
+        let depth = i32::try_from(max_depth.unwrap_or(0)).unwrap_or(i32::MAX);
+        let buffer = unsafe { ffi::rmlui_document_tree(self.handle, depth) };
+        if buffer.is_null() {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr(buffer) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { ffi::rmlui_free(buffer.cast()) };
+        Some(text)
+    }
+
     fn already_written(&self, field: &str, value: &DataModelValue) -> bool {
         self.written
             .borrow()
@@ -270,7 +291,6 @@ impl UiRuntime {
                 _assets: assets,
             };
         }
-
 
         let name = CString::new(context_name).unwrap_or_else(|_| CString::new("main").unwrap());
         let ctx = unsafe { ffi::rmlui_context_create(name.as_ptr()) };
