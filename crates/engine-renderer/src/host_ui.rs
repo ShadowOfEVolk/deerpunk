@@ -542,7 +542,7 @@ pub fn begin_overlay(title: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
         return false;
     }
     let t = cstr(title);
-    unsafe { host_ui_begin(ui, t.as_ptr(), x, y, w, h, host_ui_flags_overlay()) != 0 }
+    unsafe { host_ui_begin(ui, t.as_ptr().cast(), x, y, w, h, host_ui_flags_overlay()) != 0 }
 }
 
 pub fn begin_panel(title: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
@@ -551,7 +551,7 @@ pub fn begin_panel(title: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
         return false;
     }
     let t = cstr(title);
-    unsafe { host_ui_begin(ui, t.as_ptr(), x, y, w, h, host_ui_flags_panel()) != 0 }
+    unsafe { host_ui_begin(ui, t.as_ptr().cast(), x, y, w, h, host_ui_flags_panel()) != 0 }
 }
 
 pub fn begin_console(w: f32, h: f32) -> bool {
@@ -560,7 +560,7 @@ pub fn begin_console(w: f32, h: f32) -> bool {
         return false;
     }
     let t = cstr("##console");
-    unsafe { host_ui_begin(ui, t.as_ptr(), 0.0, 0.0, w, h, host_ui_flags_console()) != 0 }
+    unsafe { host_ui_begin(ui, t.as_ptr().cast(), 0.0, 0.0, w, h, host_ui_flags_console()) != 0 }
 }
 
 pub fn end_window() {
@@ -582,7 +582,7 @@ pub fn label_colored(text: &str, rgba: [f32; 4]) {
     let t = cstr(text);
     unsafe {
         host_ui_layout_dynamic(ui, 14.0, 1);
-        host_ui_label(ui, t.as_ptr(), rgba[0], rgba[1], rgba[2], rgba[3]);
+        host_ui_label(ui, t.as_ptr().cast(), rgba[0], rgba[1], rgba[2], rgba[3]);
     }
 }
 
@@ -599,7 +599,7 @@ pub fn group_begin(id: &str, h: f32) -> bool {
         return false;
     }
     let t = cstr(id);
-    unsafe { host_ui_group_begin(ui, t.as_ptr(), h) != 0 }
+    unsafe { host_ui_group_begin(ui, t.as_ptr().cast(), h) != 0 }
 }
 
 pub fn group_end(id: &str, follow_tail: bool) {
@@ -608,7 +608,7 @@ pub fn group_end(id: &str, follow_tail: bool) {
         return;
     }
     let t = cstr(id);
-    unsafe { host_ui_group_end(ui, t.as_ptr(), if follow_tail { 1 } else { 0 }) };
+    unsafe { host_ui_group_end(ui, t.as_ptr().cast(), if follow_tail { 1 } else { 0 }) };
 }
 
 pub fn selectable(label_text: &str, selected: bool) -> bool {
@@ -619,7 +619,7 @@ pub fn selectable(label_text: &str, selected: bool) -> bool {
     let t = cstr(label_text);
     unsafe {
         host_ui_layout_dynamic(ui, 18.0, 1);
-        host_ui_selectable(ui, t.as_ptr(), if selected { 1 } else { 0 }) != 0
+        host_ui_selectable(ui, t.as_ptr().cast(), if selected { 1 } else { 0 }) != 0
     }
 }
 
