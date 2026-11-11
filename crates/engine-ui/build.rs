@@ -137,6 +137,10 @@ fn main() {
             println!("cargo:rustc-link-lib=static=freetype");
         }
         println!("cargo:rustc-link-lib=dylib=GL");
+        // Same -nodefaultlibs situation as macOS: RmlUi/api.cpp C++ objects
+        // reference libstdc++ symbols (std::string etc.); the final rustc
+        // link uses `cc` without pulling the C++ runtime in automatically.
+        println!("cargo:rustc-link-lib=dylib=stdc++");
     }
 
     let bindings = bindgen::Builder::default()
