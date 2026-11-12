@@ -21,6 +21,7 @@ pub mod ecs_validate;
 pub mod world;
 
 pub mod coord;
+pub mod data_model_op;
 pub mod events;
 pub mod frame;
 pub mod loader_queue;

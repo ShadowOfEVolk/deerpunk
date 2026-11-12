@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use deerpunk_ui::{DataModelValue, UiDocument, UiRuntime};
+use deerpunk_ui::{DataModelOp, DataModelValue, UiDocument, UiRuntime};
 
 struct Widget {
     /// Path used for load, e.g. `widgets/main_menu.rml`
@@ -142,6 +142,18 @@ impl UiController {
                 "data_model_set failed: widget={key} field={field} (no data-model or unknown model)"
             ))
         }
+    }
+
+    /// Apply a batch of path writes to the widget document's `data-model`.
+    pub fn data_model_apply(&self, widget_id: &str, ops: &[DataModelOp]) -> Result<(), String> {
+        let key = widget_id.trim();
+        let w = self
+            .widgets
+            .get(key)
+            .ok_or_else(|| format!("widget not loaded: {key}"))?;
+        w.doc
+            .data_model_apply(ops)
+            .map_err(|e| format!("data_model_apply failed: widget={key}: {e}"))
     }
 }
 

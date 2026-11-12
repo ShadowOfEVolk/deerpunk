@@ -93,6 +93,46 @@ pub enum DataModelValue {
     String(String),
 }
 
+/// One batched write for [`UiDocument::data_model_apply`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataModelOp {
+    /// Dotted path (`health`, `rows.2.icon`); digit-only segments are 1-based
+    /// Lua array indices, others are string keys. The root must be a variable
+    /// name.
+    pub path: String,
+    pub value: DataModelOpValue,
+}
+
+/// Value payload for [`DataModelOp`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum DataModelOpValue {
+    Bool(bool),
+    Number(f64),
+    String(String),
+    /// Set the length of the Lua array at the op path: growth fills empty
+    /// tables, the tail of a shrink is dropped.
+    Resize(usize),
+}
+
+/// Failure of [`UiDocument::data_model_apply`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataModelApplyError {
+    /// The widget document handle is gone.
+    NoDocument,
+    /// The first failed op (0-based). A missing/unknown `data-model` on the
+    /// document also surfaces here as `Op(0)`; the host log distinguishes.
+    Op(usize),
+}
+
+impl std::fmt::Display for DataModelApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoDocument => write!(f, "document gone"),
+            Self::Op(i) => write!(f, "op {i} failed"),
+        }
+    }
+}
+
 impl UiDocument {
     pub fn data_model_set(&self, field: &str, value: DataModelValue) -> bool {
         match value {
@@ -190,6 +230,94 @@ impl UiDocument {
         ok
     }
 
+    /// Apply a batch of path writes to this document's body `data-model`
+    /// (RmlUi Lua binding + dirty). Ops apply in order; the first failed op
+    /// stops the batch, earlier ops stay applied. Unlike the scalar setters
+    /// there is no `written` dedup — paths vary per op and RmlUi only dirties
+    /// variables whose value actually changed.
+    pub fn data_model_apply(&self, ops: &[DataModelOp]) -> Result<(), DataModelApplyError> {
+        if self.handle.is_null() {
+            return Err(DataModelApplyError::NoDocument);
+        }
+        // The C side borrows the strings only for the duration of the call.
+        // Boxes keep the NUL buffers address-stable while the Vec grows.
+        let mut strings: Vec<Box<CString>> = Vec::with_capacity(ops.len());
+        let mut raw: Vec<ffi::rmlui_data_model_op_t> = Vec::with_capacity(ops.len());
+        for (i, op) in ops.iter().enumerate() {
+            let path_c = CString::new(op.path.as_str()).map_err(|_| DataModelApplyError::Op(i))?;
+            strings.push(Box::new(path_c));
+            let path_ptr = strings.last().unwrap().as_ptr();
+            let (tag, value) = match &op.value {
+                DataModelOpValue::Bool(v) => {
+                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                        unsafe { std::mem::zeroed() };
+                    value.b = *v as c_int;
+                    (ffi::RMLUI_DATA_MODEL_OP_BOOL as u8, value)
+                }
+                DataModelOpValue::Number(v) => {
+                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                        unsafe { std::mem::zeroed() };
+                    value.num = *v;
+                    (ffi::RMLUI_DATA_MODEL_OP_NUMBER as u8, value)
+                }
+                DataModelOpValue::String(v) => {
+                    let value_c =
+                        CString::new(v.as_str()).map_err(|_| DataModelApplyError::Op(i))?;
+                    strings.push(Box::new(value_c));
+                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                        unsafe { std::mem::zeroed() };
+                    value.str_ = strings.last().unwrap().as_ptr();
+                    (ffi::RMLUI_DATA_MODEL_OP_STRING as u8, value)
+                }
+                DataModelOpValue::Resize(len) => {
+                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                        unsafe { std::mem::zeroed() };
+                    value.len = *len as i64;
+                    (ffi::RMLUI_DATA_MODEL_OP_RESIZE as u8, value)
+                }
+            };
+            raw.push(ffi::rmlui_data_model_op_t {
+                path: path_ptr,
+                tag,
+                _pad: [0; 7],
+                value,
+            });
+        }
+
+        let rc =
+            unsafe { ffi::rmlui_document_data_model_apply(self.handle, raw.as_ptr(), raw.len()) };
+        // Non-empty batches (even partially failed ones) changed the model.
+        if !ops.is_empty() {
+            mark_ui_dirty();
+        }
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(DataModelApplyError::Op((-rc - 1) as usize))
+        }
+    }
+
+    /// Post-layout component tree as text (agent tooling): depth-first, one
+    /// element per line — `TAG#id.class1.class2 [x,y w×h]`, with a quoted
+    /// text snippet for `#text` nodes; 2-space indent per nesting level.
+    /// `max_depth` caps the nesting levels shown (1 = document root only);
+    /// `None` = unlimited. `None` if the runtime/document is gone.
+    pub fn tree_text(&self, max_depth: Option<u32>) -> Option<String> {
+        if self.handle.is_null() {
+            return None;
+        }
+        let depth = i32::try_from(max_depth.unwrap_or(0)).unwrap_or(i32::MAX);
+        let buffer = unsafe { ffi::rmlui_document_tree(self.handle, depth) };
+        if buffer.is_null() {
+            return None;
+        }
+        let text = unsafe { CStr::from_ptr(buffer) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { ffi::rmlui_free(buffer.cast()) };
+        Some(text)
+    }
+
     fn already_written(&self, field: &str, value: &DataModelValue) -> bool {
         self.written
             .borrow()
@@ -270,7 +398,6 @@ impl UiRuntime {
                 _assets: assets,
             };
         }
-
 
         let name = CString::new(context_name).unwrap_or_else(|_| CString::new("main").unwrap());
         let ctx = unsafe { ffi::rmlui_context_create(name.as_ptr()) };
@@ -908,4 +1035,215 @@ pub unsafe extern "C" fn rust_file_tell(f: *mut std::ffi::c_void) -> usize {
         return 0;
     }
     (*(f as *mut FileState)).pos
+}
+
+#[cfg(test)]
+mod data_model_apply_tests {
+    use super::*;
+
+    /// Surface RmlUi/C-side diagnostics (model lookup, op errors) in test output.
+    struct StderrLogger;
+    impl log::Log for StderrLogger {
+        fn enabled(&self, meta: &log::Metadata) -> bool {
+            meta.level() <= log::Level::Warn
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("[{}] {}", record.level(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    const DEMO_RML: &str = r#"<rml>
+<head>
+<style>
+	body { }
+	div { }
+</style>
+</head>
+<body data-model="demo">
+	<div id="flat" data-class-five="health == 5"></div>
+	<div id="lab" data-class-z="label == 'z'"></div>
+	<div data-for="rows">
+		<div class="rowitem" data-class-a="it.icon == 'a'"></div>
+	</div>
+</body>
+</rml>
+"#;
+
+    /// Headless end-to-end: boots the RmlUi interpreter + context (dummy
+    /// renderer, no fonts — the document binds data, no text nodes), opens a
+    /// Lua `demo` model exactly like game UI scripts do, and checks batched
+    /// writes through the live data bindings.
+    #[test]
+    fn data_model_apply_batch_writes_and_resize() {
+        let _ = log::set_boxed_logger(Box::new(StderrLogger));
+        log::set_max_level(log::LevelFilter::Warn);
+
+        let base = std::env::temp_dir().join(format!("deerpunk-ui-apply-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("demo_test.rml"), DEMO_RML).unwrap();
+        assets::set_ui_base_path(base.clone());
+
+        // Same callback shape as UiRuntime::new; boxes leak — process-local
+        // singletons the C side keeps pointing at until shutdown.
+        let callbacks: &'static ffi::rmlui_callbacks_t =
+            Box::leak(Box::new(ffi::rmlui_callbacks_t {
+                get_time: Some(cb_get_time),
+                log: Some(cb_log),
+                get_base_path: Some(cb_base_path),
+                scissor: None,
+                execute_command: Some(cb_execute_command),
+                client_in_game: Some(cb_client_in_game),
+                get_cvar_float: None,
+                get_cvar_string: None,
+                get_files_list: Some(cb_get_files_list),
+                load_file: None,
+            }));
+        let render_api: &'static ffi::rmlui_render_api_t = Box::leak(make_dummy_render_api());
+        assert_eq!(
+            unsafe { ffi::rmlui_init(64, 64, callbacks, render_api) },
+            1,
+            "rmlui_init failed"
+        );
+        let ctx = unsafe { ffi::rmlui_context_create(c"main".as_ptr()) };
+        assert!(!ctx.is_null(), "context_create failed");
+
+        // Open the model from Lua (same idiom as `ui/scripts/init.lua`).
+        unsafe {
+            ffi::rmlui_lua_do_string(
+                c"demo = { health = 0, label = 'x', rows = { { icon = 'a' }, { icon = 'b' } } }
+                assert(rmlui.contexts['main']:OpenDataModel('demo', demo))
+                assert(demo.rows[2].icon == 'b')"
+                    .as_ptr(),
+            );
+        }
+
+        let doc = unsafe { ffi::rmlui_document_load(ctx, c"demo_test.rml".as_ptr()) };
+        assert!(!doc.is_null(), "document load failed");
+        let document = UiDocument {
+            handle: doc,
+            written: RefCell::new(HashMap::new()),
+        };
+
+        // Flat, string-key, and nested array-element writes in one batch.
+        let ops = vec![
+            DataModelOp {
+                path: "health".into(),
+                value: DataModelOpValue::Number(5.0),
+            },
+            DataModelOp {
+                path: "label".into(),
+                value: DataModelOpValue::String("z".into()),
+            },
+            DataModelOp {
+                path: "rows.2.icon".into(),
+                value: DataModelOpValue::String("c".into()),
+            },
+        ];
+        assert_eq!(document.data_model_apply(&ops), Ok(()));
+
+        // Resize up: 2 → 4 rows (new rows are empty tables).
+        let ops = vec![DataModelOp {
+            path: "rows".into(),
+            value: DataModelOpValue::Resize(4),
+        }];
+        assert_eq!(document.data_model_apply(&ops), Ok(()));
+
+        unsafe {
+            ffi::rmlui_context_update(ctx);
+        }
+        let tree = document.tree_text(None).expect("tree dump");
+        assert!(
+            tree.contains("#flat.five"),
+            "health == 5 not bound:\n{tree}"
+        );
+        assert!(tree.contains("#lab.z"), "label == 'z' not bound:\n{tree}");
+        assert_eq!(
+            tree.matches("rowitem").count(),
+            4,
+            "rows resize to 4 not bound:\n{tree}"
+        );
+
+        // Row 1 kept its pre-resize element binding (icon still 'a').
+        assert!(
+            tree.contains("rowitem.a"),
+            "row 1 icon binding lost:\n{tree}"
+        );
+
+        // Writes into the rebuilt array flip bindings on the next update.
+        let ops = vec![DataModelOp {
+            path: "rows.2.icon".into(),
+            value: DataModelOpValue::String("a".into()),
+        }];
+        assert_eq!(document.data_model_apply(&ops), Ok(()));
+        unsafe {
+            ffi::rmlui_context_update(ctx);
+        }
+        let tree = document.tree_text(None).expect("tree dump");
+        assert_eq!(
+            tree.matches("rowitem.a").count(),
+            2,
+            "rows.2.icon write not bound after resize:\n{tree}"
+        );
+
+        // Resize down: 4 → 1 row.
+        let ops = vec![DataModelOp {
+            path: "rows".into(),
+            value: DataModelOpValue::Resize(1),
+        }];
+        assert_eq!(document.data_model_apply(&ops), Ok(()));
+        unsafe {
+            ffi::rmlui_context_update(ctx);
+        }
+        let tree = document.tree_text(None).expect("tree dump");
+        assert_eq!(
+            tree.matches("rowitem").count(),
+            1,
+            "rows resize to 1 not bound:\n{tree}"
+        );
+
+        // A bad path fails the batch at its own op index.
+        let ops = vec![
+            DataModelOp {
+                path: "health".into(),
+                value: DataModelOpValue::Number(6.0),
+            },
+            DataModelOp {
+                path: "rows.9.icon".into(),
+                value: DataModelOpValue::String("x".into()),
+            },
+        ];
+        assert_eq!(
+            document.data_model_apply(&ops),
+            Err(DataModelApplyError::Op(1))
+        );
+
+        // Empty batches succeed; a numeric root or empty path fails.
+        assert_eq!(document.data_model_apply(&[]), Ok(()));
+        let ops = vec![DataModelOp {
+            path: "1.foo".into(),
+            value: DataModelOpValue::Number(1.0),
+        }];
+        assert_eq!(
+            document.data_model_apply(&ops),
+            Err(DataModelApplyError::Op(0))
+        );
+        let ops = vec![DataModelOp {
+            path: String::new(),
+            value: DataModelOpValue::Number(1.0),
+        }];
+        assert_eq!(
+            document.data_model_apply(&ops),
+            Err(DataModelApplyError::Op(0))
+        );
+
+        drop(document);
+        unsafe {
+            ffi::rmlui_context_destroy(ctx);
+            ffi::rmlui_shutdown();
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -1828,6 +1828,7 @@ impl Renderer {
     }
 
     fn reconfigure_surface_present_mode(&mut self) {
+        self.frame_surface_texture = None; // configure() with a live stash is fatal
         let Some(surface) = &self.surface else {
             return;
         };
@@ -1895,6 +1896,9 @@ impl Renderer {
 
     /// Пересобрать swapchain и все ресурсы кадра после resize окна.
     pub fn resize_framebuffer(&mut self, width: u32, height: u32) {
+        // wgpu forbids configure()/get_current_texture() while a surface
+        // texture is alive; drop a stale capture stash first.
+        self.frame_surface_texture = None;
         let w = width.max(1);
         let h = height.max(1);
         if let Some(config) = &mut self.surface_config {
@@ -2092,6 +2096,9 @@ impl Renderer {
 
         let acquire_start = std::time::Instant::now();
         crate::gamelib_profile::zone_begin("render.acquire");
+        // Drop any stale capture stash: acquiring while a surface texture is
+        // still alive is a validation error (wgpu treats it as fatal).
+        self.frame_surface_texture = None;
         let acquired = surface.get_current_texture();
         crate::gamelib_profile::zone_end();
         let current = match acquired {
@@ -2157,6 +2164,9 @@ impl Renderer {
 
         let acquire_start = std::time::Instant::now();
         crate::gamelib_profile::zone_begin("render.acquire");
+        // Drop any stale capture stash: acquiring while a surface texture is
+        // still alive is a validation error (wgpu treats it as fatal).
+        self.frame_surface_texture = None;
         let acquired = surface.get_current_texture();
         crate::gamelib_profile::zone_end();
         let current = match acquired {
@@ -2229,6 +2239,9 @@ impl Renderer {
 
         let acquire_start = std::time::Instant::now();
         crate::gamelib_profile::zone_begin("render.acquire");
+        // Drop any stale capture stash: acquiring while a surface texture is
+        // still alive is a validation error (wgpu treats it as fatal).
+        self.frame_surface_texture = None;
         let acquired = surface.get_current_texture();
         crate::gamelib_profile::zone_end();
         let current = match acquired {

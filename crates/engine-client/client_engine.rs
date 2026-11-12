@@ -1599,6 +1599,17 @@ impl ClientEngine {
         )
     }
 
+    pub fn ui_data_model_apply(
+        &mut self,
+        document: &str,
+        ops: &[deerpunk_ui::DataModelOp],
+    ) -> Result<(), String> {
+        if self.ui.is_none() {
+            return Err("ui runtime not ready".into());
+        }
+        self.ui_controller.data_model_apply(document, ops)
+    }
+
     pub fn set_ui_fps(&mut self, fps: i32) {
         self.ui_fps = fps;
     }

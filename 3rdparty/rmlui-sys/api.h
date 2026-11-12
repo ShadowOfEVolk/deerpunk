@@ -91,6 +91,50 @@ int rmlui_data_model_set_bool(const char* model_name, const char* field_name, in
 int rmlui_data_model_set_number(const char* model_name, const char* field_name, double value);
 int rmlui_data_model_set_string(const char* model_name, const char* field_name, const char* value);
 
+/** rmlui_data_model_op_t.value selector. */
+#define RMLUI_DATA_MODEL_OP_BOOL   0
+#define RMLUI_DATA_MODEL_OP_NUMBER 1
+#define RMLUI_DATA_MODEL_OP_STRING 2
+#define RMLUI_DATA_MODEL_OP_RESIZE 3
+
+/**
+ * One batched data-model write. `path` is a dotted variable path ("health",
+ * "rows.2.icon"): segments split on '.', digit-only segments address 1-based
+ * Lua array indices, anything else is a string key. RESIZE sets the length of
+ * the Lua array at `path` (grown indices become empty tables, the tail of a
+ * shrink is dropped). All strings are NUL-terminated UTF-8 and are only read
+ * during the call.
+ */
+typedef struct rmlui_data_model_op_s {
+    const char* path;
+    unsigned char tag;
+    unsigned char _pad[7]; /* aligns `value` */
+    union {
+        int b;           /* RMLUI_DATA_MODEL_OP_BOOL: 0/1 */
+        double num;      /* RMLUI_DATA_MODEL_OP_NUMBER */
+        const char* str; /* RMLUI_DATA_MODEL_OP_STRING */
+        long long len;   /* RMLUI_DATA_MODEL_OP_RESIZE: new length >= 0 */
+    } value;
+} rmlui_data_model_op_t;
+
+/**
+ * Apply a batch of writes to a named Lua data-model (opened via OpenDataModel).
+ * Ops apply in order; a failed op stops the batch, earlier ops stay applied.
+ * Failures are logged (op index included); nothing is silently skipped.
+ * @return 0 on success (also when `ops_len` is 0), negative on failure:
+ *         -1 for bad arguments / unknown model, `-(i + 1)` when op `i`
+ *         (0-based) failed.
+ */
+int rmlui_data_model_apply(const char* model_name, const rmlui_data_model_op_t* ops, size_t ops_len);
+
+/**
+ * Apply a batch of writes to the document's body `data-model` (widget /
+ * document handle). Same semantics as rmlui_data_model_apply.
+ * @return 0 on success, -1 if doc is NULL or has no data-model, `-(i + 1)`
+ *         when op `i` (0-based) failed.
+ */
+int rmlui_document_data_model_apply(rmlui_handle_t doc, const rmlui_data_model_op_t* ops, size_t ops_len);
+
 /**
  * Set a field on the document's body `data-model` (widget / document handle).
  * @return 1 on success, 0 if document/model/field missing.
@@ -125,6 +169,20 @@ void rmlui_process_key_up(rmlui_handle_t ctx, int key);
 void rmlui_process_text_input(rmlui_handle_t ctx, unsigned int codepoint);
 
 int rmlui_load_font(const char* path);
+
+/**
+ * Dump the post-layout document tree as text (read-only depth-first walk).
+ * One line per element: `TAG#id.class1.class2 [x,y w×h]` (2-space indent per
+ * nesting level; x/y = border-box position in context px, w×h = border-box
+ * size). Text elements (`#text`) append the first ~60 whitespace-collapsed
+ * characters in quotes. `max_depth` limits the nesting levels printed
+ * (1 = document root only); values <= 0 mean unlimited.
+ * @return malloc'd NUL-terminated UTF-8 buffer (free with rmlui_free) or
+ *         NULL if doc is NULL / out of memory.
+ */
+char* rmlui_document_tree(rmlui_handle_t doc, int max_depth);
+/** Free a buffer returned by rmlui_document_tree. NULL is ignored. */
+void rmlui_free(void* ptr);
 
 #ifdef __cplusplus
 }

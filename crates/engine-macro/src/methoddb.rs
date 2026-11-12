@@ -32,7 +32,10 @@ fn parse_scope_flags(expr: &Expr) -> syn::Result<u32> {
         ));
     };
     if arr.elems.is_empty() {
-        return Err(syn::Error::new_spanned(expr, "scope array must not be empty"));
+        return Err(syn::Error::new_spanned(
+            expr,
+            "scope array must not be empty",
+        ));
     }
     let mut flags = 0u32;
     for elem in &arr.elems {
@@ -43,7 +46,10 @@ fn parse_scope_flags(expr: &Expr) -> syn::Result<u32> {
             ));
         };
         let syn::Lit::Str(s) = &expr_lit.lit else {
-            return Err(syn::Error::new_spanned(&expr_lit.lit, "scope entries must be strings"));
+            return Err(syn::Error::new_spanned(
+                &expr_lit.lit,
+                "scope entries must be strings",
+            ));
         };
         match s.value().as_str() {
             "server" => flags |= 1 << 0,
@@ -156,7 +162,8 @@ fn parse_bind_attr(attrs: &[Attribute]) -> Option<BindAttr> {
             continue;
         }
         let mut api_name = None;
-        let Ok(nested) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) else {
+        let Ok(nested) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        else {
             continue;
         };
         for meta in nested {
@@ -211,6 +218,7 @@ enum AbiType {
     ConstU64Ptr,
     ConstVoidPtrPtr,
     ConstColliderPartPtr,
+    ConstDataModelOpPtr,
     ConstMeshSubmitRangePtr,
     ConstMeshSubmitPtr,
     MutCapsuleCastHitOut,
@@ -324,6 +332,14 @@ fn classify_ty(ty: &Type) -> syn::Result<AbiType> {
                         .unwrap_or(false) =>
             {
                 Ok(AbiType::ConstColliderPartPtr)
+            }
+            Type::Path(syn::TypePath { qself: None, path, .. })
+                if ptr.mutability.is_none()
+                    && path_last_ident(path)
+                        .map(|i| i == "DataModelOp")
+                        .unwrap_or(false) =>
+            {
+                Ok(AbiType::ConstDataModelOpPtr)
             }
             Type::Path(syn::TypePath { qself: None, path, .. })
                 if ptr.mutability.is_none()
@@ -499,22 +515,25 @@ fn generate_tramp(
         .clone()
         .unwrap_or_else(|| method.sig.ident.to_string());
     let full_name = format!("{}:{}", ns.name.value(), api_suffix);
-    let tramp_ident = format_ident!(
-        "__methoddb_tramp_{}",
-        full_name.replace([':', '.'], "_")
-    );
+    let tramp_ident = format_ident!("__methoddb_tramp_{}", full_name.replace([':', '.'], "_"));
     // Server-ctx tramps register in a separate collector so the host MethodDB
     // table (and the inspector `methoddb` JSON) stays byte-identical; the
     // facade table overrides the same names with these tramps.
     let tramp_ident = if ns.ctx == CtxKind::ServerThread {
-        format_ident!("__methoddb_server_tramp_{}", full_name.replace([':', '.'], "_"))
+        format_ident!(
+            "__methoddb_server_tramp_{}",
+            full_name.replace([':', '.'], "_")
+        )
     } else {
         tramp_ident
     };
     let rust_method = &method.sig.ident;
     let scope_flags = ns.scope_flags;
     let receiver = method.sig.receiver().ok_or_else(|| {
-        syn::Error::new_spanned(method, "methoddb bind requires a receiver (`&self` or `&mut self`)")
+        syn::Error::new_spanned(
+            method,
+            "methoddb bind requires a receiver (`&self` or `&mut self`)",
+        )
     })?;
     let self_mut = receiver.mutability.is_some();
 
@@ -834,6 +853,14 @@ fn generate_tramp(
                 let n = format_ident!("__arg{}", arg_idx);
                 ffi_params.push(quote! {
                     #n: *const deerpunk_engine_common::physics::ColliderPart
+                });
+                rust_args.push(quote! { #n });
+                arg_idx += 1;
+            }
+            AbiType::ConstDataModelOpPtr => {
+                let n = format_ident!("__arg{}", arg_idx);
+                ffi_params.push(quote! {
+                    #n: *const deerpunk_engine_common::data_model_op::DataModelOp
                 });
                 rust_args.push(quote! { #n });
                 arg_idx += 1;

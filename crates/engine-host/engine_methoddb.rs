@@ -655,6 +655,67 @@ where
     }
 }
 
+/// FFI boundary conversion: validate raw ops and copy them into owned types
+/// before any engine logic sees them.
+#[cfg(any(feature = "client", feature = "full"))]
+fn convert_data_model_ops(
+    ops: *const deerpunk_engine_common::data_model_op::DataModelOp,
+    ops_len: usize,
+) -> Result<Vec<deerpunk_ui::DataModelOp>, String> {
+    use std::ffi::CStr;
+
+    use deerpunk_engine_common::data_model_op as raw;
+
+    if ops_len == 0 {
+        return Ok(Vec::new());
+    }
+    if ops.is_null() {
+        return Err("ops is null".into());
+    }
+    // SAFETY: `ops` points to `ops_len` `DataModelOp` values per the methoddb
+    // ABI; their string pointers are valid for the duration of this call.
+    let slice = unsafe { std::slice::from_raw_parts(ops, ops_len) };
+    let mut out = Vec::with_capacity(ops_len);
+    for (i, op) in slice.iter().enumerate() {
+        let fail = |what: String| -> String { format!("data_model_apply op {i}: {what}") };
+        if op.path.is_null() {
+            return Err(fail("path is null".into()));
+        }
+        let path = unsafe { CStr::from_ptr(op.path) }
+            .to_str()
+            .map(str::to_owned)
+            .map_err(|e| fail(format!("path is not UTF-8: {e}")))?;
+        let value = match op.tag {
+            raw::DATA_MODEL_OP_BOOL => {
+                // SAFETY: `tag` selects the union member the caller wrote.
+                deerpunk_ui::DataModelOpValue::Bool(unsafe { op.value.b } != 0)
+            }
+            raw::DATA_MODEL_OP_NUMBER => {
+                deerpunk_ui::DataModelOpValue::Number(unsafe { op.value.num })
+            }
+            raw::DATA_MODEL_OP_STRING => {
+                if unsafe { op.value.string }.is_null() {
+                    return Err(fail("string is null".into()));
+                }
+                let s = unsafe { CStr::from_ptr(op.value.string) }
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|e| fail(format!("string is not UTF-8: {e}")))?;
+                deerpunk_ui::DataModelOpValue::String(s)
+            }
+            raw::DATA_MODEL_OP_RESIZE => {
+                let len = unsafe { op.value.len };
+                let len = usize::try_from(len)
+                    .map_err(|_| fail(format!("resize length {len} is negative")))?;
+                deerpunk_ui::DataModelOpValue::Resize(len)
+            }
+            other => return Err(fail(format!("unknown op tag {other}"))),
+        };
+        out.push(deerpunk_ui::DataModelOp { path, value });
+    }
+    Ok(out)
+}
+
 #[cfg(any(feature = "client", feature = "full"))]
 #[methoddb::namespace(name = "v1:ui", on_host, scope = ["server", "client"])]
 impl crate::Host {
@@ -706,6 +767,19 @@ impl crate::Host {
     ) -> i32 {
         ui_client_op(self, |c| c.ui_data_model_set_string(document, field, value))
     }
+
+    #[methoddb::bind(name = "data_model_apply")]
+    pub fn api_ui_data_model_apply(
+        &mut self,
+        document: &str,
+        ops: *const deerpunk_engine_common::data_model_op::DataModelOp,
+        ops_len: usize,
+    ) -> i32 {
+        ui_client_op(self, |c| {
+            let owned = convert_data_model_ops(ops, ops_len)?;
+            c.ui_data_model_apply(document, &owned)
+        })
+    }
 }
 
 #[cfg(not(any(feature = "client", feature = "full")))]
@@ -742,6 +816,16 @@ impl crate::Host {
         _document: &str,
         _field: &str,
         _value: i32,
+    ) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "data_model_apply")]
+    pub fn api_ui_data_model_apply(
+        &mut self,
+        _document: &str,
+        _ops: *const deerpunk_engine_common::data_model_op::DataModelOp,
+        _ops_len: usize,
     ) -> i32 {
         -1
     }

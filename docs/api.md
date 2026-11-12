@@ -293,6 +293,7 @@ Rendering uses **linear HDR** internally; tonemapping runs in the post pass. Alb
 | `show` / `hide` | Visibility |
 | `lua_eval` | Run Lua in document context |
 | `data_model_set_bool` / `_number` / `_string` | Bind UI model fields |
+| `data_model_apply` | Batch path writes (`rows.2.icon`) + array resize; negative return = `-(failed op index + 1)` |
 
 ---
 

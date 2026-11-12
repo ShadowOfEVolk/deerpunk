@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(rmlui-sys CXX)
+project(rmlui-sys CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -27,10 +27,57 @@ add_subdirectory("${FREETYPE_DIR}" "${CMAKE_BINARY_DIR}/freetype" EXCLUDE_FROM_A
 add_library(Freetype::Freetype ALIAS freetype)
 
 set(LUA_DIR "${DEERPUNK_3RDPARTY}/lua-src")
-if(NOT EXISTS "${LUA_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "Lua not found at ${LUA_DIR} (expected lua-src submodule)")
+if(NOT EXISTS "${LUA_DIR}/lapi.c")
+    message(FATAL_ERROR "Lua sources not found at ${LUA_DIR} (expected lua-src submodule)")
 endif()
-add_subdirectory("${LUA_DIR}" "${CMAKE_BINARY_DIR}/lua" EXCLUDE_FROM_ALL)
+
+# Upstream lua/lua ships no CMake build. Define the static library here from
+# the stock Makefile's CORE_O + AUX_O + LIB_O source lists (minus ltests.o) —
+# a hand-written CMakeLists.txt inside the submodule would stay untracked and
+# never reach fresh clones/CI.
+add_library(lua STATIC
+    ${LUA_DIR}/lapi.c
+    ${LUA_DIR}/lcode.c
+    ${LUA_DIR}/lctype.c
+    ${LUA_DIR}/ldebug.c
+    ${LUA_DIR}/ldo.c
+    ${LUA_DIR}/ldump.c
+    ${LUA_DIR}/lfunc.c
+    ${LUA_DIR}/lgc.c
+    ${LUA_DIR}/llex.c
+    ${LUA_DIR}/lmem.c
+    ${LUA_DIR}/lobject.c
+    ${LUA_DIR}/lopcodes.c
+    ${LUA_DIR}/lparser.c
+    ${LUA_DIR}/lstate.c
+    ${LUA_DIR}/lstring.c
+    ${LUA_DIR}/ltable.c
+    ${LUA_DIR}/ltm.c
+    ${LUA_DIR}/lundump.c
+    ${LUA_DIR}/lvm.c
+    ${LUA_DIR}/lzio.c
+    ${LUA_DIR}/lauxlib.c
+    ${LUA_DIR}/lbaselib.c
+    ${LUA_DIR}/ldblib.c
+    ${LUA_DIR}/liolib.c
+    ${LUA_DIR}/lmathlib.c
+    ${LUA_DIR}/loslib.c
+    ${LUA_DIR}/ltablib.c
+    ${LUA_DIR}/lstrlib.c
+    ${LUA_DIR}/lutf8lib.c
+    ${LUA_DIR}/loadlib.c
+    ${LUA_DIR}/lcorolib.c
+    ${LUA_DIR}/linit.c
+)
+target_include_directories(lua PUBLIC ${LUA_DIR})
+
+if(APPLE)
+    target_compile_definitions(lua PRIVATE LUA_USE_MACOSX)
+elseif(UNIX)
+    target_compile_definitions(lua PRIVATE LUA_USE_LINUX)
+endif()
+
+target_link_libraries(lua PUBLIC m)
 
 add_library(Lua::Lua INTERFACE IMPORTED)
 set_target_properties(Lua::Lua PROPERTIES

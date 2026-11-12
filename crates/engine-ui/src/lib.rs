@@ -14,7 +14,7 @@ pub use assets::{register_ui_loaders, UiAssetSource, UiDirAssets};
 pub use deerpunk_engine_common::ui_draw::{UiFrame, UiVertex};
 pub use runtime::{
     drain_commands, lua_eval, set_client_in_game, set_content_root, set_lan_servers_json,
-    DataModelValue, UiDocument, UiRuntime,
+    DataModelApplyError, DataModelOp, DataModelOpValue, DataModelValue, UiDocument, UiRuntime,
 };
 
 pub mod paths {
