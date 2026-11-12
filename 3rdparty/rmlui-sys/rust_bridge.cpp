@@ -12,16 +12,16 @@ Rml::CompiledGeometryHandle RustRenderProxy::CompileGeometry(Rml::Span<const Rml
         (int)vertices.size(),
         indices.data(),
         (int)indices.size());
-    return reinterpret_cast<Rml::CompiledGeometryHandle>(static_cast<uintptr_t>(id));
+    return static_cast<Rml::CompiledGeometryHandle>(id);
 }
 
 void RustRenderProxy::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
-    rust_release_geometry(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(geometry)));
+    rust_release_geometry(static_cast<uint32_t>(geometry));
 }
 
 void RustRenderProxy::RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Vector2f translation, Rml::TextureHandle texture) {
     rust_draw_geometry(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(handle)),
+        static_cast<uint32_t>(handle),
         translation.x,
         translation.y,
         (uintptr_t)texture);
