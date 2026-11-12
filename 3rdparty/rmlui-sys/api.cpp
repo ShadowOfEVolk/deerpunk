@@ -868,6 +868,9 @@ int rmlui_load_font(const char* path)
 
 // ---- document tree dump (read-only; agent tooling) -----------------------
 
+#include <RmlUi/Core/ElementText.h>
+#include <RmlUi/Core/Log.h>
+#include <RmlUi/Core/Traits.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
