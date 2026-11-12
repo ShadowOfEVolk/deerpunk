@@ -30,9 +30,12 @@ pub fn node_enabled(pass: ForwardPass, phase: Phase) -> bool {
             // meshes (the old particles were mesh_transparent queue draws).
             ForwardPass::Particles => pass_mask & cam_pass::MESH != 0,
             ForwardPass::Debug => pass_mask & cam_pass::DEBUG != 0,
-            ForwardPass::Hud | ForwardPass::TonemapUi => false,
+            ForwardPass::Hud | ForwardPass::TonemapUi | ForwardPass::PostFx => false,
         },
-        Phase::Post => matches!(pass, ForwardPass::Hud | ForwardPass::TonemapUi),
+        Phase::Post => matches!(
+            pass,
+            ForwardPass::Hud | ForwardPass::TonemapUi | ForwardPass::PostFx
+        ),
     }
 }
 

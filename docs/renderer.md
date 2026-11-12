@@ -10,7 +10,7 @@ The GPU stack lives in **`crates/engine-renderer`**. The client (`crates/engine-
 | Shaders | **WGSL**, compiled through **naga**; layouts reflected in [`ShaderRegistry`](../../crates/engine-renderer/src/shader_registry.rs) |
 | Math | **glam** (`Mat4`, frustum, transforms) |
 | CPU ↔ GPU structs | **bytemuck** (`Pod` uniforms: `MeshUniform`, `LightsUniform`, …) |
-| Color | **Linear HDR** scene color → tonemap / bloom / grain → swapchain |
+| Color | **Linear HDR** scene color → tonemap → linear LDR → optional `post_fx` WGSL chain → swapchain (sRGB encodes gamma) |
 | Scene source | Client **ECS extract** (Flecs queries prepared once in `RenderExtractor`) |
 | Profiling | `RenderFrameProfile`, `r_speeds`, graph node timings |
 
@@ -92,7 +92,8 @@ flowchart LR
     HUD[hud]
     LU[luminance]
     TT[tonemap_ui]
-    UP --> SKY --> CLR --> SP --> M --> VM --> TS --> DB --> HUD --> LU --> TT
+    PF[post_fx]
+    UP --> SKY --> CLR --> SP --> M --> VM --> TS --> DB --> HUD --> LU --> TT --> PF
 ```
 
 | Node | Role |
@@ -107,7 +108,8 @@ flowchart LR
 | **debug** | Debug line primitives |
 | **hud** | 2D HUD instances in HDR |
 | **luminance** | Placeholder / skipped in current build |
-| **tonemap_ui** | Exposure, bloom, grain, UI composite → **swapchain** |
+| **tonemap_ui** | Exposure + tonemap (god rays, FXAA). Writes the linear LDR intermediate when the post chain is active, otherwise **swapchain** |
+| **post_fx** | LDR post chain (`gamedir/shaders/post_fx/chain.toml`): fullscreen WGSL passes ping-ponging between two `Rgba16Float` intermediates, last pass → **swapchain**; then one-shot capture copy + RmlUi composite (crisp UI on top of the post-processed scene). No manifest ⇒ pass only does capture + UI. The ohmyblock gamedir ships a 15-pass port of riteg's VHS.V9 filter (`step_00` tape mask … `step_14` final_rgb); `globals.frame` = `floor(elapsed_s * 30)` reproduces riteg's 30 fps `iFrame` authoring rate. No cvars: the chain is configured entirely by `chain.toml` |
 
 Views live outside the pass list: **HDR color** and **surface** come from `FrameCtx`, **depth** from the per-camera depth pool (`Renderer::ensure_depth`).
 

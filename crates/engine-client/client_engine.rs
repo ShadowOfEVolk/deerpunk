@@ -2166,7 +2166,20 @@ fn load_wgsl_required(
     defines: &[String],
 ) -> String {
     let path = shader_dir.join(format!("{name}.wgsl"));
-    let uri = path_to_file_uri(&path);
+    // Includes resolve relative to the including file's directory.
+    load_wgsl_with_base(rm, &path, defines, path.parent())
+}
+
+/// Like [`load_wgsl_required`], but with an explicit include base — post_fx
+/// chain steps use root-relative includes (`inc/vhs_common.wgsl`) even though
+/// they live in `post_fx/`, so their base is the shader root.
+fn load_wgsl_with_base(
+    rm: &ResourceManager,
+    path: &Path,
+    defines: &[String],
+    base: Option<&Path>,
+) -> String {
+    let uri = path_to_file_uri(path);
     let handle = rm.load::<ShaderSource>(&uri);
     let source = handle
         .try_get()
@@ -2180,7 +2193,6 @@ fn load_wgsl_required(
     // Strip `#@shader` / `#@prop` decorators (and apply `#ifdef` handling) before
     // handing the source to wgpu — wgpu would otherwise choke on the `#@` lines,
     // which are not valid WGSL. Files without decorators pass through unchanged.
-    let base = path.parent();
     match ShaderPreprocessor::process_at(&source, defines, base) {
         Ok(processed) => processed.wgsl,
         Err(err) => panic!("Failed to preprocess shader {uri}: {err}"),
@@ -2210,5 +2222,74 @@ fn load_shader_sources(rm: &ResourceManager, screen_dither_mode: i32) -> ShaderS
         bloom_composite: load_wgsl_required(rm, shader_dir, "bloom_composite", no_defines),
         grain: load_wgsl_required(rm, shader_dir, "grain", no_defines),
         ui,
+        post_fx: load_post_fx_chain(rm, shader_dir, no_defines),
     }
+}
+
+/// Load the ordered LDR post chain from `post_fx/chain.toml`, if present.
+/// Manifest format (plain TOML string array, chain order):
+///
+/// ```toml
+/// passes = [
+///     "post_fx/step_00",
+///     "post_fx/step_01",
+/// ]
+/// ```
+///
+/// Each entry is a WGSL path relative to the shader dir, exposed as
+/// `vs_fullscreen` + `fs_main` with the tonemap bind group. A missing
+/// manifest means no post chain (tonemap writes straight to the surface) —
+/// a designed config state. The parser deliberately handles only this tiny
+/// documented subset of TOML; anything else is a visible error, not a silent
+/// skip.
+fn load_post_fx_chain(
+    rm: &ResourceManager,
+    shader_dir: &Path,
+    defines: &[String],
+) -> Option<deerpunk_engine_renderer::postfx::PostChainSources> {
+    let manifest_path = shader_dir.join("post_fx").join("chain.toml");
+    let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+        return None;
+    };
+
+    // Extract the quoted entries of the `passes = [ ... ]` array.
+    let array = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let start = array
+        .find("passes")
+        .and_then(|p| array[p..].find('[').map(|b| p + b))
+        .unwrap_or_else(|| panic!("post_fx/chain.toml: missing `passes = [ ... ]` array"));
+    let end = array[start..]
+        .find(']')
+        .unwrap_or_else(|| panic!("post_fx/chain.toml: unterminated `passes` array"));
+
+    let mut names = Vec::new();
+    for seg in array[start + 1..start + end].split(',') {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        let quoted = seg
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("post_fx/chain.toml: expected quoted name, got `{seg}`"));
+        names.push(quoted.to_string());
+    }
+    if names.is_empty() {
+        panic!("post_fx/chain.toml: empty `passes` array");
+    }
+
+    let passes = names
+        .iter()
+        .map(|name| {
+            let path = shader_dir.join(format!("{name}.wgsl"));
+            // Root-relative includes: the shader root is the include base.
+            let wgsl = load_wgsl_with_base(rm, &path, defines, Some(shader_dir));
+            (name.clone(), wgsl)
+        })
+        .collect();
+    Some(deerpunk_engine_renderer::postfx::PostChainSources { passes })
 }

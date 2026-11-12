@@ -1,8 +1,8 @@
 //! One-shot clean-frame capture of the surface.
 //!
-//! The copy is recorded in `pass_tonemap_and_ui` right after
-//! `encode_tonemap_chain` and before any UI pass, so the captured frame holds
-//! the tonemapped scene only (no menu/HUD). Readback follows the same
+//! The copy is recorded in `pass_postfx` right after the tonemap / post chain
+//! and before any UI pass, so the captured frame holds
+//! the tonemapped (post-processed) scene only (no menu/HUD). Readback follows the same
 //! submit → `map_async` → next-frame poll pattern as the luminance and
 //! occlusion readbacks, including the deferred-submit path
 //! (`finish_deferred_surface_submit`), so it is safe with the pipelined
@@ -125,7 +125,7 @@ impl Renderer {
     }
 
     /// Record the surface copy for a pending capture. Called from
-    /// `pass_tonemap_and_ui` after the tonemap chain, before the UI pass.
+    /// `pass_postfx` after the tonemap / post chain, before the UI pass.
     pub(crate) fn encode_capture_copy(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if !self.capture.pending {
             return;

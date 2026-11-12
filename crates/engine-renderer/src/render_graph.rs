@@ -19,6 +19,9 @@ pub enum ForwardPass {
     Debug,
     Hud,
     TonemapUi,
+    /// LDR post chain (`gamedir/shaders/post_fx/chain.toml`), after tonemap,
+    /// before the UI composite so menus stay crisp.
+    PostFx,
 }
 
 impl ForwardPass {
@@ -33,6 +36,7 @@ impl ForwardPass {
             ForwardPass::Debug => "debug",
             ForwardPass::Hud => "hud",
             ForwardPass::TonemapUi => "tonemap_ui",
+            ForwardPass::PostFx => "post_fx",
         }
     }
 }
@@ -40,7 +44,7 @@ impl ForwardPass {
 /// The forward frame (HDR → … → surface), in execution order. Static: every
 /// pass reads frame state through `FrameCtx`, so there is nothing to build or
 /// mutate per frame.
-pub const FORWARD_PASSES: [ForwardPass; 9] = [
+pub const FORWARD_PASSES: [ForwardPass; 10] = [
     ForwardPass::UploadPrep,
     ForwardPass::Sky,
     ForwardPass::ClearHdr,
@@ -50,4 +54,5 @@ pub const FORWARD_PASSES: [ForwardPass; 9] = [
     ForwardPass::Debug,
     ForwardPass::Hud,
     ForwardPass::TonemapUi,
+    ForwardPass::PostFx,
 ];

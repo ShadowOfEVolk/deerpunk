@@ -156,6 +156,8 @@ impl FrameDrawAccum {
 pub struct TonemapUiTimings {
     /// Bloom/tonemap/godray chain encode (`encode_tonemap_chain`).
     pub chain_ms: f32,
+    /// LDR post chain encode (`post_fx` pass, ping-pong WGSL chain).
+    pub post_ms: f32,
     /// One-shot capture copy encode.
     pub capture_ms: f32,
     /// UI texture sync + mesh buffer creation (compile-time work).

@@ -9,6 +9,10 @@ pub(crate) struct Hdr {
     pub(crate) format: wgpu::TextureFormat,
     pub(crate) texture: Option<wgpu::Texture>,
     pub(crate) view: Option<wgpu::TextureView>,
+    /// Linear LDR tonemap target (`Rgba16Float`); the post chain samples it
+    /// when a `post_fx/chain.toml` manifest is present.
+    pub(crate) ldr_texture: Option<wgpu::Texture>,
+    pub(crate) ldr_view: Option<wgpu::TextureView>,
     pub(crate) tonemap_bg_layout: wgpu::BindGroupLayout,
     pub(crate) tonemap_pipeline: Option<wgpu::RenderPipeline>,
     pub(crate) tonemap_pipeline_format: Option<wgpu::TextureFormat>,
@@ -77,6 +81,8 @@ impl Hdr {
             format: wgpu::TextureFormat::Rgba16Float,
             texture: None,
             view: None,
+            ldr_texture: None,
+            ldr_view: None,
             tonemap_bg_layout,
             tonemap_pipeline: None,
             tonemap_pipeline_format: None,
@@ -121,6 +127,24 @@ impl super::Renderer {
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         self.hdr.texture = Some(tex);
         self.hdr.view = Some(view);
+
+        // Linear LDR tonemap target for the post chain (same size as HDR).
+        let ldr_tex = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ldr intermediate"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.hdr.ldr_view = Some(ldr_tex.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.hdr.ldr_texture = Some(ldr_tex);
 
         // Create 64x64 luminance texture (for auto-exposure readback)
         let lum_tex = self.gpu.device.create_texture(&wgpu::TextureDescriptor {

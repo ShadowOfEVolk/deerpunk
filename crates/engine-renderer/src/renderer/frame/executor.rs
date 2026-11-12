@@ -113,7 +113,11 @@ fn run_forward_pass(
         }
         ForwardPass::TonemapUi => {
             render_scope!("render/tonemap_ui");
-            r.pass_tonemap_and_ui(ctx, encoder);
+            r.pass_tonemap(ctx, encoder);
+        }
+        ForwardPass::PostFx => {
+            render_scope!("render/post_fx");
+            r.pass_postfx(ctx, encoder);
         }
     }
 
@@ -158,7 +162,11 @@ pub fn format_graph_speeds_lines(
         ForwardPass::Particles,
         ForwardPass::Debug,
     ];
-    const POST: [ForwardPass; 2] = [ForwardPass::Hud, ForwardPass::TonemapUi];
+    const POST: [ForwardPass; 3] = [
+        ForwardPass::Hud,
+        ForwardPass::TonemapUi,
+        ForwardPass::PostFx,
+    ];
 
     // Aggregate this frame's timings by pass name (sum ms, runs, any real run).
     let mut acc: std::collections::HashMap<&str, (f32, u32, bool)> =
@@ -260,18 +268,20 @@ mod speeds_tests {
             node("mesh", 1.5, false),
             node("hud", 0.2, false),
             node("tonemap_ui", 0.3, false),
+            node("post_fx", 0.2, false),
         ];
         p.total_encode_ms = 4.0;
         let lines = format_graph_speeds_lines(&p);
-        assert_eq!(lines.len(), 13, "{lines:?}");
-        assert!(lines[0].starts_with("graph 3.60 ms"), "{})", lines[0]);
+        assert_eq!(lines.len(), 14, "{lines:?}");
+        assert!(lines[0].starts_with("graph 3.80 ms"), "{})", lines[0]);
         assert_eq!(lines[1], "frame");
         assert!(lines[2].starts_with("|-- cam"), "{}", lines[2]);
         assert!(lines[2].contains("3.10"), "{}", lines[2]);
         let tree = lines.join("\n");
         assert!(tree.contains("`-- post"), "{tree}");
         assert!(tree.contains("|   `-- debug"), "{tree}");
-        assert!(tree.contains("    `-- tonemap_ui"), "{tree}");
+        assert!(tree.contains("    |-- tonemap_ui"), "{tree}");
+        assert!(tree.contains("    `-- post_fx"), "{tree}");
         // Passes in execution order, one per line.
         let order: Vec<usize> = [
             "upload_prep",
@@ -283,6 +293,7 @@ mod speeds_tests {
             "debug",
             "hud",
             "tonemap_ui",
+            "post_fx",
         ]
         .iter()
         .map(|n| tree.find(n).unwrap())

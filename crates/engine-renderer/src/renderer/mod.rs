@@ -203,6 +203,9 @@ pub struct ShaderSources {
     pub bloom_composite: String,
     pub grain: String,
     pub ui: String,
+    /// Ordered LDR post chain (`gamedir/shaders/post_fx/chain.toml`), loaded
+    /// by the client; `None` when no manifest exists (tonemap → surface).
+    pub post_fx: Option<crate::postfx::PostChainSources>,
 }
 
 #[repr(C)]
@@ -545,6 +548,10 @@ pub struct Renderer {
 
     hdr: hdr::Hdr,
     postfx: crate::postfx::PostFx,
+    /// LDR post chain (ping-pong `post_fx/*.wgsl` passes) after tonemap.
+    post_chain: crate::postfx::PostFxChain,
+    /// Post-chain animation clock (time seconds; frame = floor(time * 30)).
+    post_chain_start: std::time::Instant,
 
     shaders: ShaderSources,
 
@@ -1417,6 +1424,8 @@ impl Renderer {
         mesh_allocators.push(Box::new(crate::mesh_allocator::SlabMeshAllocator::new()));
         let ui_pass = crate::ui_pass::UiPass::new(device, shaders.ui.clone());
         let postfx = crate::postfx::PostFx::new(device, hdr.tonemap_bg_layout.clone());
+        let mut post_chain = crate::postfx::PostFxChain::new(device, hdr.tonemap_bg_layout.clone());
+        post_chain.set_sources(shaders.post_fx.clone());
 
         Self {
             gpu,
@@ -1492,6 +1501,8 @@ impl Renderer {
             depth_pool: std::collections::HashMap::new(),
             hdr,
             postfx,
+            post_chain,
+            post_chain_start: std::time::Instant::now(),
 
             shaders,
 
@@ -1912,6 +1923,7 @@ impl Renderer {
         // Drop all per-target depth textures so they recreate at the new size on next use.
         self.depth_pool.clear();
         self.postfx.invalidate_size();
+        self.post_chain.invalidate_size();
         self.offscreen = None;
         self.skinned_mesh_globals_bgs.clear();
         self.mesh_pass_static_handles.clear();
@@ -2046,6 +2058,7 @@ impl Renderer {
         self.debug_pipeline_occluded = None;
         self.hdr.tonemap_pipeline = None;
         self.hdr.tonemap_pipeline_format = None;
+        self.post_chain.set_sources(self.shaders.post_fx.clone());
         self.invalidate_material_bgs();
     }
 
