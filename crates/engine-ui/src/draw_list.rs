@@ -74,12 +74,14 @@ impl UiGeometryBuilder {
         self.height = height;
     }
 
+    /// Reset per-frame render state. Only `draws` is cleared here: it is
+    /// rebuilt wholesale by every render pass. Delta lists (`pending_*`,
+    /// `released*`) survive — resources loaded or released outside the
+    /// render window (document construction, `context_update` data-model
+    /// passes) would otherwise be wiped before `take_frame` ships them,
+    /// leaving draws referencing uploads nobody ever received.
     pub fn begin_frame(&mut self) {
         self.draws.clear();
-        self.released.clear();
-        self.released_meshes.clear();
-        self.pending_meshes.clear();
-        self.pending_uploads.clear();
     }
 
     /// Hand the white fallback texture out with the first delivered frame.
@@ -314,5 +316,38 @@ mod tests {
         assert_eq!(tick.meshes.len(), 1, "only the recompiled mesh ships");
         assert!(tick.textures.is_empty(), "no texture re-emission");
         assert_eq!(tick.released_meshes, vec![geo]);
+    }
+
+    /// Regression: `begin_frame` used to wipe `pending_uploads` seeded
+    /// outside the render window, so an `<img>` texture resolved during
+    /// `context_update` (data-model write → src change) or at document
+    /// construction never reached the renderer — icons drew white/skipped.
+    #[test]
+    fn resources_loaded_between_frames_ship_on_next_take() {
+        let mut builder = UiGeometryBuilder::new(800, 600);
+
+        // Prime the stream: static frame ships the white fallback.
+        let bytes = quad_bytes();
+        let geo = builder.compile_geometry(&bytes, 20, 4, &[0, 1, 2, 0, 2, 3]);
+        builder.draw_geometry(geo, 0.0, 0.0, builder.white_id() as usize);
+        builder
+            .take_frame_if_changed()
+            .expect("first frame ships white");
+
+        // Between frames: an icon texture resolves during `context_update`
+        // (data-model `src` write), then the render pass compiles its draw.
+        let tex = builder.load_texture_rgba(vec![10, 20, 30, 255], 8, 8, false);
+        builder.begin_frame();
+        let geo2 = builder.compile_geometry(&bytes, 20, 4, &[0, 1, 2, 0, 2, 3]);
+        builder.draw_geometry(geo2, 32.0, 32.0, tex as usize);
+
+        let frame = builder
+            .take_frame_if_changed()
+            .expect("changed HUD ships its frame");
+        assert!(
+            frame.textures.contains_key(&tex),
+            "texture loaded between frames must ship with the draw that uses it"
+        );
+        assert_eq!(frame.draws.len(), 1);
     }
 }

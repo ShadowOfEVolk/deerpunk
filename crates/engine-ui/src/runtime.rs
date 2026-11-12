@@ -1041,6 +1041,11 @@ pub unsafe extern "C" fn rust_file_tell(f: *mut std::ffi::c_void) -> usize {
 mod data_model_apply_tests {
     use super::*;
 
+    /// RmlUi state is process-global (`rmlui_init` guards on a renderer
+    /// singleton); these tests boot full interpreter+context runs, so they
+    /// must not race each other in the default parallel test harness.
+    static RML_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     /// Surface RmlUi/C-side diagnostics (model lookup, op errors) in test output.
     struct StderrLogger;
     impl log::Log for StderrLogger {
@@ -1078,6 +1083,7 @@ mod data_model_apply_tests {
     /// writes through the live data bindings.
     #[test]
     fn data_model_apply_batch_writes_and_resize() {
+        let _rml = RML_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _ = log::set_boxed_logger(Box::new(StderrLogger));
         log::set_max_level(log::LevelFilter::Warn);
 
@@ -1245,5 +1251,157 @@ mod data_model_apply_tests {
             ffi::rmlui_shutdown();
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Probe: Lua-backed array lifecycle — wholesale replacement from Lua
+    /// (`m.palette = out`, the game's refresh_palette) vs the engine resize
+    /// op, observed through live data-class bindings and RmlUi warnings.
+    #[test]
+    fn data_model_lua_array_replacement_probe() {
+        let _rml = RML_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = log::set_boxed_logger(Box::new(StderrLogger));
+        log::set_max_level(log::LevelFilter::Warn);
+
+        const PAL_RML: &str = r#"<rml>
+<head><style> body { } div { } </style></head>
+<body data-model="pal_test">
+	<div data-for="slot : palette">
+		<div class="s" data-class-selected="slot.selected" data-class-it="slot.item_id == 40"></div>
+	</div>
+</body>
+</rml>
+"#;
+
+        let base =
+            std::env::temp_dir().join(format!("deerpunk-ui-palprobe-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("pal_test.rml"), PAL_RML).unwrap();
+        assets::set_ui_base_path(base.clone());
+
+        let callbacks: &'static ffi::rmlui_callbacks_t =
+            Box::leak(Box::new(ffi::rmlui_callbacks_t {
+                get_time: Some(cb_get_time),
+                log: Some(cb_log),
+                get_base_path: Some(cb_base_path),
+                scissor: None,
+                execute_command: Some(cb_execute_command),
+                client_in_game: Some(cb_client_in_game),
+                get_cvar_float: None,
+                get_cvar_string: None,
+                get_files_list: Some(cb_get_files_list),
+                load_file: None,
+            }));
+        let render_api: &'static ffi::rmlui_render_api_t = Box::leak(make_dummy_render_api());
+        assert_eq!(unsafe { ffi::rmlui_init(64, 64, callbacks, render_api) }, 1);
+        let ctx = unsafe { ffi::rmlui_context_create(c"main".as_ptr()) };
+        assert!(!ctx.is_null());
+
+        // Same shape as inventory.lua: model userdata is kept, the plain
+        // table handed to OpenDataModel is abandoned; refill replaces the
+        // whole `palette` array with a fresh table.
+        unsafe {
+            ffi::rmlui_lua_do_string(
+                c"pal = { palette = {}, show_grid = false }
+pal_model = rmlui.contexts['main']:OpenDataModel('pal_test', pal)
+function pal_refill(sel_id, n)
+    local out = {}
+    for i = 1, n do
+        out[i] = { item_id = i, selected = (i == sel_id), icon = '',
+            icon_block = false, show_icon = false, show_count = false,
+            count = '', show_dur = false, dur_width = '0%',
+            tip_title = '', tip_body = '' }
+    end
+    pal_model.palette = out
+end
+pal_refill(40, 90)"
+                    .as_ptr(),
+            );
+        }
+
+        let doc = unsafe { ffi::rmlui_document_load(ctx, c"pal_test.rml".as_ptr()) };
+        assert!(!doc.is_null(), "document load failed");
+        let document = UiDocument {
+            handle: doc,
+            written: RefCell::new(HashMap::new()),
+        };
+
+        let dump = |what: &str| {
+            let cmds = drain_commands();
+            for c in &cmds {
+                eprintln!("LUA {c}");
+            }
+            unsafe { ffi::rmlui_context_update(ctx) };
+            let tree = document.tree_text(None).expect("tree dump");
+            let total = tree.matches("div.s").count();
+            let sel = tree.matches("div.s.selected").count();
+            let it40 = tree.matches("div.s.it").count();
+            eprintln!("PROBE {what}: total={total} selected={sel} it40={it40}");
+            (total, sel, it40)
+        };
+
+        unsafe {
+            ffi::rmlui_lua_do_string(
+                c"cmd('STATE model=' .. tostring(pal_model ~= nil) .. ' p1=' .. tostring(pal_model.palette and pal_model.palette[1].item_id or 'nil'))"
+                    .as_ptr(),
+            );
+        }
+        dump("initial fill 90 sel=40");
+        {
+            let tree = document.tree_text(None).expect("tree dump");
+            let lines: Vec<&str> = tree.lines().filter(|l| l.contains(".it")).collect();
+            eprintln!("TREE IT LINES phase1: {:?}", lines);
+        }
+        unsafe {
+            ffi::rmlui_lua_do_string(
+                c"pal_refill(40, 90) cmd('REFILL 90/' .. tostring(pal_model.palette[1].item_id))"
+                    .as_ptr(),
+            );
+        }
+        dump("refill same 90 sel=40");
+        // Move the selection: stale caches would keep item 40 selected.
+        unsafe {
+            ffi::rmlui_lua_do_string(
+                c"pal_refill(5, 90) cmd('REFILL 90/' .. tostring(pal_model.palette[1].item_id))"
+                    .as_ptr(),
+            );
+        }
+        dump("refill 90 sel=5");
+        // Shrink then grow — the observed warning shape.
+        unsafe {
+            ffi::rmlui_lua_do_string(c"pal_refill(5, 22) cmd('REFILL 22/has40=' .. tostring(pal_model.palette[40] ~= nil) .. ' has22=' .. tostring(pal_model.palette[22] ~= nil))".as_ptr());
+        }
+        let (_, _, it40_after_shrink) = dump("refill 22 sel=5");
+        unsafe {
+            ffi::rmlui_lua_do_string(
+                c"pal_refill(5, 90) cmd('REFILL 90B/' .. tostring(pal_model.palette[1].item_id))"
+                    .as_ptr(),
+            );
+        }
+        let (total_grow, sel_grow, _) = dump("refill 90 sel=5 (grow)");
+
+        // Same model, engine-op path: does the binding follow Resize?
+        let ops = vec![DataModelOp {
+            path: "palette".into(),
+            value: DataModelOpValue::Resize(22),
+        }];
+        assert_eq!(document.data_model_apply(&ops), Ok(()));
+        let (total_engine, _, it40_engine) = dump("engine resize 90->22");
+
+        drop(document);
+        unsafe {
+            ffi::rmlui_context_destroy(ctx);
+            ffi::rmlui_shutdown();
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        // The shrink must have removed item 40 from the model view.
+        assert_eq!(
+            it40_after_shrink, 0,
+            "shrink to 22 kept a stale item-40 binding"
+        );
+        assert_eq!(
+            total_engine, 22,
+            "engine resize on the same model shrank the view"
+        );
+        let _ = (total_grow, sel_grow, it40_engine);
     }
 }
