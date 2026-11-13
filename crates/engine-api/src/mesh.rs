@@ -262,7 +262,11 @@ impl MeshApi {
         } else {
             Vec::new()
         };
-        let joint_indices: Vec<u8> = mesh.joint_indices.iter().flat_map(|j| j.iter().copied()).collect();
+        let joint_indices: Vec<u8> = mesh
+            .joint_indices
+            .iter()
+            .flat_map(|j| j.iter().copied())
+            .collect();
         let joint_weights: Vec<f32> = mesh
             .joint_weights
             .iter()
@@ -339,8 +343,12 @@ impl MeshApi {
             return u32::MAX;
         };
         let name_bytes = name.as_bytes();
-        let vtable_bytes =
-            unsafe { std::slice::from_raw_parts(vtable as *const _ as *const u8, std::mem::size_of::<MeshAllocatorVTable>()) };
+        let vtable_bytes = unsafe {
+            std::slice::from_raw_parts(
+                vtable as *const _ as *const u8,
+                std::mem::size_of::<MeshAllocatorVTable>(),
+            )
+        };
         unsafe {
             f(
                 self.ctx,
@@ -370,7 +378,10 @@ impl MeshApi {
             .flat_map(|p| p.iter().copied())
             .collect();
         let normals: Vec<f32> = if mesh.normals.len() == mesh.positions.len() {
-            mesh.normals.iter().flat_map(|n| n.iter().copied()).collect()
+            mesh.normals
+                .iter()
+                .flat_map(|n| n.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
@@ -379,22 +390,37 @@ impl MeshApi {
         } else {
             Vec::new()
         };
-        let joint_indices: Vec<u8> =
-            mesh.joint_indices.iter().flat_map(|j| j.iter().copied()).collect();
-        let joint_weights: Vec<f32> =
-            mesh.joint_weights.iter().flat_map(|w| w.iter().copied()).collect();
+        let joint_indices: Vec<u8> = mesh
+            .joint_indices
+            .iter()
+            .flat_map(|j| j.iter().copied())
+            .collect();
+        let joint_weights: Vec<f32> = mesh
+            .joint_weights
+            .iter()
+            .flat_map(|w| w.iter().copied())
+            .collect();
         let lightmap_uvs: Vec<f32> = if mesh.lightmap_uvs.len() == mesh.positions.len() {
-            mesh.lightmap_uvs.iter().flat_map(|u| u.iter().copied()).collect()
+            mesh.lightmap_uvs
+                .iter()
+                .flat_map(|u| u.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
         let lightmap_styles: Vec<f32> = if mesh.lightmap_styles.len() == mesh.positions.len() {
-            mesh.lightmap_styles.iter().flat_map(|s| s.iter().copied()).collect()
+            mesh.lightmap_styles
+                .iter()
+                .flat_map(|s| s.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
         let atlas_rects: Vec<f32> = if mesh.atlas_rects.len() == mesh.positions.len() {
-            mesh.atlas_rects.iter().flat_map(|r| r.iter().copied()).collect()
+            mesh.atlas_rects
+                .iter()
+                .flat_map(|r| r.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
@@ -462,9 +488,16 @@ impl MeshApi {
             return false;
         };
         let vc = mesh.vertex_count() as u32;
-        let positions: Vec<f32> = mesh.positions.iter().flat_map(|p| p.iter().copied()).collect();
+        let positions: Vec<f32> = mesh
+            .positions
+            .iter()
+            .flat_map(|p| p.iter().copied())
+            .collect();
         let normals: Vec<f32> = if mesh.normals.len() == mesh.positions.len() {
-            mesh.normals.iter().flat_map(|n| n.iter().copied()).collect()
+            mesh.normals
+                .iter()
+                .flat_map(|n| n.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
@@ -473,20 +506,37 @@ impl MeshApi {
         } else {
             Vec::new()
         };
-        let joint_indices: Vec<u8> = mesh.joint_indices.iter().flat_map(|j| j.iter().copied()).collect();
-        let joint_weights: Vec<f32> = mesh.joint_weights.iter().flat_map(|w| w.iter().copied()).collect();
+        let joint_indices: Vec<u8> = mesh
+            .joint_indices
+            .iter()
+            .flat_map(|j| j.iter().copied())
+            .collect();
+        let joint_weights: Vec<f32> = mesh
+            .joint_weights
+            .iter()
+            .flat_map(|w| w.iter().copied())
+            .collect();
         let lightmap_uvs: Vec<f32> = if mesh.lightmap_uvs.len() == mesh.positions.len() {
-            mesh.lightmap_uvs.iter().flat_map(|u| u.iter().copied()).collect()
+            mesh.lightmap_uvs
+                .iter()
+                .flat_map(|u| u.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
         let lightmap_styles: Vec<f32> = if mesh.lightmap_styles.len() == mesh.positions.len() {
-            mesh.lightmap_styles.iter().flat_map(|s| s.iter().copied()).collect()
+            mesh.lightmap_styles
+                .iter()
+                .flat_map(|s| s.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
         let atlas_rects: Vec<f32> = if mesh.atlas_rects.len() == mesh.positions.len() {
-            mesh.atlas_rects.iter().flat_map(|r| r.iter().copied()).collect()
+            mesh.atlas_rects
+                .iter()
+                .flat_map(|r| r.iter().copied())
+                .collect()
         } else {
             Vec::new()
         };
@@ -496,8 +546,16 @@ impl MeshApi {
             handle.0,
             positions.as_ptr(),
             vc,
-            if normals.is_empty() { std::ptr::null() } else { normals.as_ptr() },
-            if uvs.is_empty() { std::ptr::null() } else { uvs.as_ptr() },
+            if normals.is_empty() {
+                std::ptr::null()
+            } else {
+                normals.as_ptr()
+            },
+            if uvs.is_empty() {
+                std::ptr::null()
+            } else {
+                uvs.as_ptr()
+            },
             if mesh.indices.is_empty() {
                 std::ptr::null()
             } else {
@@ -509,10 +567,26 @@ impl MeshApi {
             } else {
                 joint_indices.as_ptr() as *const c_void
             },
-            if joint_weights.is_empty() { std::ptr::null() } else { joint_weights.as_ptr() },
-            if lightmap_uvs.is_empty() { std::ptr::null() } else { lightmap_uvs.as_ptr() },
-            if lightmap_styles.is_empty() { std::ptr::null() } else { lightmap_styles.as_ptr() },
-            if atlas_rects.is_empty() { std::ptr::null() } else { atlas_rects.as_ptr() },
+            if joint_weights.is_empty() {
+                std::ptr::null()
+            } else {
+                joint_weights.as_ptr()
+            },
+            if lightmap_uvs.is_empty() {
+                std::ptr::null()
+            } else {
+                lightmap_uvs.as_ptr()
+            },
+            if lightmap_styles.is_empty() {
+                std::ptr::null()
+            } else {
+                lightmap_styles.as_ptr()
+            },
+            if atlas_rects.is_empty() {
+                std::ptr::null()
+            } else {
+                atlas_rects.as_ptr()
+            },
             vertex_size,
             vertex_bytes,
             vertex_byte_len,

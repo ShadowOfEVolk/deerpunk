@@ -1,35 +1,35 @@
 pub mod app;
 pub mod audio;
+pub mod bone_buffer;
+pub mod client;
+pub mod client_world;
 pub mod cmd;
+pub mod components;
 pub mod cvar;
+pub mod dynamic_load;
+pub mod host_access;
 pub mod input;
+pub mod log;
+pub mod materials;
+pub mod mesh;
+pub mod methoddb;
 pub mod net;
 pub mod physics;
+pub mod profile;
 pub mod renderer;
-pub mod host_access;
-pub mod components;
-pub mod dynamic_load;
 pub mod resources;
 pub mod schedule;
 pub mod server;
+pub mod spawn_prefab;
 pub mod ui;
 pub mod version;
-pub mod methoddb;
 pub mod world;
-pub mod client;
-pub mod client_world;
-pub mod spawn_prefab;
-pub mod materials;
-pub mod bone_buffer;
-pub mod mesh;
-pub mod log;
-pub mod profile;
 
-pub use dynamic_load::{drop_dynamic, pack as pack_dynamic_load, DynamicLoad};
 pub use deerpunk_engine_ffi::{
-    ClientInitData, ComponentId, EntityId, GAMELIB_API_VERSION, GamelibInitData, ResolverFn,
-    ServerInitData,
+    ClientInitData, ComponentId, EntityId, GamelibInitData, ResolverFn, ServerInitData,
+    GAMELIB_API_VERSION,
 };
+pub use dynamic_load::{drop_dynamic, pack as pack_dynamic_load, DynamicLoad};
 
 /// Alias for [`ResolverFn`] (methoddb resolver).
 pub type Resolver = ResolverFn;
@@ -84,8 +84,7 @@ fn resolve_fn_opt(r: Resolver, name: &str) -> Option<*const ()> {
 }
 
 fn resolve_fn(r: Resolver, name: &str) -> *const () {
-    resolve_fn_opt(r, name)
-        .unwrap_or_else(|| panic!("[engine-api] unresolved method: {}", name))
+    resolve_fn_opt(r, name).unwrap_or_else(|| panic!("[engine-api] unresolved method: {}", name))
 }
 
 unsafe impl Send for EngineApi {}

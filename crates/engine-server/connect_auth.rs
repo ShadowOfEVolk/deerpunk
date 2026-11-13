@@ -105,7 +105,10 @@ fn decode_sockaddr(buf: &[u8], i: usize) -> Option<(SocketAddr, usize)> {
             let mut oct = [0u8; 16];
             oct.copy_from_slice(&buf[i + 1..i + 17]);
             let port = u16::from_le_bytes([buf[i + 17], buf[i + 18]]);
-            Some((SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::from(oct)), port), i + 19))
+            Some((
+                SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::from(oct)), port),
+                i + 19,
+            ))
         }
         _ => None,
     }
@@ -260,6 +263,7 @@ pub fn fetch_connect_token(
     client_id: u64,
 ) -> Result<ConnectToken, String> {
     let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("bind: {e}"))?;
-    sock.set_nonblocking(true).map_err(|e| format!("nonblocking: {e}"))?;
+    sock.set_nonblocking(true)
+        .map_err(|e| format!("nonblocking: {e}"))?;
     fetch_connect_token_on_socket(&sock, server_addr, client_id)
 }

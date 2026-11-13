@@ -53,28 +53,11 @@ type CreateShapeFn = extern "C" fn(*mut u8, *const u8, usize) -> u32;
 type DestroyShapeFn = extern "C" fn(*mut u8, u32) -> i32;
 type CreatePartsFn = extern "C" fn(*mut u8, *const ColliderPart, usize) -> u32;
 type DestroyPartsFn = extern "C" fn(*mut u8, u32) -> i32;
-type CastCapsuleFn = extern "C" fn(
-    *mut u8,
-    *const f32,
-    f32,
-    f32,
-    *const f32,
-    f32,
-    u64,
-    *mut CapsuleCastHit,
-) -> i32;
+type CastCapsuleFn =
+    extern "C" fn(*mut u8, *const f32, f32, f32, *const f32, f32, u64, *mut CapsuleCastHit) -> i32;
 
-type TraceLineFn = extern "C" fn(
-    *mut u8,
-    f32,
-    f32,
-    f32,
-    f32,
-    f32,
-    f32,
-    u64,
-    *mut PhysicsTraceResult,
-) -> i32;
+type TraceLineFn =
+    extern "C" fn(*mut u8, f32, f32, f32, f32, f32, f32, u64, *mut PhysicsTraceResult) -> i32;
 
 type SetBodyLinvelFn = extern "C" fn(*mut u8, u64, f32, f32, f32) -> i32;
 
@@ -119,15 +102,21 @@ impl PhysicsApiResolved {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            create_shape_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:create_shape")) },
+            create_shape_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:physics:create_shape"))
+            },
             destroy_shape_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:physics:destroy_shape"))
             },
-            create_parts_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:create_parts")) },
+            create_parts_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:physics:create_parts"))
+            },
             destroy_parts_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:physics:destroy_parts"))
             },
-            cast_capsule_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:cast_capsule")) },
+            cast_capsule_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:physics:cast_capsule"))
+            },
             trace_line_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:physics:trace_line")) },
             set_body_linvel_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:physics:set_body_linvel"))

@@ -8,5 +8,7 @@ pub mod layout_meta;
 pub mod prefab;
 pub mod prefab_layout_apply;
 
+pub use ecs_validate::{
+    assert_component_id, assert_entity_alive, assert_entity_id, assert_set_payload,
+};
 pub use world::*;
-pub use ecs_validate::{assert_component_id, assert_entity_alive, assert_entity_id, assert_set_payload};

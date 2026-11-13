@@ -87,9 +87,15 @@ impl WorldApiResolved {
             clear_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:clear")) },
             query_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query")) },
             query_count_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_count")) },
-            query_matches_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_matches")) },
-            query_prepare_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_prepare")) },
-            query_execute_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:query_execute")) },
+            query_matches_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:world:query_matches"))
+            },
+            query_prepare_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:world:query_prepare"))
+            },
+            query_execute_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:world:query_execute"))
+            },
             spawn_prefab_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:spawn_prefab")) },
             component_register_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:world:component_register"))

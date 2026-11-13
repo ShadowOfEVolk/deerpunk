@@ -12,7 +12,8 @@ fn resolve(r: Resolver, name: &str) -> *const () {
 pub struct AudioApi {
     ctx: *mut u8,
     play_2d_fn: extern "C" fn(*mut u8, *const u8, usize, u32) -> u32,
-    play_3d_fn: extern "C" fn(*mut u8, *const u8, usize, f32, f32, f32, u32, *const u8, usize, f32) -> u32,
+    play_3d_fn:
+        extern "C" fn(*mut u8, *const u8, usize, f32, f32, f32, u32, *const u8, usize, f32) -> u32,
     start_attached_fn: extern "C" fn(*mut u8, u64, *const u8, usize, f32, f32, f32, u32) -> u32,
     stop_sound_fn: extern "C" fn(*mut u8, u32) -> i32,
     set_world_mesh_fn: extern "C" fn(*mut u8, u64) -> i32,
@@ -76,13 +77,7 @@ impl AudioApi {
     }
 
     /// Looping sound; `entity` is server entity for `net_id` follow. Returns **`sound_id`**.
-    pub fn start_attached(
-        &self,
-        entity: u64,
-        event: &str,
-        origin: [f32; 3],
-        volume: f32,
-    ) -> u32 {
+    pub fn start_attached(&self, entity: u64, event: &str, origin: [f32; 3], volume: f32) -> u32 {
         let ev = event.as_bytes();
         (self.start_attached_fn)(
             self.ctx,

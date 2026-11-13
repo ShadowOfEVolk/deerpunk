@@ -17,16 +17,7 @@ pub struct HostAccessApi {
     client_apply_mesh_uri_fn: extern "C" fn(*mut u8, u64, *const u8, usize) -> i32,
     register_main_console_fn: extern "C" fn(*mut u8, *const u8, usize) -> i32,
     start_listen_map_fn: extern "C" fn(*mut u8, *const u8, usize, i32) -> i32,
-    loader_queue_set_fn: extern "C" fn(
-        *mut u8,
-        i32,
-        i32,
-        i32,
-        *const u8,
-        usize,
-        *const u8,
-        usize,
-    ),
+    loader_queue_set_fn: extern "C" fn(*mut u8, i32, i32, i32, *const u8, usize, *const u8, usize),
     loader_queue_clear_fn: extern "C" fn(*mut u8),
 }
 
@@ -92,14 +83,7 @@ impl HostAccessApi {
     }
 
     /// Report startup / map load progress for engine UI hooks (also used by gamelib loading screens).
-    pub fn loader_queue_set(
-        &self,
-        active: bool,
-        done: u32,
-        total: u32,
-        status: &str,
-        hint: &str,
-    ) {
+    pub fn loader_queue_set(&self, active: bool, done: u32, total: u32, status: &str, hint: &str) {
         (self.loader_queue_set_fn)(
             self.ctx,
             if active { 1 } else { 0 },

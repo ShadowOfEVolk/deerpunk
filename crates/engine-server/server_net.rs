@@ -168,9 +168,7 @@ impl ServerNet {
         for (client_id, reason) in disconnects {
             if let Some(slot) = h.client_slots.remove(&client_id) {
                 self.pending_player_disconnect.push(slot);
-                log::info!(
-                    "[net] remote client {client_id} disconnected slot={slot}: {reason}"
-                );
+                log::info!("[net] remote client {client_id} disconnected slot={slot}: {reason}");
             }
         }
 
@@ -178,10 +176,16 @@ impl ServerNet {
             let Some(&slot) = h.client_slots.get(&client_id) else {
                 continue;
             };
-            while let Some(msg) = h.server.receive_message(client_id, DefaultChannel::Unreliable) {
+            while let Some(msg) = h
+                .server
+                .receive_message(client_id, DefaultChannel::Unreliable)
+            {
                 inbound_c2s.push((slot, msg.to_vec()));
             }
-            while let Some(msg) = h.server.receive_message(client_id, DefaultChannel::ReliableOrdered) {
+            while let Some(msg) = h
+                .server
+                .receive_message(client_id, DefaultChannel::ReliableOrdered)
+            {
                 inbound_c2s.push((slot, msg.to_vec()));
             }
         }
@@ -206,7 +210,8 @@ impl ServerNet {
             let Some(&cmd) = packet.first() else {
                 continue;
             };
-            h.server.broadcast_message(channel_for_svc(cmd), packet.clone());
+            h.server
+                .broadcast_message(channel_for_svc(cmd), packet.clone());
         }
     }
 
@@ -221,7 +226,8 @@ impl ServerNet {
             let Some(&cmd) = packet.first() else {
                 continue;
             };
-            h.server.send_message(client_id, channel_for_svc(cmd), packet.clone());
+            h.server
+                .send_message(client_id, channel_for_svc(cmd), packet.clone());
         }
     }
 

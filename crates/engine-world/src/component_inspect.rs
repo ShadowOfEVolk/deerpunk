@@ -11,8 +11,7 @@ use crate::world::{ComponentId, EntityId, World};
 
 pub use deerpunk_engine_ffi::ComponentInspectDumpFn;
 
-pub type NativeInspectDumpFn =
-    fn(&World, EntityId, ComponentId) -> Result<Value, String>;
+pub type NativeInspectDumpFn = fn(&World, EntityId, ComponentId) -> Result<Value, String>;
 
 #[derive(Clone)]
 enum InspectDumpKind {
@@ -130,13 +129,7 @@ impl ComponentInspectRegistry {
             InspectDumpKind::Native(dump) => dump(world, entity, meta.component_id).ok()?,
             InspectDumpKind::Ffi { user, dump } => {
                 let mut buf = vec![0u8; 65536];
-                let n = dump(
-                    user,
-                    entity,
-                    meta.component_id,
-                    buf.as_mut_ptr(),
-                    buf.len(),
-                );
+                let n = dump(user, entity, meta.component_id, buf.as_mut_ptr(), buf.len());
                 if n < 0 {
                     return None;
                 }

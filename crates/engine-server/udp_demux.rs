@@ -6,13 +6,9 @@ use std::time::Duration;
 
 use renet::{ClientId, RenetClient, RenetServer};
 use renet_netcode::{ClientAuthentication, NetcodeTransportError, ServerConfig};
-use renetcode::{
-    NetcodeClient, NetcodeServer, ServerResult, NETCODE_MAX_PACKET_BYTES,
-};
+use renetcode::{NetcodeClient, NetcodeServer, ServerResult, NETCODE_MAX_PACKET_BYTES};
 
-use deerpunk_engine_common::network::lan::{
-    self, LanAdvertiseState,
-};
+use deerpunk_engine_common::network::lan::{self, LanAdvertiseState};
 
 use crate::connect_auth;
 
@@ -98,7 +94,10 @@ impl DemuxServerTransport {
         'clients: for client_id in server.clients_id() {
             let packets = server.get_packets_to_send(client_id).unwrap();
             for packet in packets {
-                match self.netcode_server.generate_payload_packet(client_id, &packet) {
+                match self
+                    .netcode_server
+                    .generate_payload_packet(client_id, &packet)
+                {
                     Ok((addr, payload)) => {
                         if let Err(e) = self.socket.send_to(payload, addr) {
                             log::error!("[net] send payload to {client_id} ({addr}): {e}");

@@ -124,7 +124,11 @@ pub fn apply_mesh_transform(mesh: &mut Mesh, t: &MeshTransform) {
                 for z in [a[2], b[2]] {
                     let scaled = [x * t.scale, y * t.scale, z * t.scale];
                     let r = rotate(scaled);
-                    let p = [r[0] + t.translate[0], r[1] + t.translate[1], r[2] + t.translate[2]];
+                    let p = [
+                        r[0] + t.translate[0],
+                        r[1] + t.translate[1],
+                        r[2] + t.translate[2],
+                    ];
                     for i in 0..3 {
                         min[i] = min[i].min(p[i]);
                         max[i] = max[i].max(p[i]);
@@ -194,11 +198,14 @@ mod tests {
             bounds_min: [0.0; 3],
             bounds_max: [0.0; 3],
         };
-        apply_mesh_transform(&mut m, &MeshTransform {
-            scale: 2.0,
-            translate: [10.0, 0.0, 0.0],
-            rotate_euler: [0.0; 3],
-        });
+        apply_mesh_transform(
+            &mut m,
+            &MeshTransform {
+                scale: 2.0,
+                translate: [10.0, 0.0, 0.0],
+                rotate_euler: [0.0; 3],
+            },
+        );
         assert_eq!(m.positions[0], [12.0, 0.0, 0.0]);
         assert_eq!(m.normals[0], [0.0, 0.0, 1.0]);
     }
@@ -224,15 +231,17 @@ mod tests {
             bounds_min: [0.0; 3],
             bounds_max: [0.0; 3],
         };
-        apply_mesh_transform(&mut m, &MeshTransform {
-            scale: 1.0,
-            translate: [0.0; 3],
-            rotate_euler: [90.0, 0.0, 0.0],
-        });
+        apply_mesh_transform(
+            &mut m,
+            &MeshTransform {
+                scale: 1.0,
+                translate: [0.0; 3],
+                rotate_euler: [90.0, 0.0, 0.0],
+            },
+        );
         assert!((m.positions[0][0] - 0.0).abs() < 1e-5);
         assert!((m.positions[0][1] - -1.0).abs() < 1e-5);
         assert!((m.positions[0][2] - 0.0).abs() < 1e-5);
         assert!((m.normals[0][1] - -1.0).abs() < 1e-5);
     }
 }
-

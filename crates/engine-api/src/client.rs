@@ -11,15 +11,7 @@ fn resolve(r: Resolver, name: &str) -> *const () {
 
 type ViewRayFn = extern "C" fn(*mut u8, *mut f32) -> i32;
 type SceneTimeFn = extern "C" fn(*mut u8) -> f32;
-type DebugAabbFn = extern "C" fn(
-    *mut u8,
-    *const f32,
-    *const f32,
-    f32,
-    f32,
-    f32,
-    f32,
-) -> i32;
+type DebugAabbFn = extern "C" fn(*mut u8, *const f32, *const f32, f32, f32, f32, f32) -> i32;
 pub use deerpunk_engine_common::mesh_submit::{MeshSubmit, MeshSubmitBin, MeshSubmitBinset};
 
 /// Old name for a single bin. Prefer [`MeshSubmitBin`].

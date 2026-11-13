@@ -13,9 +13,7 @@ const FILES: &[(&str, &str)] = &[
 
 /// Normalize `internal://` path: forward slashes, no leading `/`.
 pub fn normalize_internal_path(path: &str) -> String {
-    path.trim()
-        .trim_start_matches('/')
-        .replace('\\', "/")
+    path.trim().trim_start_matches('/').replace('\\', "/")
 }
 
 /// Lookup embedded file by path (without `internal://` prefix).

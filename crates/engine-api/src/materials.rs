@@ -59,13 +59,7 @@ impl MaterialsApi {
     pub fn load_with_defines(&self, path: &str, defines: &str) -> MaterialAssetId {
         let pb = path.as_bytes();
         let db = defines.as_bytes();
-        (self.load_with_defines_fn)(
-            self.ctx,
-            pb.as_ptr(),
-            pb.len(),
-            db.as_ptr(),
-            db.len(),
-        )
+        (self.load_with_defines_fn)(self.ctx, pb.as_ptr(), pb.len(), db.as_ptr(), db.len())
     }
 
     /// Host / renderer prepare: upload RM material → GPU store. Gamelib must not call.

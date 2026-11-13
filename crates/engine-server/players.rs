@@ -64,7 +64,11 @@ impl PlayerConnections {
         Some(p)
     }
 
-    pub fn connect_remote(&mut self, slot: u32, name: impl Into<String>) -> Option<&PlayerConnection> {
+    pub fn connect_remote(
+        &mut self,
+        slot: u32,
+        name: impl Into<String>,
+    ) -> Option<&PlayerConnection> {
         if self.players.iter().any(|p| p.slot == slot) {
             return self.players.iter().find(|p| p.slot == slot);
         }

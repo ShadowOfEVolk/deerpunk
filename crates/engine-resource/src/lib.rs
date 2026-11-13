@@ -1,15 +1,15 @@
 //! Runtime asset registry, mesh handles, and built-in loaders under [`loaders`].
 
-pub mod loaders;
+pub mod internal_assets;
 pub mod loader;
+pub mod loaders;
 pub mod mesh;
-pub mod mesh_compact;
 pub mod mesh_allocator;
+pub mod mesh_compact;
 pub mod mesh_content;
 pub mod mesh_handle;
 pub mod mesh_registry;
 pub mod wad;
-pub mod internal_assets;
 
 use loader::Loader;
 use mesh::Mesh;
@@ -25,14 +25,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub use internal_assets::{internal_asset, internal_asset_paths, normalize_internal_path};
 pub use loader::{LoadOpts, LoadedAsset};
+/// OBJ helpers used by scene prefab appliers (MTL diffuse lookup).
+pub use loaders::obj;
 pub use loaders::{
     fallback_name_to_texgen_uri, register_default_loaders, AudioClip, FileLoader, InternalLoader,
     ShaderLoader, ShaderSource, TexgenLoader, WadLoader,
 };
-pub use internal_assets::{internal_asset, internal_asset_paths, normalize_internal_path};
-/// OBJ helpers used by scene prefab appliers (MTL diffuse lookup).
-pub use loaders::obj;
 
 /// Stable id for a loaded (or failed) asset. Survives aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -400,11 +400,7 @@ impl ResourceManager {
     }
 
     pub fn uri_for(&self, id: AssetId) -> Option<String> {
-        self.inner
-            .borrow()
-            .assets
-            .get(&id)
-            .map(|r| r.uri.clone())
+        self.inner.borrow().assets.get(&id).map(|r| r.uri.clone())
     }
 
     pub fn is_loaded(&self, id: AssetId) -> bool {

@@ -3,8 +3,8 @@
 pub mod audio_clip;
 mod fbx;
 mod file;
-pub mod obj;
 mod internal;
+pub mod obj;
 mod shader;
 mod texgen;
 mod transform;

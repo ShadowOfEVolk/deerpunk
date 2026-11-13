@@ -48,15 +48,11 @@ impl ResourcesApi {
     pub fn new(ctx: *mut u8, r: Resolver) -> Self {
         Self {
             ctx,
-            register_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:resources:register"))
-            },
+            register_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:resources:register")) },
             load_material_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:resources:load_material"))
             },
-            is_loaded_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:resources:is_loaded"))
-            },
+            is_loaded_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:resources:is_loaded")) },
         }
     }
 

@@ -160,10 +160,7 @@ impl MeshRegistry {
     pub fn new() -> Self {
         // Slot 0 is reserved so `MeshHandle::INVALID` (idx=0) never resolves.
         Self {
-            slots: vec![Slot {
-                gen: 0,
-                mesh: None,
-            }],
+            slots: vec![Slot { gen: 0, mesh: None }],
             mesh_revisions: vec![0],
             free: Vec::new(),
             next: 1,
@@ -224,7 +221,8 @@ impl MeshRegistry {
     ) -> Option<(*mut u8, *mut u32)> {
         let ptr = self.mesh_mut_slot(handle)?;
         let mesh = unsafe { &mut *ptr };
-        self.cpu_arena.refit_bytes(&mut mesh.vertex_bytes, vertex_bytes);
+        self.cpu_arena
+            .refit_bytes(&mut mesh.vertex_bytes, vertex_bytes);
         self.cpu_arena.refit_indices(&mut mesh.indices, index_count);
         let verts = mesh.vertex_bytes.as_mut_ptr();
         let indices = mesh.indices.as_mut_ptr();
@@ -347,9 +345,7 @@ impl MeshRegistry {
 
     /// `Arc<Mesh>` content id (used for GPU pool dedup). `0` if not present.
     pub fn content_id(&self, handle: MeshHandle) -> u64 {
-        self.get(handle)
-            .map(|m| m.content_id())
-            .unwrap_or(0)
+        self.get(handle).map(|m| m.content_id()).unwrap_or(0)
     }
 
     /// Entity (or other owner) started referencing this handle.
@@ -376,7 +372,12 @@ impl MeshRegistry {
         let Some(count) = self.handle_refs.get_mut(&handle.0) else {
             return;
         };
-        debug_assert!(*count > 0, "detach underflow idx={} gen={}", handle.idx(), handle.gen());
+        debug_assert!(
+            *count > 0,
+            "detach underflow idx={} gen={}",
+            handle.idx(),
+            handle.gen()
+        );
         *count -= 1;
         if *count > 0 {
             return;
@@ -416,9 +417,8 @@ impl MeshRegistry {
                 if live.contains(&packed) {
                     continue;
                 }
-                let index_still_referenced = live
-                    .iter()
-                    .any(|&h| MeshHandle(h).idx() as usize == idx);
+                let index_still_referenced =
+                    live.iter().any(|&h| MeshHandle(h).idx() as usize == idx);
                 if index_still_referenced {
                     continue;
                 }
@@ -438,15 +438,16 @@ impl MeshRegistry {
     /// Drop everything (level change / shutdown). Generations are reset, so
     /// any handle held elsewhere becomes invalid.
     pub fn clear(&mut self) {
-        let held: Vec<_> = self.slots.iter_mut().filter_map(|slot| slot.mesh.take()).collect();
+        let held: Vec<_> = self
+            .slots
+            .iter_mut()
+            .filter_map(|slot| slot.mesh.take())
+            .collect();
         for prev in held {
             self.recycle_arc(prev);
         }
         self.slots.clear();
-        self.slots.push(Slot {
-            gen: 0,
-            mesh: None,
-        });
+        self.slots.push(Slot { gen: 0, mesh: None });
         self.mesh_revisions.clear();
         self.mesh_revisions.push(0);
         self.free.clear();

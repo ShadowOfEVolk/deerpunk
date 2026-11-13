@@ -62,12 +62,7 @@ pub trait MeshAllocator: Send + Sync {
     /// Reserve space for `vert_count` vertices and `idx_count` indices with
     /// the given `stride` (bytes/vertex). Returns a handle pointing into the
     /// engine's buffer pool, or [`MeshAllocHandle::INVALID`] on failure.
-    fn allocate(
-        &mut self,
-        vert_count: u32,
-        idx_count: u32,
-        stride: u32,
-    ) -> MeshAllocHandle;
+    fn allocate(&mut self, vert_count: u32, idx_count: u32, stride: u32) -> MeshAllocHandle;
 
     /// Release the region previously returned by [`allocate`]. After this,
     /// the handle is invalid and the region may be reused by a future
@@ -79,13 +74,7 @@ pub trait MeshAllocator: Send + Sync {
     /// `allocate` calls. Allocators that own their own buffers may no-op;
     /// offset-only allocators must record it so `allocate` can place meshes
     /// in it. Default no-op.
-    fn add_buffer(
-        &mut self,
-        buffer_id: u32,
-        vert_cap: u32,
-        idx_cap: u32,
-        stride: u32,
-    ) {
+    fn add_buffer(&mut self, buffer_id: u32, vert_cap: u32, idx_cap: u32, stride: u32) {
         let _ = (buffer_id, vert_cap, idx_cap, stride);
     }
 }
@@ -113,13 +102,8 @@ pub struct MeshAllocatorVTable {
     pub free: extern "C" fn(ctx: *mut u8, handle: MeshAllocHandle),
     /// `fn(ctx, buffer_id, vert_cap, idx_cap, stride)`. The engine created
     /// a new GPU buffer and offers it to this allocator.
-    pub add_buffer: extern "C" fn(
-        ctx: *mut u8,
-        buffer_id: u32,
-        vert_cap: u32,
-        idx_cap: u32,
-        stride: u32,
-    ),
+    pub add_buffer:
+        extern "C" fn(ctx: *mut u8, buffer_id: u32, vert_cap: u32, idx_cap: u32, stride: u32),
 }
 
 /// A registered custom allocator: vtable + opaque context pointer owned by
@@ -148,12 +132,7 @@ impl ForeignMeshAllocator {
 }
 
 impl MeshAllocator for ForeignMeshAllocator {
-    fn allocate(
-        &mut self,
-        vert_count: u32,
-        idx_count: u32,
-        stride: u32,
-    ) -> MeshAllocHandle {
+    fn allocate(&mut self, vert_count: u32, idx_count: u32, stride: u32) -> MeshAllocHandle {
         let mut out = MeshAllocHandle::INVALID;
         (self.reg.vtable.allocate)(self.reg.ctx, vert_count, idx_count, stride, &mut out);
         out
@@ -163,13 +142,7 @@ impl MeshAllocator for ForeignMeshAllocator {
         (self.reg.vtable.free)(self.reg.ctx, handle);
     }
 
-    fn add_buffer(
-        &mut self,
-        buffer_id: u32,
-        vert_cap: u32,
-        idx_cap: u32,
-        stride: u32,
-    ) {
+    fn add_buffer(&mut self, buffer_id: u32, vert_cap: u32, idx_cap: u32, stride: u32) {
         (self.reg.vtable.add_buffer)(self.reg.ctx, buffer_id, vert_cap, idx_cap, stride);
     }
 }

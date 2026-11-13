@@ -1,4 +1,3 @@
-
 use crate::resolve_fn;
 
 pub struct RendererApiResolved {
@@ -14,7 +13,8 @@ pub struct RendererApiResolved {
     shader_vertex_size_fn: unsafe extern "C" fn(*mut u8, u32) -> u32,
     reload_shaders_fn: unsafe extern "C" fn(*mut u8) -> i32,
     capture_request_fn: Option<unsafe extern "C" fn(*mut u8) -> i32>,
-    capture_take_fn: Option<unsafe extern "C" fn(*mut u8, *mut u8, usize, *mut u32, *mut u32) -> i32>,
+    capture_take_fn:
+        Option<unsafe extern "C" fn(*mut u8, *mut u8, usize, *mut u32, *mut u32) -> i32>,
 }
 
 impl RendererApiResolved {
@@ -67,9 +67,7 @@ impl RendererApiResolved {
 
     /// Upload a raw RGBA texture (atlas built in memory). Returns MeshTexture slot (0 = failed).
     pub fn upload_texture_raw(&self, pixels: &[u8], w: u32, h: u32) -> u32 {
-        unsafe {
-            (self.upload_texture_raw_fn)(self.ctx, pixels.as_ptr(), pixels.len(), w, h)
-        }
+        unsafe { (self.upload_texture_raw_fn)(self.ctx, pixels.as_ptr(), pixels.len(), w, h) }
     }
 
     /// Set scene-level lighting (sun direction + ambient color).
@@ -82,19 +80,15 @@ impl RendererApiResolved {
 
     /// Hosek colors from gamelib: 156 bytes (39×f32 LE). Empty slice clears the payload.
     pub fn set_gamelib_sky(&self, bytes: &[u8]) -> i32 {
-        unsafe {
-            (self.set_gamelib_sky_fn)(self.ctx, bytes.as_ptr(), bytes.len())
-        }
+        unsafe { (self.set_gamelib_sky_fn)(self.ctx, bytes.as_ptr(), bytes.len()) }
     }
 
     pub fn set_scene_lighting(&self, sun_dir: &[f32; 4], ambient: &[f32; 4]) -> i32 {
         // Cast f32 arrays to raw bytes (16 bytes each) without bytemuck dep.
-        let sd_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(sun_dir.as_ptr() as *const u8, 16)
-        };
-        let am_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(ambient.as_ptr() as *const u8, 16)
-        };
+        let sd_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(sun_dir.as_ptr() as *const u8, 16) };
+        let am_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(ambient.as_ptr() as *const u8, 16) };
         unsafe {
             (self.set_scene_lighting_fn)(
                 self.ctx,
@@ -111,9 +105,7 @@ impl RendererApiResolved {
         let mut bytes = [0u8; 8];
         bytes[0..4].copy_from_slice(&start.to_le_bytes());
         bytes[4..8].copy_from_slice(&falloff.to_le_bytes());
-        unsafe {
-            (self.set_scene_fog_fn)(self.ctx, bytes.as_ptr(), bytes.len())
-        }
+        unsafe { (self.set_scene_fog_fn)(self.ctx, bytes.as_ptr(), bytes.len()) }
     }
 
     /// Sky gradient palette (day_k + zenith rgb) — must match `ohmyblock_shared_net::daytime`.
@@ -123,9 +115,7 @@ impl RendererApiResolved {
         bytes[4..8].copy_from_slice(&zenith[0].to_le_bytes());
         bytes[8..12].copy_from_slice(&zenith[1].to_le_bytes());
         bytes[12..16].copy_from_slice(&zenith[2].to_le_bytes());
-        unsafe {
-            (self.set_sky_palette_fn)(self.ctx, bytes.as_ptr(), bytes.len())
-        }
+        unsafe { (self.set_sky_palette_fn)(self.ctx, bytes.as_ptr(), bytes.len()) }
     }
 
     /// Load a `.wgsl` shader into the ShaderRegistry. Returns ShaderId (0 = failed).
@@ -140,9 +130,7 @@ impl RendererApiResolved {
     pub fn load_shader(&self, path: &str, defines: &str) -> u32 {
         let p = path.as_bytes();
         let d = defines.as_bytes();
-        unsafe {
-            (self.load_shader_fn)(self.ctx, p.as_ptr(), p.len(), d.as_ptr(), d.len())
-        }
+        unsafe { (self.load_shader_fn)(self.ctx, p.as_ptr(), p.len(), d.as_ptr(), d.len()) }
     }
 
     /// Hot-reload WGSL from gamedir (sky, postfx, materials already in the registry).

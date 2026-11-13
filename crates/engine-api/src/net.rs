@@ -50,8 +50,7 @@ type SetSimorgFn = extern "C" fn(*mut u8, f32, f32, f32) -> i32;
 type ClearSimorgFn = extern "C" fn(*mut u8) -> i32;
 type UsercmdSentTimeFn = extern "C" fn(*mut u8, u32) -> f32;
 type ServerFeetFn = extern "C" fn(*mut u8, *mut f32) -> i32;
-type PredictionCorrectionFn =
-    extern "C" fn(*mut u8, f32, f32, f32, f32, f32, f32) -> i32;
+type PredictionCorrectionFn = extern "C" fn(*mut u8, f32, f32, f32, f32, f32, f32) -> i32;
 pub struct NetApi {
     ctx: *mut u8,
     client_cmd_fn: ClientCmdFn,
@@ -110,38 +109,28 @@ impl NetApi {
             local_entity_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:players:local_entity"))
             },
-            um_register_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:net:msg_register"))
-            },
+            um_register_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:msg_register")) },
             um_send_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:msg_send")) },
             um_hook_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:msg_hook")) },
-            player_net_id_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:net:player_net_id"))
-            },
+            player_net_id_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:net:player_net_id")) },
             client_set_view_net_id_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:client:set_view_net_id"))
             },
-            usercmd_ack_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:players:usercmd_ack"))
-            },
+            usercmd_ack_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:players:usercmd_ack")) },
             usercmd_outgoing_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:players:usercmd_outgoing"))
             },
             usercmd_lookup_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:players:usercmd_lookup"))
             },
-            set_simorg_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:players:set_simorg"))
-            },
+            set_simorg_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:players:set_simorg")) },
             clear_simorg_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:players:clear_simorg"))
             },
             usercmd_sent_time_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:players:usercmd_sent_time"))
             },
-            server_feet_fn: unsafe {
-                crate::fn_from_erased(resolve(r, "v1:players:server_feet"))
-            },
+            server_feet_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:players:server_feet")) },
             prediction_correction_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:players:prediction_correction"))
             },
@@ -210,12 +199,7 @@ impl NetApi {
         use deerpunk_engine_network::MAX_CLIENT_COMMAND_LEN;
         let mut slot = 0.0f32;
         let mut buf = [0u8; MAX_CLIENT_COMMAND_LEN];
-        let n = (self.pop_client_command_fn)(
-            self.ctx,
-            &mut slot,
-            buf.as_mut_ptr(),
-            buf.len(),
-        );
+        let n = (self.pop_client_command_fn)(self.ctx, &mut slot, buf.as_mut_ptr(), buf.len());
         if n <= 0 {
             return None;
         }

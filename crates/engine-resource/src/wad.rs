@@ -156,7 +156,10 @@ impl WadSet {
         if let Ok(rd) = std::fs::read_dir(gamedir) {
             for e in rd.flatten() {
                 let p = e.path();
-                if p.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case("wad")) == Some(true)
+                if p.extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x.eq_ignore_ascii_case("wad"))
+                    == Some(true)
                     && !paths.iter().any(|x| x == &p)
                 {
                     paths.push(p);
@@ -187,7 +190,11 @@ impl WadSet {
 }
 
 pub fn normalize_tex_name(name: &str) -> String {
-    name.split('\0').next().unwrap_or(name).trim().to_ascii_lowercase()
+    name.split('\0')
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 fn cstr16(bytes: &[u8]) -> String {
@@ -211,9 +218,7 @@ pub fn decode_miptex(data: &[u8]) -> Result<RgbaImage, String> {
         return Err("external miptex (no pixels)".into());
     }
     let mip0_len = (width * height) as usize;
-    let mip0_end = offset0
-        .checked_add(mip0_len)
-        .ok_or("mip0 overflow")?;
+    let mip0_end = offset0.checked_add(mip0_len).ok_or("mip0 overflow")?;
     if mip0_end > data.len() {
         return Err("mip0 out of range".into());
     }
@@ -236,7 +241,10 @@ pub fn decode_miptex(data: &[u8]) -> Result<RgbaImage, String> {
         return Err("palette missing".into());
     }
     let ncolors = u16::from_le_bytes(data[pal_off..pal_off + 2].try_into().unwrap()) as usize;
-    let pal_bytes = ncolors.saturating_mul(3).max(768).min(data.len() - (pal_off + 2));
+    let pal_bytes = ncolors
+        .saturating_mul(3)
+        .max(768)
+        .min(data.len() - (pal_off + 2));
     let palette = &data[pal_off + 2..pal_off + 2 + pal_bytes];
     indices_to_rgba(indices, width, height, palette, &name)
 }

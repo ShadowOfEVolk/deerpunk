@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use audionimbus::{
-    CoordinateSystem, Direct, DirectSimulationSettings, SimulationFlags,
-    SimulationSharedInputs, Simulator,
+    CoordinateSystem, Direct, DirectSimulationSettings, SimulationFlags, SimulationSharedInputs,
+    Simulator,
 };
 use glam::Vec3;
 
-use super::AMBISONICS_ORDER;
 use super::registry::SimRegistry;
+use super::AMBISONICS_ORDER;
 use crate::ListenerView;
 
 pub fn listener_to_coords(origin: Vec3, right: Vec3, up: Vec3, forward: Vec3) -> CoordinateSystem {
@@ -49,17 +49,16 @@ impl SimulationInner {
         origin: Vec3,
         dist_mult: f32,
     ) -> Result<(), audionimbus::SteamAudioError> {
-        registry.push(
-            &mut self.simulator,
-            key,
-            origin,
-            dist_mult,
-            None,
-            None,
-        )
+        registry.push(&mut self.simulator, key, origin, dist_mult, None, None)
     }
 
-    fn update_entity(&mut self, registry: &mut SimRegistry, key: i32, origin: Vec3, dist_mult: f32) {
+    fn update_entity(
+        &mut self,
+        registry: &mut SimRegistry,
+        key: i32,
+        origin: Vec3,
+        dist_mult: f32,
+    ) {
         registry.update_position(key, origin, dist_mult, None, None);
     }
 
@@ -80,7 +79,10 @@ pub struct SimulationManager {
 }
 
 impl SimulationManager {
-    pub fn new(context: &audionimbus::Context, audio_settings: &audionimbus::AudioSettings) -> Self {
+    pub fn new(
+        context: &audionimbus::Context,
+        audio_settings: &audionimbus::AudioSettings,
+    ) -> Self {
         let mut simulator = Simulator::builder(
             audionimbus::SceneParams::Default,
             audio_settings.sampling_rate,
@@ -219,7 +221,13 @@ impl SimulationManager {
         }
     }
 
-    pub fn update_entity(&self, registry: &mut SimRegistry, key: i32, origin: Vec3, dist_mult: f32) {
+    pub fn update_entity(
+        &self,
+        registry: &mut SimRegistry,
+        key: i32,
+        origin: Vec3,
+        dist_mult: f32,
+    ) {
         let mut guard = self.inner.lock().unwrap();
         guard.scene_dirty.store(true, Ordering::Relaxed);
         guard.update_entity(registry, key, origin, dist_mult);

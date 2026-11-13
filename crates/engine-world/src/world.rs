@@ -1190,7 +1190,9 @@ impl World {
             for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
                 // Skip flecs pairs `(X,Y)` — the comma split can also leave a
                 // trailing `Y)` fragment — and `flecs.*` builtin identifiers.
-                if part.contains('(') || part.contains(')') || part.split('.').next() == Some("flecs")
+                if part.contains('(')
+                    || part.contains(')')
+                    || part.split('.').next() == Some("flecs")
                 {
                     continue;
                 }

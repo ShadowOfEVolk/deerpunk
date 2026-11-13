@@ -36,7 +36,12 @@ impl CmdApi {
     }
 
     /// Register a console command handled by `callback`.
-    pub fn register(&self, name: &str, callback: CmdCallback, user: *mut c_void) -> Result<(), String> {
+    pub fn register(
+        &self,
+        name: &str,
+        callback: CmdCallback,
+        user: *mut c_void,
+    ) -> Result<(), String> {
         let bytes = name.as_bytes();
         let rc = (self.register_fn)(self.ctx, bytes.as_ptr(), bytes.len(), callback, user);
         if rc == 0 {

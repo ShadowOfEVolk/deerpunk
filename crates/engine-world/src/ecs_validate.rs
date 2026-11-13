@@ -30,8 +30,6 @@ pub fn assert_entity_alive(world: &World, entity: EntityId, op: &str) {
 #[inline]
 pub fn assert_set_payload(size: usize, op: &str) {
     if size == 0 {
-        panic!(
-            "ECS {op}: set payload size is 0 — cannot write component (empty struct?)"
-        );
+        panic!("ECS {op}: set payload size is 0 — cannot write component (empty struct?)");
     }
 }

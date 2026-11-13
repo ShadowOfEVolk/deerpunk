@@ -4,9 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use deerpunk_engine_common::cvar_def::ARCHIVE;
-use deerpunk_engine_common::network::lan::{
-    encode_info, DEFAULT_GAME_PORT, LanAdvertiseState,
-};
+use deerpunk_engine_common::network::lan::{encode_info, LanAdvertiseState, DEFAULT_GAME_PORT};
 
 deerpunk_engine_common::cvar_def!(
     "sv_port",
@@ -31,7 +29,8 @@ pub struct LanAdvertiser {
 
 impl LanAdvertiser {
     pub fn new(port: u16) -> Result<Self, String> {
-        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("lan advertiser bind: {e}"))?;
+        let socket =
+            UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("lan advertiser bind: {e}"))?;
         socket
             .set_broadcast(true)
             .map_err(|e| format!("lan advertiser broadcast: {e}"))?;
@@ -40,11 +39,7 @@ impl LanAdvertiser {
             .map_err(|e| format!("lan advertiser nonblocking: {e}"))?;
         Ok(Self {
             socket,
-            port: if port == 0 {
-                DEFAULT_GAME_PORT
-            } else {
-                port
-            },
+            port: if port == 0 { DEFAULT_GAME_PORT } else { port },
             last_send: Instant::now()
                 .checked_sub(ADVERTISE_INTERVAL)
                 .unwrap_or_else(Instant::now),

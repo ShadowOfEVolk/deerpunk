@@ -25,20 +25,44 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
         };
         match tag {
             "v" => {
-                let x = parts.next().and_then(|s| s.parse::<f32>().ok()).ok_or_else(|| format!("bad vertex: {line}"))?;
-                let y = parts.next().and_then(|s| s.parse::<f32>().ok()).ok_or_else(|| format!("bad vertex: {line}"))?;
-                let z = parts.next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                let x = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .ok_or_else(|| format!("bad vertex: {line}"))?;
+                let y = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .ok_or_else(|| format!("bad vertex: {line}"))?;
+                let z = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 positions.push([x, y, z]);
             }
             "vn" => {
-                let x = parts.next().and_then(|s| s.parse::<f32>().ok()).ok_or_else(|| format!("bad normal: {line}"))?;
-                let y = parts.next().and_then(|s| s.parse::<f32>().ok()).ok_or_else(|| format!("bad normal: {line}"))?;
-                let z = parts.next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                let x = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .ok_or_else(|| format!("bad normal: {line}"))?;
+                let y = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .ok_or_else(|| format!("bad normal: {line}"))?;
+                let z = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 normals.push([x, y, z]);
             }
             "vt" => {
-                let u = parts.next().and_then(|s| s.parse::<f32>().ok()).ok_or_else(|| format!("bad texcoord: {line}"))?;
-                let v = parts.next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                let u = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .ok_or_else(|| format!("bad texcoord: {line}"))?;
+                let v = parts
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 uvs.push([u, v]);
             }
             "f" => {
@@ -48,7 +72,10 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
                 }
                 let parse_ref = |s: &str| -> Result<(usize, Option<usize>, Option<usize>), String> {
                     let mut it = s.split('/');
-                    let v = it.next().and_then(|s| s.parse::<i32>().ok()).ok_or_else(|| format!("bad face ref: {s}"))?;
+                    let v = it
+                        .next()
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .ok_or_else(|| format!("bad face ref: {s}"))?;
                     let vt = it.next().and_then(|s| s.parse::<i32>().ok());
                     let vn = it.next().and_then(|s| s.parse::<i32>().ok());
                     Ok((v as usize, vt.map(|i| i as usize), vn.map(|i| i as usize)))
@@ -58,16 +85,34 @@ pub fn parse_obj(data: &str) -> Result<Mesh, String> {
                 for vert in verts.iter().skip(2) {
                     let (v2, t2, n2) = parse_ref(vert)?;
                     for &(vi, ti, ni) in &[(v0, t0, n0), (v1, t1, n1), (v2, t2, n2)] {
-                        let pos_idx = if vi > 0 { vi - 1 } else { positions.len().wrapping_sub(vi) };
-                        let pos = *positions.get(pos_idx).ok_or_else(|| format!("vertex index {vi} out of range"))?;
-                        let norm = ni.and_then(|ni| {
-                            let idx = if ni > 0 { ni - 1 } else { normals.len().wrapping_sub(ni) };
-                            normals.get(idx).copied()
-                        }).unwrap_or([0.0, 0.0, 1.0]);
-                        let uv = ti.and_then(|ti| {
-                            let idx = if ti > 0 { ti - 1 } else { uvs.len().wrapping_sub(ti) };
-                            uvs.get(idx).copied()
-                        }).unwrap_or([0.0, 0.0]);
+                        let pos_idx = if vi > 0 {
+                            vi - 1
+                        } else {
+                            positions.len().wrapping_sub(vi)
+                        };
+                        let pos = *positions
+                            .get(pos_idx)
+                            .ok_or_else(|| format!("vertex index {vi} out of range"))?;
+                        let norm = ni
+                            .and_then(|ni| {
+                                let idx = if ni > 0 {
+                                    ni - 1
+                                } else {
+                                    normals.len().wrapping_sub(ni)
+                                };
+                                normals.get(idx).copied()
+                            })
+                            .unwrap_or([0.0, 0.0, 1.0]);
+                        let uv = ti
+                            .and_then(|ti| {
+                                let idx = if ti > 0 {
+                                    ti - 1
+                                } else {
+                                    uvs.len().wrapping_sub(ti)
+                                };
+                                uvs.get(idx).copied()
+                            })
+                            .unwrap_or([0.0, 0.0]);
                         out_positions.push(pos);
                         out_normals.push(norm);
                         out_uvs.push(uv);
@@ -277,10 +322,7 @@ f 1 2 3 4";
     #[test]
     fn mtl_map_kd_skips_options() {
         let mtl = "map_Bump -bm 1.000000 foo/bar.png\nmap_Kd -s 1 1 1 tex/diff.jpg\n";
-        assert_eq!(
-            parse_mtl_first_map_kd(mtl).as_deref(),
-            Some("tex/diff.jpg")
-        );
+        assert_eq!(parse_mtl_first_map_kd(mtl).as_deref(), Some("tex/diff.jpg"));
     }
 
     #[test]

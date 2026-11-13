@@ -6,12 +6,12 @@ pub mod jsonrpc;
 pub mod types;
 
 pub use jsonrpc::{
-    ERR_ENTITY_NOT_FOUND, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
-    PROTO_VERSION, err, notify, ok,
+    err, notify, ok, ERR_ENTITY_NOT_FOUND, ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST,
+    ERR_METHOD_NOT_FOUND, PROTO_VERSION,
 };
 pub use types::*;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Built-in collections for a minimal engine stub (entities per world).
 pub fn default_collections() -> Vec<CollectionDescriptor> {
@@ -98,7 +98,11 @@ pub fn handle_session_rpc(
     match method {
         "inspector.initialize" => {
             let Some(id) = id else {
-                return Some(err(&Value::Null, ERR_INVALID_REQUEST, "initialize needs id"));
+                return Some(err(
+                    &Value::Null,
+                    ERR_INVALID_REQUEST,
+                    "initialize needs id",
+                ));
             };
             let proto = params.get("proto").and_then(|v| v.as_i64()).unwrap_or(0);
             if proto < 1 {

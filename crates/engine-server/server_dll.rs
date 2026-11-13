@@ -1,4 +1,4 @@
-pub use deerpunk_engine_ffi::{GAMELIB_API_VERSION, ResolverFn, ServerInitData};
+pub use deerpunk_engine_ffi::{ResolverFn, ServerInitData, GAMELIB_API_VERSION};
 // Re-exported from `lib.rs` for gamelib loaders.
 
 type ServerInitFn = unsafe extern "C" fn(ServerInitData);

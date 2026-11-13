@@ -146,7 +146,8 @@ fn main() {
     // CLI inspector flags queue overrides for the `sv_inspector_*` cvars; they
     // are forced in when the inspector WS starts (beating config.cfg values).
     if let Some(port) = cli.inspector_port {
-        host.cvar.queue_override("sv_inspector_port", &port.to_string());
+        host.cvar
+            .queue_override("sv_inspector_port", &port.to_string());
         log::info!("CLI override: sv_inspector_port={port}");
     }
     if let Some(addr) = &cli.inspector_host {

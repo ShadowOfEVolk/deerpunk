@@ -52,7 +52,11 @@ fn ensure_component_slot(
     Ok(())
 }
 
-fn write_field(base: *const std::ffi::c_void, field: &FieldMeta, value: &Value) -> Result<(), String> {
+fn write_field(
+    base: *const std::ffi::c_void,
+    field: &FieldMeta,
+    value: &Value,
+) -> Result<(), String> {
     let p = unsafe { base.add(field.offset as usize) };
     match field.wire {
         WireKind::U8 => {

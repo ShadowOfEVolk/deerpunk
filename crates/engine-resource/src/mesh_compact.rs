@@ -131,10 +131,7 @@ mod tests {
             let w = encode_position_u20x3(p);
             let d = decode_position_u20x3(w);
             for i in 0..3 {
-                assert!(
-                    (d[i] - p[i]).abs() < 0.05,
-                    "p={p:?} d={d:?} words={w:?}"
-                );
+                assert!((d[i] - p[i]).abs() < 0.05, "p={p:?} d={d:?} words={w:?}");
             }
         }
     }

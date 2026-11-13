@@ -12,9 +12,7 @@ impl ServerApi {
         let resolve = |name: &str| super::resolve_fn(resolver, name);
         Self {
             ctx,
-            sim_time_secs_fn: unsafe {
-                crate::fn_from_erased(resolve("v1:server:sim_time_secs"))
-            },
+            sim_time_secs_fn: unsafe { crate::fn_from_erased(resolve("v1:server:sim_time_secs")) },
         }
     }
 

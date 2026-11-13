@@ -12,7 +12,6 @@ use serde_json::{json, Map, Value};
 
 use crate::world::ComponentId;
 
-
 pub const MAGIC: &[u8; 4] = b"DPK1";
 pub const VERSION: u8 = 2;
 
@@ -167,11 +166,7 @@ impl LayoutMetaRegistry {
         }
     }
 
-    pub fn register(
-        &self,
-        component_id: ComponentId,
-        layout: LayoutMeta,
-    ) -> Result<(), String> {
+    pub fn register(&self, component_id: ComponentId, layout: LayoutMeta) -> Result<(), String> {
         let entry = RegisteredLayout {
             component_id,
             layout,
@@ -421,8 +416,12 @@ fn wire_to_json_schema(f: &FieldMeta) -> Value {
             json!({ "type": "integer" })
         }
         WireKind::F32 => json!({ "type": "number" }),
-        WireKind::Vec3 => json!({ "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }),
-        WireKind::Quat => json!({ "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }),
+        WireKind::Vec3 => {
+            json!({ "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 })
+        }
+        WireKind::Quat => {
+            json!({ "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 })
+        }
         WireKind::Indirect => json!({ "type": "string", "description": "indirect / handle" }),
         WireKind::Void => json!({}),
     };
@@ -438,4 +437,3 @@ fn wire_to_json_schema(f: &FieldMeta) -> Value {
 pub trait LayoutDescribe: 'static {
     fn layout_meta() -> LayoutMeta;
 }
-
