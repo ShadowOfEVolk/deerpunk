@@ -99,8 +99,8 @@ pub use render_profile::{
     RenderFrameProfile, SceneExtractGpuStats,
 };
 pub use renderer::{
-    FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, VramUsage,
-    HOST_UI_ENABLED,
+    FrameError, PendingSurfacePresent, PendingSurfaceTail, Renderer, ShaderSources, SurfaceTexture,
+    VramUsage, HOST_UI_ENABLED,
 };
 pub use snapshot::{
     cam_features, rgba_u8, rgba_u8_4, CameraDefinition, CameraRenderSnapshot, CullOptions,
@@ -110,6 +110,7 @@ pub use snapshot::{
 pub use text_util::{
     color_f32, push_rect, push_text_centered, push_text_centered_f32, push_text_centered_parts,
 };
+pub use ui_pass::ScreenSprite;
 
 #[cfg(test)]
 mod camera_pipeline_tests;

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
@@ -15,6 +15,7 @@ use crate::assets::{self, UiAssetSource};
 use crate::draw_list::UiGeometryBuilder;
 use crate::ffi;
 use crate::paths;
+use crate::surface;
 
 static GEOM: Mutex<Option<UiGeometryBuilder>> = Mutex::new(None);
 static START: OnceLock<Instant> = OnceLock::new();
@@ -39,6 +40,11 @@ pub fn set_content_root(path: impl Into<PathBuf>) {
         *g = Some(path.into());
     }
 }
+
+/// Serializes tests that boot the process-global RmlUi interpreter
+/// (`rmlui_init` guards on a renderer singleton). Shared with `surface` tests.
+#[cfg(test)]
+pub(crate) static RML_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Drive Lua `in_game()` (host sets when server enable flips).
 pub fn set_client_in_game(on: bool) {
@@ -73,9 +79,20 @@ pub fn drain_commands() -> Vec<String> {
     q.drain(..).collect()
 }
 
-fn with_geom<R>(f: impl FnOnce(&mut UiGeometryBuilder) -> R) -> Option<R> {
+pub(crate) fn with_geom<R>(f: impl FnOnce(&mut UiGeometryBuilder) -> R) -> Option<R> {
     let mut g = GEOM.lock().ok()?;
     g.as_mut().map(f)
+}
+
+/// Route one geometry-bridge callback by [`surface::GEOM_TARGET`]: `0` = main
+/// `GEOM`, otherwise the addressed surface's own builder.
+fn with_geom_target<R>(f: impl FnOnce(&mut UiGeometryBuilder) -> R) -> Option<R> {
+    let target = surface::GEOM_TARGET.load(Ordering::Relaxed);
+    if target == 0 {
+        with_geom(f)
+    } else {
+        surface::with_surface_geom(target, f)
+    }
 }
 
 /// Loaded RML document handle (Panorama-style: document = UI unit).
@@ -236,67 +253,89 @@ impl UiDocument {
     /// there is no `written` dedup — paths vary per op and RmlUi only dirties
     /// variables whose value actually changed.
     pub fn data_model_apply(&self, ops: &[DataModelOp]) -> Result<(), DataModelApplyError> {
-        if self.handle.is_null() {
-            return Err(DataModelApplyError::NoDocument);
-        }
-        // The C side borrows the strings only for the duration of the call.
-        // Boxes keep the NUL buffers address-stable while the Vec grows.
-        let mut strings: Vec<Box<CString>> = Vec::with_capacity(ops.len());
-        let mut raw: Vec<ffi::rmlui_data_model_op_t> = Vec::with_capacity(ops.len());
-        for (i, op) in ops.iter().enumerate() {
-            let path_c = CString::new(op.path.as_str()).map_err(|_| DataModelApplyError::Op(i))?;
-            strings.push(Box::new(path_c));
-            let path_ptr = strings.last().unwrap().as_ptr();
-            let (tag, value) = match &op.value {
-                DataModelOpValue::Bool(v) => {
-                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
-                        unsafe { std::mem::zeroed() };
-                    value.b = *v as c_int;
-                    (ffi::RMLUI_DATA_MODEL_OP_BOOL as u8, value)
-                }
-                DataModelOpValue::Number(v) => {
-                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
-                        unsafe { std::mem::zeroed() };
-                    value.num = *v;
-                    (ffi::RMLUI_DATA_MODEL_OP_NUMBER as u8, value)
-                }
-                DataModelOpValue::String(v) => {
-                    let value_c =
-                        CString::new(v.as_str()).map_err(|_| DataModelApplyError::Op(i))?;
-                    strings.push(Box::new(value_c));
-                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
-                        unsafe { std::mem::zeroed() };
-                    value.str_ = strings.last().unwrap().as_ptr();
-                    (ffi::RMLUI_DATA_MODEL_OP_STRING as u8, value)
-                }
-                DataModelOpValue::Resize(len) => {
-                    let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
-                        unsafe { std::mem::zeroed() };
-                    value.len = *len as i64;
-                    (ffi::RMLUI_DATA_MODEL_OP_RESIZE as u8, value)
-                }
-            };
-            raw.push(ffi::rmlui_data_model_op_t {
-                path: path_ptr,
-                tag,
-                _pad: [0; 7],
-                value,
-            });
-        }
+        apply_data_model_ops(self.handle, ops)
+    }
 
-        let rc =
-            unsafe { ffi::rmlui_document_data_model_apply(self.handle, raw.as_ptr(), raw.len()) };
-        // Non-empty batches (even partially failed ones) changed the model.
-        if !ops.is_empty() {
-            mark_ui_dirty();
-        }
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(DataModelApplyError::Op((-rc - 1) as usize))
+    /// Wrap a raw shim document handle (surface registry owns these).
+    pub(crate) fn from_handle(handle: ffi::rmlui_handle_t) -> Self {
+        Self {
+            handle,
+            written: RefCell::new(HashMap::new()),
         }
     }
 
+    /// Raw shim handle (surface routing applies ops through it).
+    pub(crate) fn handle(&self) -> ffi::rmlui_handle_t {
+        self.handle
+    }
+}
+
+/// Batch-write ops through a raw document handle; shared by main documents
+/// ([`UiDocument::data_model_apply`]) and surface documents. The C side
+/// borrows the strings only for the duration of the call; boxes keep the
+/// NUL buffers address-stable while the Vec grows.
+pub(crate) fn apply_data_model_ops(
+    handle: ffi::rmlui_handle_t,
+    ops: &[DataModelOp],
+) -> Result<(), DataModelApplyError> {
+    if handle.is_null() {
+        return Err(DataModelApplyError::NoDocument);
+    }
+    let mut strings: Vec<Box<CString>> = Vec::with_capacity(ops.len());
+    let mut raw: Vec<ffi::rmlui_data_model_op_t> = Vec::with_capacity(ops.len());
+    for (i, op) in ops.iter().enumerate() {
+        let path_c = CString::new(op.path.as_str()).map_err(|_| DataModelApplyError::Op(i))?;
+        strings.push(Box::new(path_c));
+        let path_ptr = strings.last().unwrap().as_ptr();
+        let (tag, value) = match &op.value {
+            DataModelOpValue::Bool(v) => {
+                let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                    unsafe { std::mem::zeroed() };
+                value.b = *v as c_int;
+                (ffi::RMLUI_DATA_MODEL_OP_BOOL as u8, value)
+            }
+            DataModelOpValue::Number(v) => {
+                let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                    unsafe { std::mem::zeroed() };
+                value.num = *v;
+                (ffi::RMLUI_DATA_MODEL_OP_NUMBER as u8, value)
+            }
+            DataModelOpValue::String(v) => {
+                let value_c = CString::new(v.as_str()).map_err(|_| DataModelApplyError::Op(i))?;
+                strings.push(Box::new(value_c));
+                let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                    unsafe { std::mem::zeroed() };
+                value.str_ = strings.last().unwrap().as_ptr();
+                (ffi::RMLUI_DATA_MODEL_OP_STRING as u8, value)
+            }
+            DataModelOpValue::Resize(len) => {
+                let mut value: ffi::rmlui_data_model_op_s__bindgen_ty_1 =
+                    unsafe { std::mem::zeroed() };
+                value.len = *len as i64;
+                (ffi::RMLUI_DATA_MODEL_OP_RESIZE as u8, value)
+            }
+        };
+        raw.push(ffi::rmlui_data_model_op_t {
+            path: path_ptr,
+            tag,
+            _pad: [0; 7],
+            value,
+        });
+    }
+
+    let rc = unsafe { ffi::rmlui_document_data_model_apply(handle, raw.as_ptr(), raw.len()) };
+    // Non-empty batches (even partially failed ones) changed the model.
+    if !ops.is_empty() {
+        mark_ui_dirty();
+    }
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(DataModelApplyError::Op((-rc - 1) as usize))
+    }
+}
+
+impl UiDocument {
     /// Post-layout component tree as text (agent tooling): depth-first, one
     /// element per line — `TAG#id.class1.class2 [x,y w×h]`, with a quoted
     /// text snippet for `#text` nodes; 2-space indent per nesting level.
@@ -343,6 +382,9 @@ impl Drop for UiDocument {
 pub struct UiRuntime {
     ctx: ffi::rmlui_handle_t,
     initialized: bool,
+    /// Last layout scale set via [`UiRuntime::set_dp_ratio`] — new surfaces
+    /// inherit it (main starts at 1.0).
+    dp_ratio: Cell<f32>,
     _assets: Box<dyn UiAssetSource>,
 }
 
@@ -385,6 +427,7 @@ impl UiRuntime {
             return Self {
                 ctx: ptr::null_mut(),
                 initialized: false,
+                dp_ratio: Cell::new(1.0),
                 _assets: assets,
             };
         }
@@ -395,6 +438,7 @@ impl UiRuntime {
             return Self {
                 ctx: ptr::null_mut(),
                 initialized: false,
+                dp_ratio: Cell::new(1.0),
                 _assets: assets,
             };
         }
@@ -407,6 +451,7 @@ impl UiRuntime {
             return Self {
                 ctx: ptr::null_mut(),
                 initialized: false,
+                dp_ratio: Cell::new(1.0),
                 _assets: assets,
             };
         }
@@ -421,6 +466,7 @@ impl UiRuntime {
         Self {
             ctx,
             initialized: true,
+            dp_ratio: Cell::new(1.0),
             _assets: assets,
         }
     }
@@ -448,6 +494,59 @@ impl UiRuntime {
         })
     }
 
+    // ── UI Surfaces: offscreen RmlUi contexts (registry in `surface`) ──
+
+    /// Create an offscreen surface: its own RmlUi context (`surface_<id>`)
+    /// and geometry builder (own mesh-id space; texture ids shared with
+    /// main; dp ratio inherited from the last [`UiRuntime::set_dp_ratio`]).
+    /// `id` must be nonzero (0 is the main UI) and unique; `w`, `h`
+    /// positive.
+    pub fn surface_create(&mut self, id: u32, w: i32, h: i32) -> Result<(), String> {
+        if !self.is_ready() {
+            return Err("ui runtime not ready".into());
+        }
+        surface::create(id, w, h, self.dp_ratio.get())
+    }
+
+    /// Destroy a surface (document closes before its context); unknown ids
+    /// are a no-op.
+    pub fn surface_destroy(&mut self, id: u32) {
+        surface::destroy(id);
+    }
+
+    /// Load a document on the surface. `path` is UI-base-relative and
+    /// resolves through the same shim base-path callback as main.
+    pub fn surface_load_document(&self, id: u32, path: &str) -> Result<(), String> {
+        surface::load_document(id, path)
+    }
+
+    /// Open a data model on the surface context (shared interpreter).
+    /// `lua_table_src` is a Lua expression evaluating to the model table
+    /// (e.g. `{ item_id = 0, x = 0 }`) or a `.lua` path (UI-base-relative)
+    /// whose chunk returns the model table. The table lands in the global
+    /// `surface_<id>_<model>`; the model opens strictly on this surface's
+    /// context, never on main.
+    pub fn surface_data_model_open(
+        &self,
+        id: u32,
+        model: &str,
+        lua_table_src: &str,
+    ) -> Result<(), String> {
+        surface::data_model_open(id, model, lua_table_src)
+    }
+
+    /// Batch-write the model named by the surface document's `data-model`
+    /// attribute (same op paths as [`UiDocument::data_model_apply`]).
+    pub fn surface_data_model_apply(&self, id: u32, ops: &[DataModelOp]) -> Result<(), String> {
+        surface::data_model_apply(id, ops)
+    }
+
+    /// Dirty-only frame from the surface's own RmlUi cycle — independent of
+    /// the main UI's fps throttling. `None` while nothing changed.
+    pub fn surface_frame(&self, id: u32) -> Option<UiFrame> {
+        surface::frame(id)
+    }
+
     pub fn resize(&self, w: u32, h: u32) {
         mark_ui_dirty();
         with_geom(|g| g.resize(w, h));
@@ -459,9 +558,15 @@ impl UiRuntime {
         }
     }
 
-    /// Layout scale: CSS `px`/`dp` become `ratio` context pixels. Context size stays in framebuffer pixels.
+    /// Layout scale: CSS `px`/`dp` become `ratio` context pixels. Context
+    /// size stays in framebuffer pixels. Remembered for surfaces created
+    /// later; call before `surface_create` on fractional-DPI screens.
     pub fn set_dp_ratio(&self, ratio: f32) {
-        if self.ctx.is_null() || !(ratio > 0.0) {
+        if !(ratio > 0.0) {
+            return;
+        }
+        self.dp_ratio.set(ratio);
+        if self.ctx.is_null() {
             return;
         }
         mark_ui_dirty();
@@ -554,11 +659,11 @@ impl UiRuntime {
     }
 }
 
-fn mark_ui_dirty() {
+pub(crate) fn mark_ui_dirty() {
     UI_FORCE.store(true, Ordering::Relaxed);
 }
 
-fn ui_elapsed_secs() -> f64 {
+pub(crate) fn ui_elapsed_secs() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
@@ -569,6 +674,8 @@ impl Drop for UiRuntime {
             self.ctx = ptr::null_mut();
         }
         if self.initialized {
+            // Surfaces own contexts/documents and must die first.
+            surface::destroy_all();
             unsafe { ffi::rmlui_shutdown() };
             self.initialized = false;
             log::info!(target: "ui", "Rml::Shutdown");
@@ -604,7 +711,25 @@ fn load_default_fonts() -> bool {
     ok
 }
 
-fn make_dummy_render_api() -> Box<ffi::rmlui_render_api_t> {
+/// Same callback shape as `UiRuntime::new`; boxes leak — process-local
+/// singletons the C side keeps pointing at until shutdown.
+#[cfg(test)]
+pub(crate) fn test_callbacks() -> Box<ffi::rmlui_callbacks_t> {
+    Box::new(ffi::rmlui_callbacks_t {
+        get_time: Some(cb_get_time),
+        log: Some(cb_log),
+        get_base_path: Some(cb_base_path),
+        scissor: None,
+        execute_command: Some(cb_execute_command),
+        client_in_game: Some(cb_client_in_game),
+        get_cvar_float: None,
+        get_cvar_string: None,
+        get_files_list: Some(cb_get_files_list),
+        load_file: None,
+    })
+}
+
+pub(crate) fn make_dummy_render_api() -> Box<ffi::rmlui_render_api_t> {
     unsafe extern "C" fn noop_set2d(_: c_int) {}
     unsafe extern "C" fn noop_i(_: c_int) {}
     unsafe extern "C" fn noop() {}
@@ -816,7 +941,7 @@ pub unsafe extern "C" fn rust_destroy_renderer(_h: *mut std::ffi::c_void) {}
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_render_set_viewport(_h: *mut std::ffi::c_void, w: c_int, h: c_int) {
-    with_geom(|r| r.resize(w as u32, h as u32));
+    with_geom_target(|r| r.resize(w as u32, h as u32));
 }
 
 #[no_mangle]
@@ -844,17 +969,17 @@ pub unsafe extern "C" fn rust_compile_geometry(
     } else {
         std::slice::from_raw_parts(indices, num_indices as usize)
     };
-    with_geom(|r| r.compile_geometry(bytes, stride, nv, idx)).unwrap_or(0)
+    with_geom_target(|r| r.compile_geometry(bytes, stride, nv, idx)).unwrap_or(0)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_release_geometry(id: u32) {
-    with_geom(|r| r.release_geometry(id));
+    with_geom_target(|r| r.release_geometry(id));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_draw_geometry(id: u32, tx: f32, ty: f32, texture: usize) {
-    with_geom(|r| r.draw_geometry(id, tx, ty, texture));
+    with_geom_target(|r| r.draw_geometry(id, tx, ty, texture));
 }
 
 #[no_mangle]
@@ -891,8 +1016,8 @@ pub unsafe extern "C" fn rust_load_texture(
                 .to_string_lossy()
                 .replace('\\', "/")
                 .contains("/textures/");
-            let id =
-                with_geom(|r| r.load_texture_rgba(rgba.into_raw(), w, h, nearest)).unwrap_or(0);
+            let id = with_geom_target(|r| r.load_texture_rgba(rgba.into_raw(), w, h, nearest))
+                .unwrap_or(0);
             id as usize
         }
         Err(e) => {
@@ -921,12 +1046,12 @@ pub unsafe extern "C" fn rust_generate_texture(
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_release_texture(_h: *mut std::ffi::c_void, tex: usize) {
-    with_geom(|r| r.release_texture(tex as u32));
+    with_geom_target(|r| r.release_texture(tex as u32));
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_scissor_enable(_h: *mut std::ffi::c_void, enable: c_int) {
-    with_geom(|r| r.set_scissor(enable != 0));
+    with_geom_target(|r| r.set_scissor(enable != 0));
 }
 
 #[no_mangle]
@@ -937,7 +1062,7 @@ pub unsafe extern "C" fn rust_scissor_region(
     w: c_int,
     h: c_int,
 ) {
-    with_geom(|r| r.set_scissor_region(x, y, w, h));
+    with_geom_target(|r| r.set_scissor_region(x, y, w, h));
 }
 
 #[no_mangle]
@@ -1044,7 +1169,7 @@ mod data_model_apply_tests {
     /// RmlUi state is process-global (`rmlui_init` guards on a renderer
     /// singleton); these tests boot full interpreter+context runs, so they
     /// must not race each other in the default parallel test harness.
-    static RML_TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// Serialization uses the crate-level [`RML_TEST_LOCK`].
 
     /// Surface RmlUi/C-side diagnostics (model lookup, op errors) in test output.
     struct StderrLogger;

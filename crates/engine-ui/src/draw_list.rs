@@ -5,8 +5,14 @@
 //! so a hover that does not change layout does not rebuild GPU meshes.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use deerpunk_engine_common::ui_draw::{UiDraw, UiFrame, UiMesh, UiTextureUpload, UiVertex};
+
+/// Process-global texture-id sequence: main and all surfaces draw from one
+/// gamelib texture table, so numbers never collide across streams. `1` is
+/// the reserved white fallback, allocation starts at `2`.
+static NEXT_TEX: AtomicU32 = AtomicU32::new(2);
 
 struct StoredMesh {
     vertices: Vec<UiVertex>,
@@ -24,7 +30,6 @@ pub struct UiGeometryBuilder {
     next_mesh: u32,
     textures: HashMap<u32, UiTextureUpload>,
     released: Vec<u32>,
-    next_tex: u32,
     white: u32,
     /// True once the white fallback texture has been delivered in a frame.
     white_shipped: bool,
@@ -60,7 +65,6 @@ impl UiGeometryBuilder {
             next_mesh: 1,
             textures,
             released: Vec::new(),
-            next_tex: 2,
             white,
             scissor: None,
             scissor_on: false,
@@ -141,8 +145,7 @@ impl UiGeometryBuilder {
     }
 
     pub fn generate_texture(&mut self, rgba: &[u8], w: i32, h: i32) -> u32 {
-        let id = self.next_tex;
-        self.next_tex += 1;
+        let id = NEXT_TEX.fetch_add(1, Ordering::Relaxed);
         let upload = UiTextureUpload {
             width: w as u32,
             height: h as u32,
@@ -161,8 +164,7 @@ impl UiGeometryBuilder {
         h: u32,
         filter_nearest: bool,
     ) -> u32 {
-        let id = self.next_tex;
-        self.next_tex += 1;
+        let id = NEXT_TEX.fetch_add(1, Ordering::Relaxed);
         let upload = UiTextureUpload {
             width: w,
             height: h,

@@ -14,6 +14,7 @@
 #include <RmlUi/Lua/Lua.h>
 #include <RmlUi/Lua/Interpreter.h>
 #include <RmlUi/Lua/IncludeLua.h>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -116,6 +117,22 @@ static int lua_eng_time(lua_State* L)
     return 1;
 }
 
+// Latest context dp ratio (see rmlui_context_set_dp_ratio). The context space
+// is framebuffer pixels while CSS `px`/`dp` lengths are scaled by this ratio,
+// so UI scripts need it to convert event mouse coordinates (context pixels)
+// to CSS lengths. Bit-cast through u32 keeps the static race-free without a
+// mutex; writers are the single UI thread.
+static std::atomic<uint32_t> g_dp_ratio_bits{0x3f800000}; // 1.0f
+
+static int lua_eng_dp_ratio(lua_State* L)
+{
+    const uint32_t bits = g_dp_ratio_bits.load(std::memory_order_relaxed);
+    float ratio = 1.0f;
+    memcpy(&ratio, &bits, sizeof(ratio));
+    lua_pushnumber(L, ratio > 0.f ? ratio : 1.0f);
+    return 1;
+}
+
 static void register_lua_commands(void)
 {
     lua_State* L = Rml::Lua::Interpreter::GetLuaState();
@@ -136,6 +153,8 @@ static void register_lua_commands(void)
     lua_setglobal(L, "eng_load_file");
     lua_pushcfunction(L, lua_eng_time);
     lua_setglobal(L, "eng_time");
+    lua_pushcfunction(L, lua_eng_dp_ratio);
+    lua_setglobal(L, "eng_dp_ratio");
 }
 
 int rmlui_init(int viewport_w, int viewport_h, const rmlui_callbacks_t* callbacks, const rmlui_render_api_t* render_api)
@@ -808,6 +827,9 @@ void rmlui_context_set_dimensions(rmlui_handle_t ctx, int w, int h)
 void rmlui_context_set_dp_ratio(rmlui_handle_t ctx, float ratio)
 {
     if (ctx && ratio > 0.f) {
+        uint32_t bits;
+        memcpy(&bits, &ratio, sizeof(bits));
+        g_dp_ratio_bits.store(bits, std::memory_order_relaxed);
         ((Rml::Context*)ctx)->SetDensityIndependentPixelRatio(ratio);
     }
 }

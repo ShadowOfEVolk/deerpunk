@@ -295,6 +295,17 @@ Rendering uses **linear HDR** internally; tonemapping runs in the post pass. Alb
 | `data_model_set_bool` / `_number` / `_string` | Bind UI model fields |
 | `data_model_apply` | Batch path writes (`rows.2.icon`) + array resize; negative return = `-(failed op index + 1)` |
 
+**UI Surfaces** (engine-ui core, `UiRuntime` methods): offscreen RmlUi
+contexts rendered into their own `UiFrame` stream for gamelib (first use —
+inventory cursor item). `surface_create(id, w, h)` / `surface_destroy(id)` /
+`surface_load_document(id, path)` / `surface_data_model_open(id, model,
+lua_src_or_.lua_path)` / `surface_data_model_apply(id, ops)` /
+`surface_frame(id) -> Option<UiFrame>`. `id` is a nonzero u32 chosen by the
+caller (0 = main UI); mesh ids are per-surface, texture ids shared with
+main; the main `dp_ratio` is inherited at creation (call `set_dp_ratio`
+first on Retina/HiDPI); `surface_frame` is dirty-only and runs on its own
+RmlUi cycle, independent of the main UI throttle.
+
 ---
 
 ## `v1:cmd` / `v1:cvar`

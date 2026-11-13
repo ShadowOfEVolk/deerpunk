@@ -141,5 +141,12 @@ impl Renderer {
         } else {
             lap_ms(ctx.lap);
         }
+
+        // Surface offscreen passes: pending surface frames render into their
+        // own RTs (screen-independent), then screen sprites draw topmost
+        // above the UI composite (cursor-item layer).
+        render_scope!("surface/render");
+        self.pass_surfaces(ctx, encoder);
+        self.pass_screen_sprites(ctx, encoder);
     }
 }

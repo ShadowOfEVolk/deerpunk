@@ -128,6 +128,9 @@ pub mod client {
 extern "C" fn host_frame_ui_trampoline(ctx: *mut std::ffi::c_void) {
     let host = unsafe { &mut *(ctx as *mut Host) };
     host.frame_ui();
+    // Sprite binds pushed by the gamelib UI build must reach the renderer
+    // before this frame's encode (same-frame draw, not one frame late).
+    host.flush_screen_sprites();
 }
 
 // ── Host ─────────────────────────────────────────────────────
@@ -869,6 +872,16 @@ impl Host {
         }
     }
 
+    /// Drain screen sprites accumulated from `v1:ui:screen_sprite` binds into
+    /// the renderer. The game-frame trampoline calls this right after the
+    /// gamelib UI build, before the frame's encode, so same-frame pushes draw.
+    #[cfg(any(feature = "client", feature = "full"))]
+    pub fn flush_screen_sprites(&mut self) {
+        if let Some(client) = self.client_engine.as_mut() {
+            client.flush_screen_sprites();
+        }
+    }
+
     /// Nuklear overlays — call from the renderer during `host_ui_begin_frame` … `host_ui_end_frame`.
     #[cfg(any(feature = "client", feature = "full"))]
     pub fn frame_ui(&mut self) {
@@ -1593,6 +1606,22 @@ impl Host {
                         .as_mut()
                         .unwrap()
                         .stamp_simorg_on_entity(ent);
+                }
+                // Jank diagnosis: simorg feet vs camera-display position
+                // (matches ohmyblock's `[mvdbg]` line; toggle `cl_move_debug 1`).
+                if self.cvar.get_usize_or("cl_move_debug", 0) != 0 {
+                    if let Some(client) = self.client_engine.as_ref() {
+                        let sim = &client.local_sim;
+                        println!(
+                            "[mvdbg-cam] dt {dt:.4} feet {:.3} {:.3} {:.3} display {:.3} {:.3} {:.3}",
+                            sim.feet.x,
+                            sim.feet.y,
+                            sim.feet.z,
+                            sim.display.x,
+                            sim.display.y,
+                            sim.display.z,
+                        );
+                    }
                 }
             }
 

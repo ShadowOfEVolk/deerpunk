@@ -560,7 +560,17 @@ pub fn begin_console(w: f32, h: f32) -> bool {
         return false;
     }
     let t = cstr("##console");
-    unsafe { host_ui_begin(ui, t.as_ptr().cast(), 0.0, 0.0, w, h, host_ui_flags_console()) != 0 }
+    unsafe {
+        host_ui_begin(
+            ui,
+            t.as_ptr().cast(),
+            0.0,
+            0.0,
+            w,
+            h,
+            host_ui_flags_console(),
+        ) != 0
+    }
 }
 
 pub fn end_window() {

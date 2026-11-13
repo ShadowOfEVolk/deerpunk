@@ -9,6 +9,7 @@ mod assets;
 mod draw_list;
 mod ffi;
 mod runtime;
+mod surface;
 
 pub use assets::{register_ui_loaders, UiAssetSource, UiDirAssets};
 pub use deerpunk_engine_common::ui_draw::{UiFrame, UiVertex};

@@ -780,6 +780,50 @@ impl crate::Host {
             c.ui_data_model_apply(document, &owned)
         })
     }
+
+    #[methoddb::bind(name = "surface_create")]
+    pub fn api_ui_surface_create(&mut self, id: u32, w: i32, h: i32) -> i32 {
+        ui_client_op(self, |c| c.ui_surface_create(id, w, h))
+    }
+
+    #[methoddb::bind(name = "surface_destroy")]
+    pub fn api_ui_surface_destroy(&mut self, id: u32) -> i32 {
+        ui_client_op(self, |c| {
+            c.ui_surface_destroy(id);
+            Ok(())
+        })
+    }
+
+    #[methoddb::bind(name = "surface_load_document")]
+    pub fn api_ui_surface_load_document(&mut self, id: u32, path: &str) -> i32 {
+        ui_client_op(self, |c| c.ui_surface_load_document(id, path))
+    }
+
+    #[methoddb::bind(name = "surface_data_model_open")]
+    pub fn api_ui_surface_data_model_open(&mut self, id: u32, model: &str, code: &str) -> i32 {
+        ui_client_op(self, |c| c.ui_surface_data_model_open(id, model, code))
+    }
+
+    #[methoddb::bind(name = "surface_data_model_apply")]
+    pub fn api_ui_surface_data_model_apply(
+        &mut self,
+        id: u32,
+        ops: *const deerpunk_engine_common::data_model_op::DataModelOp,
+        ops_len: usize,
+    ) -> i32 {
+        ui_client_op(self, |c| {
+            let owned = convert_data_model_ops(ops, ops_len)?;
+            c.ui_surface_data_model_apply(id, &owned)
+        })
+    }
+
+    #[methoddb::bind(name = "screen_sprite")]
+    pub fn api_ui_screen_sprite(&mut self, texture: u32, x: f32, y: f32, w: f32, h: f32) -> i32 {
+        ui_client_op(self, |c| {
+            c.ui_screen_sprite(texture, x, y, w, h);
+            Ok(())
+        })
+    }
 }
 
 #[cfg(not(any(feature = "client", feature = "full")))]
@@ -826,6 +870,48 @@ impl crate::Host {
         _document: &str,
         _ops: *const deerpunk_engine_common::data_model_op::DataModelOp,
         _ops_len: usize,
+    ) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "surface_create")]
+    pub fn api_ui_surface_create(&mut self, _id: u32, _w: i32, _h: i32) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "surface_destroy")]
+    pub fn api_ui_surface_destroy(&mut self, _id: u32) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "surface_load_document")]
+    pub fn api_ui_surface_load_document(&mut self, _id: u32, _path: &str) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "surface_data_model_open")]
+    pub fn api_ui_surface_data_model_open(&mut self, _id: u32, _model: &str, _code: &str) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "surface_data_model_apply")]
+    pub fn api_ui_surface_data_model_apply(
+        &mut self,
+        _id: u32,
+        _ops: *const deerpunk_engine_common::data_model_op::DataModelOp,
+        _ops_len: usize,
+    ) -> i32 {
+        -1
+    }
+
+    #[methoddb::bind(name = "screen_sprite")]
+    pub fn api_ui_screen_sprite(
+        &mut self,
+        _texture: u32,
+        _x: f32,
+        _y: f32,
+        _w: f32,
+        _h: f32,
     ) -> i32 {
         -1
     }

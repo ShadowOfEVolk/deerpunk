@@ -386,6 +386,19 @@ pub struct SharedTexture {
     pub height: u32,
 }
 
+/// Rendered surface texture: the offscreen RT of one UI surface (`surface_<id>`)
+/// plus its sampling bind group. Keyed by surface id in
+/// [`Renderer::surface_textures`]; lives until the surface is destroyed or
+/// resized, and its content persists between frames (redrawn only when a new
+/// surface frame arrives).
+pub struct SurfaceTexture {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub bind_group: wgpu::BindGroup,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub struct SharedTexturePair {
     pub buffers: [SharedTexture; 2],
     pub read_idx: usize,
@@ -460,6 +473,15 @@ pub struct Renderer {
     pending_ui: Option<deerpunk_engine_common::ui_draw::UiFrame>,
     /// Upload `pending_ui` into GPU buffers on the next UI pass. Draw still runs after that.
     ui_upload: bool,
+
+    /// Pending surface frames: surface id → delta-merged `UiFrame`.
+    pending_surfaces: HashMap<u32, deerpunk_engine_common::ui_draw::UiFrame>,
+    /// Per-surface upload flag consumed by the surface pass (mirrors `ui_upload`).
+    surface_upload: HashMap<u32, bool>,
+    /// Rendered surface textures keyed by surface id. Populated by the
+    /// surface pass; sampled by the screen-sprite pass and handed to the
+    /// gamelib as texture handles ([`Renderer::surface_texture`]).
+    surface_textures: HashMap<u32, SurfaceTexture>,
 
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     pipeline_layout: wgpu::PipelineLayout,
@@ -1433,6 +1455,9 @@ impl Renderer {
             ui_pass,
             pending_ui: None,
             ui_upload: false,
+            pending_surfaces: HashMap::new(),
+            surface_upload: HashMap::new(),
+            surface_textures: HashMap::new(),
             pipelines: HashMap::new(),
             pipeline_layout,
             tex_bg_layout,
@@ -3050,6 +3075,60 @@ impl Renderer {
                 self.ui_upload = false;
             }
         }
+    }
+
+    /// Queue a surface frame to be rendered into its offscreen RT
+    /// (`surface_<id>`) on the next frame. `None` retires the surface: its
+    /// pending frame, RT, and GPU caches are freed.
+    ///
+    /// Delta folding mirrors [`Self::set_ui_frame`]: while the previous frame
+    /// has not been consumed by the surface pass, its resource deltas are
+    /// kept, so a fast producer never orphans draws referencing
+    /// never-uploaded meshes.
+    pub fn set_surface_frame(
+        &mut self,
+        id: u32,
+        frame: Option<deerpunk_engine_common::ui_draw::UiFrame>,
+    ) {
+        match frame {
+            Some(next) => {
+                let consumed = !self.surface_upload.get(&id).copied().unwrap_or(true);
+                match self.pending_surfaces.get_mut(&id) {
+                    // `surface_upload[id] == false` means the surface pass
+                    // consumed the previous frame: its entries are already in
+                    // the per-surface GPU caches, so `absorb_delta` retires
+                    // them and the next upload replays only this frame's
+                    // actual delta.
+                    Some(prev) => prev.absorb_delta(next, consumed),
+                    None => {
+                        self.pending_surfaces.insert(id, next);
+                    }
+                }
+                self.surface_upload.insert(id, true);
+            }
+            None => self.destroy_surface(id),
+        }
+    }
+
+    /// Frees the surface's pending frame, RT, and GPU caches.
+    pub fn destroy_surface(&mut self, id: u32) {
+        self.pending_surfaces.remove(&id);
+        self.surface_upload.remove(&id);
+        self.surface_textures.remove(&id);
+        self.ui_pass.release_surface(id);
+    }
+
+    /// Rendered surface texture by handle (surface id). `None` until the
+    /// surface's first frame has been rendered into its RT.
+    pub fn surface_texture(&self, id: u32) -> Option<&SurfaceTexture> {
+        self.surface_textures.get(&id)
+    }
+
+    /// Replaces the screen-sprite list drawn topmost after the UI composite.
+    /// Coordinates are framebuffer pixels, origin top-left; `texture` is a
+    /// handle from [`Renderer::surface_texture`].
+    pub fn set_screen_sprites(&mut self, sprites: Vec<crate::ui_pass::ScreenSprite>) {
+        self.ui_pass.set_screen_sprites(sprites);
     }
 
     fn draw_batched(

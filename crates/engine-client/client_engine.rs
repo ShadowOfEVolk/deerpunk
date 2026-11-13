@@ -15,6 +15,7 @@ use deerpunk_engine_renderer::material_store::MaterialStore;
 use deerpunk_engine_renderer::renderer::{Renderer, ShaderSources};
 use deerpunk_engine_renderer::shader_registry::ShaderRegistry;
 use deerpunk_engine_renderer::snapshot::{RenderScene, RenderSnapshot, RenderTarget};
+use deerpunk_engine_renderer::ScreenSprite;
 
 use crate::camera_compose::pack_surface_camera;
 
@@ -90,6 +91,11 @@ pub struct ClientEngine {
     ui_has_frame: bool,
     draw_ui: bool,
     ui_latch: UiLatch,
+    /// Offscreen surface ids created via `v1:ui` binds — the renderer pump list.
+    ui_surfaces: Vec<u32>,
+    /// Screen sprites pushed by `v1:ui:screen_sprite` this frame; drained by
+    /// [`ClientEngine::flush_screen_sprites`].
+    ui_screen_sprites: Vec<ScreenSprite>,
     /// Plugged audio backend (`None` → disabled).
     audio: Option<Box<dyn AudioBackend>>,
     /// [`Host::resources`], set in [`set_audio_backend`]. Client tick thread only.
@@ -207,6 +213,8 @@ impl ClientEngine {
             ui_has_frame: false,
             draw_ui: true,
             ui_latch: UiLatch::default(),
+            ui_surfaces: Vec::new(),
+            ui_screen_sprites: Vec::new(),
             audio: None,
             audio_assets: std::ptr::null(),
             audio_started: HashSet::new(),
@@ -1049,6 +1057,10 @@ impl ClientEngine {
 
     /// Init RmlUi from `{ui_root}` (usually `{gamedir}/ui`). Widgets via [`UiController`].
     pub fn init_ui(&mut self, ui_root: impl Into<PathBuf>) {
+        // Re-init: the old runtime's `Drop` tears the registry down; mirror it
+        // on the renderer side and forget tracked ids/sprites.
+        self.ui.take();
+        self.purge_ui_surfaces();
         let ui_root = ui_root.into();
         log::info!("[client] init_ui from {}", ui_root.display());
         let (w, h) = self.app.framebuffer_size();
@@ -1072,6 +1084,7 @@ impl ClientEngine {
             drop(ui);
             log::info!("[client] RmlUi shutdown OK");
         }
+        self.purge_ui_surfaces();
     }
 
     pub fn init_extractor(&mut self) {
@@ -1610,6 +1623,112 @@ impl ClientEngine {
         self.ui_controller.data_model_apply(document, ops)
     }
 
+    // ── Offscreen UI surfaces + screen sprites (`v1:ui` gamelib API) ──
+
+    /// Gamelib `v1:ui:surface_create`: offscreen RmlUi context + geometry
+    /// builder; tracked so [`Self::pump_ui_surfaces`] streams its frames.
+    pub fn ui_surface_create(&mut self, id: u32, w: i32, h: i32) -> Result<(), String> {
+        let Some(ui) = self.ui.as_mut() else {
+            return Err("ui runtime not ready".into());
+        };
+        ui.surface_create(id, w, h)?;
+        if !self.ui_surfaces.contains(&id) {
+            self.ui_surfaces.push(id);
+        }
+        Ok(())
+    }
+
+    /// Gamelib `v1:ui:surface_destroy`: registry close + renderer-side
+    /// teardown (RT, caches) so `surface_texture(id)` stops resolving.
+    pub fn ui_surface_destroy(&mut self, id: u32) {
+        if let Some(ui) = self.ui.as_mut() {
+            ui.surface_destroy(id);
+        }
+        self.ui_surfaces.retain(|&x| x != id);
+        self.renderer.destroy_surface(id);
+    }
+
+    /// Gamelib `v1:ui:surface_load_document`. `path` is UI-base-relative.
+    pub fn ui_surface_load_document(&mut self, id: u32, path: &str) -> Result<(), String> {
+        let Some(ui) = self.ui.as_ref() else {
+            return Err("ui runtime not ready".into());
+        };
+        ui.surface_load_document(id, path)
+    }
+
+    /// Gamelib `v1:ui:surface_data_model_open`: opens `model` on the surface
+    /// context. `code` is a Lua expression evaluating to the model table, or
+    /// a `.lua` path (UI-base-relative) whose chunk returns it.
+    pub fn ui_surface_data_model_open(
+        &mut self,
+        id: u32,
+        model: &str,
+        code: &str,
+    ) -> Result<(), String> {
+        let Some(ui) = self.ui.as_ref() else {
+            return Err("ui runtime not ready".into());
+        };
+        ui.surface_data_model_open(id, model, code)
+    }
+
+    /// Gamelib `v1:ui:surface_data_model_apply`: batch-write the model named
+    /// by the surface document's `data-model` attribute.
+    pub fn ui_surface_data_model_apply(
+        &mut self,
+        id: u32,
+        ops: &[deerpunk_ui::DataModelOp],
+    ) -> Result<(), String> {
+        let Some(ui) = self.ui.as_ref() else {
+            return Err("ui runtime not ready".into());
+        };
+        ui.surface_data_model_apply(id, ops)
+    }
+
+    /// Gamelib `v1:ui:screen_sprite`: queue one screen-space sprite
+    /// (framebuffer px, top-left origin; `texture` is a surface id) for this
+    /// frame. Re-push every frame — the list is drained on each flush.
+    pub fn ui_screen_sprite(&mut self, texture: u32, x: f32, y: f32, w: f32, h: f32) {
+        self.ui_screen_sprites.push(ScreenSprite {
+            texture,
+            x,
+            y,
+            w,
+            h,
+        });
+    }
+
+    /// Drain the frame's accumulated screen sprites into the renderer
+    /// (replaces its list; the sprite pass consumes + clears after drawing).
+    /// Runs every render frame — outside the `r_ui_fps` throttle — and again
+    /// right after the gamelib UI build so same-frame pushes are drawn.
+    pub fn flush_screen_sprites(&mut self) {
+        let sprites = std::mem::take(&mut self.ui_screen_sprites);
+        self.renderer.set_screen_sprites(sprites);
+    }
+
+    /// Pump offscreen surfaces: dirty-only frames from the registry into the
+    /// renderer. Every render frame — [`UiRuntime::surface_frame`] has its
+    /// own RmlUi update-delay throttle, so idle surfaces cost nothing.
+    fn pump_ui_surfaces(&mut self) {
+        let Some(ui) = self.ui.as_ref() else {
+            return;
+        };
+        for &id in &self.ui_surfaces {
+            if let Some(frame) = ui.surface_frame(id) {
+                self.renderer.set_surface_frame(id, Some(frame));
+            }
+        }
+    }
+
+    /// Renderer-side teardown for tracked surfaces (the registry itself is
+    /// torn down by `UiRuntime`'s `Drop` → `surface::destroy_all`).
+    fn purge_ui_surfaces(&mut self) {
+        for id in self.ui_surfaces.drain(..) {
+            self.renderer.destroy_surface(id);
+        }
+        self.ui_screen_sprites.clear();
+    }
+
     pub fn set_ui_fps(&mut self, fps: i32) {
         self.ui_fps = fps;
     }
@@ -1817,6 +1936,9 @@ impl ClientEngine {
                 log::warn!("[client] ui runtime is None — init_ui failed?");
             }
         }
+        // Offscreen surfaces: dirty-only frames on their own RmlUi cycle —
+        // pumped every render frame, independent of the `r_ui_fps` throttle.
+        self.pump_ui_surfaces();
         self.input.end_frame_input();
         deerpunk_engine_renderer::gamelib_profile::zone_end();
         let ui_ms = ui_start.elapsed().as_secs_f32() * 1000.0;
@@ -1871,6 +1993,11 @@ impl ClientEngine {
 
         self.renderer
             .note_prep_breakdown(ui_ms, build_snap_ms, audio_ms);
+
+        // Screen sprites go out every render frame (fresh position, never
+        // throttled by `r_ui_fps`); binds pushed later this frame — during the
+        // gamelib UI build — are drained by the host trampoline right after it.
+        self.flush_screen_sprites();
 
         let mut gather_ms = 0.0f32;
         let _ = prep_start;
