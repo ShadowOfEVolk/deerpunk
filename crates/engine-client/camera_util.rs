@@ -1,7 +1,7 @@
 //! Generic camera helpers (no FPS-specific tags). Games pick cameras via [`CameraComponent::layer_mask`] + hierarchy.
 
 use deerpunk_engine_common::components::render_layer::{render_layer_visible, RENDER_LAYER_WORLD};
-use deerpunk_engine_common::components::{CameraComponent, ParentComponent, TransformComponent};
+use deerpunk_engine_common::components::{CameraComponent, TransformComponent};
 use deerpunk_engine_common::physics::CHAR_EYE_HEIGHT;
 use deerpunk_engine_common::transform_hierarchy::{camera_world_pose, entity_in_subtree};
 use deerpunk_engine_common::world::World;
@@ -13,8 +13,7 @@ pub fn camera_entity_in_view(world: &World, view_root: Option<u64>, cam_entity: 
     let Some(root) = view_root else {
         return true;
     };
-    let parent_id = world.component_init::<ParentComponent>();
-    entity_in_subtree(world, root, cam_entity, parent_id)
+    entity_in_subtree(world, root, cam_entity)
 }
 
 /// Primary world-layer camera under `parent` (lowest entity id wins).
@@ -23,14 +22,10 @@ pub fn find_child_camera_with_layer(
     parent: u64,
     camera_layer_mask: u32,
 ) -> Option<u64> {
-    let parent_id = world.component_init::<ParentComponent>();
     let cid = world.component_init::<CameraComponent>();
     let mut keep = None;
     world.for_each_with_component(cid, |entity| {
-        let Some(link) = world.get::<ParentComponent>(entity, parent_id) else {
-            return;
-        };
-        if link.parent != parent {
+        if world.get_parent(entity) != Some(parent) {
             return;
         }
         let Some(cam) = world.get::<CameraComponent>(entity, cid) else {
@@ -47,10 +42,9 @@ pub fn find_child_camera_with_layer(
 pub fn camera_world_at_entity(world: &World, entity: u64) -> Option<(Vec3, Quat)> {
     let tid = world.component_init::<TransformComponent>();
     let cid = world.component_init::<CameraComponent>();
-    let parent_id = world.component_init::<ParentComponent>();
     let local = world.get::<TransformComponent>(entity, tid)?;
     let _cam = world.get::<CameraComponent>(entity, cid)?;
-    Some(camera_world_pose(world, entity, &local, parent_id))
+    Some(camera_world_pose(world, entity, &local))
 }
 
 pub fn read_local_view_stamp(world: &World, pawn: u64) -> Option<LocalViewStamp> {
@@ -79,13 +73,12 @@ pub fn ensure_child_world_camera(world: &World, parent: u64, eye_height: f32) ->
     }
     let tid = world.component_init::<TransformComponent>();
     let cid = world.component_init::<CameraComponent>();
-    let parent_id = world.component_init::<ParentComponent>();
     let eye = if eye_height > 0.0 {
         eye_height
     } else {
         CHAR_EYE_HEIGHT
     };
-    let child = world.spawn();
+    let child = world.spawn_child(parent);
     world.set(
         child,
         tid,
@@ -96,7 +89,6 @@ pub fn ensure_child_world_camera(world: &World, parent: u64, eye_height: f32) ->
         },
     );
     world.set(child, cid, CameraComponent::default());
-    world.set(child, parent_id, ParentComponent { parent });
     child
 }
 
@@ -109,7 +101,6 @@ mod tests {
 
     fn spawn_pawn_with_cameras(world: &World) -> (u64, u64, u64) {
         let tid = world.component_init::<TransformComponent>();
-        let pid = world.component_init::<ParentComponent>();
         let cid = world.component_init::<CameraComponent>();
 
         let pawn = world.spawn();
@@ -123,7 +114,7 @@ mod tests {
             },
         );
 
-        let world_cam = world.spawn();
+        let world_cam = world.spawn_child(pawn);
         world.set(
             world_cam,
             tid,
@@ -133,7 +124,6 @@ mod tests {
                 scale: Vec3::ONE,
             },
         );
-        world.set(world_cam, pid, ParentComponent { parent: pawn });
         world.set(
             world_cam,
             cid,
@@ -144,7 +134,7 @@ mod tests {
             },
         );
 
-        let vm_cam = world.spawn();
+        let vm_cam = world.spawn_child(world_cam);
         world.set(
             vm_cam,
             tid,
@@ -154,7 +144,6 @@ mod tests {
                 scale: Vec3::ONE,
             },
         );
-        world.set(vm_cam, pid, ParentComponent { parent: world_cam });
         world.set(
             vm_cam,
             cid,

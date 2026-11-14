@@ -562,7 +562,6 @@ impl ClientEngine {
     /// cameras (local offset, not world pose).
     pub fn particle_camera_pos(&mut self, view_entity: Option<u64>) -> glam::Vec3 {
         use deerpunk_engine_common::components::CameraComponent;
-        use deerpunk_engine_common::components::ParentComponent;
         let t_id = self.world.component_init::<TransformComponent>();
         let c_id = self.world.component_init::<CameraComponent>();
         let wt_id = self
@@ -599,12 +598,10 @@ impl ClientEngine {
                         .unwrap_or_else(|| {
                             // Same fallback as the extractor: parent-chain
                             // world pose, not the raw local transform.
-                            let parent_id = self.world.component_init::<ParentComponent>();
                             deerpunk_engine_common::transform_hierarchy::camera_world_pose(
                                 &self.world,
                                 ent,
                                 &ts[i],
-                                parent_id,
                             )
                             .0
                         });

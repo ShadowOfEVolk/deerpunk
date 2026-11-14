@@ -65,6 +65,9 @@ pub struct WorldApiResolved {
     ) -> u64,
     system_set_interval_fn: extern "C" fn(*mut u8, u64, f32) -> i32,
     system_set_stage_fn: extern "C" fn(*mut u8, u64, *const u8, usize) -> i32,
+    set_entity_name_fn: extern "C" fn(*mut u8, u64, *const u8, usize),
+    spawn_child_fn: extern "C" fn(*mut u8, u64) -> u64,
+    set_parent_fn: extern "C" fn(*mut u8, u64, u64, bool),
 }
 
 unsafe impl Send for WorldApiResolved {}
@@ -109,6 +112,11 @@ impl WorldApiResolved {
             system_set_stage_fn: unsafe {
                 crate::fn_from_erased(resolve(r, "v1:world:system_set_stage"))
             },
+            set_entity_name_fn: unsafe {
+                crate::fn_from_erased(resolve(r, "v1:world:set_entity_name"))
+            },
+            spawn_child_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:spawn_child")) },
+            set_parent_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:world:set_parent")) },
         }
     }
 
@@ -289,6 +297,26 @@ impl WorldApiResolved {
             user_data,
             interval_secs,
         )
+    }
+
+    /// Set the entity display name: `EntityName` component + native flecs name
+    /// (`ecs_set_name`), so inspector row name resolution sees it immediately.
+    pub fn set_entity_name(&self, entity: EntityId, name: &str) {
+        (self.set_entity_name_fn)(self.ctx, entity, name.as_ptr(), name.len());
+    }
+
+    /// Spawn an entity as a child of `parent` (native flecs `(ChildOf, parent)` pair).
+    pub fn spawn_child(&self, parent: EntityId) -> EntityId {
+        (self.spawn_child_fn)(self.ctx, parent)
+    }
+
+    /// Set or replace the native `(ChildOf, parent)` pair; `None` detaches.
+    pub fn set_parent(&self, child: EntityId, parent: Option<EntityId>) {
+        let (parent, has_parent) = match parent {
+            Some(p) => (p, true),
+            None => (0, false),
+        };
+        (self.set_parent_fn)(self.ctx, child, parent, has_parent);
     }
 
     pub fn system_set_interval(&self, system_id: u64, interval_secs: f32) {

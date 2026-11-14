@@ -79,6 +79,10 @@ pub struct ServerThreadCtx {
     /// Set once the gamelib started a map; gates inspector publishes so the
     /// no-world case defers/errors instead of replying with empty snapshots.
     pub inspect_world_ready: bool,
+    /// Delta history for `serverentities` / `players` (sim-thread owned;
+    /// diffs are computed here so no per-revision state crosses threads).
+    pub entities_delta: crate::inspector::CollectionDelta,
+    pub players_delta: crate::inspector::CollectionDelta,
     /// Start-map request that arrived before the gamelib loaded.
     pub pending_start_map: Option<(String, i64)>,
     /// Overload-warning throttle state (5s, shared by both warning kinds).
@@ -633,14 +637,16 @@ impl ServerThreadCtx {
 
 impl ServerThreadCtx {
     /// Build server-side inspector snapshots the main-thread poll asked for.
-    /// Reply JSON shapes are identical to the old synchronous server path.
+    /// Reply JSON shapes are identical to the old synchronous server path,
+    /// plus `revision`/`full`/`added`/`updated`/`removed` for delta-capable
+    /// collections and `parent`/`rev` on entity rows.
     fn pump_server_inspector(&mut self) {
         if !self.inspect_world_ready {
             // No map yet: never publish, so deferred requests hit the 2s cap
             // with an error instead of instant empty snapshots.
             return;
         }
-        if self.inspect_share.take_entities_request() {
+        if let Some(since) = self.inspect_share.take_entities_request() {
             let world = &self.engine.world;
             let time = self.engine.sim_time_secs as f32;
             let entities: Vec<serde_json::Value> = world
@@ -649,7 +655,12 @@ impl ServerThreadCtx {
                 .map(|e| {
                     let mut row = serde_json::json!({
                         "index": e.id,
-                        "name": e.name,
+                        "name": crate::inspector::entity_display_name(world, e.id, &e.name),
+                        "parent": world
+                            .get_parent(e.id)
+                            .map(|p| serde_json::json!(p))
+                            .unwrap_or(serde_json::Value::Null),
+                        "rev": world.entity_rev(e.id),
                     });
                     let obj = row.as_object_mut().expect("entity row object");
                     if let Some(prefab_id) = crate::inspector::entity_prefab_id(world, e.id) {
@@ -666,10 +677,27 @@ impl ServerThreadCtx {
                 "count": entities.len(),
                 "entities": entities,
             });
+            self.entities_delta.publish(&value, "entities");
+            // Diffed reply for this request's `since` (full when since == 0
+            // or the ring no longer holds it, empty delta when unchanged).
+            let reply = match self.entities_delta.list_reply(since, &value, "entities") {
+                crate::inspector::ListReply::Full(v)
+                | crate::inspector::ListReply::Unchanged(v)
+                | crate::inspector::ListReply::Delta(v) => v,
+            };
             self.inspect_share.publish_entities(value);
+            self.inspect_share.publish_entities_list(reply);
         }
-        if self.inspect_share.take_players_request() {
-            self.inspect_share.publish_players(self.players_value());
+        if let Some(since) = self.inspect_share.take_players_request() {
+            let value = self.players_value();
+            self.players_delta.publish(&value, "players");
+            let reply = match self.players_delta.list_reply(since, &value, "players") {
+                crate::inspector::ListReply::Full(v)
+                | crate::inspector::ListReply::Unchanged(v)
+                | crate::inspector::ListReply::Delta(v) => v,
+            };
+            self.inspect_share.publish_players(value);
+            self.inspect_share.publish_players_list(reply);
         }
         if let Some((seq, entity)) = self.inspect_share.take_pending_detail() {
             let world = &self.engine.world;
@@ -691,6 +719,7 @@ impl ServerThreadCtx {
                     serde_json::json!({
                         "index": ent.id,
                         "name": ent.name,
+                        "rev": world.entity_rev(ent.id),
                         "components": components,
                     })
                 }
@@ -722,6 +751,15 @@ impl ServerThreadCtx {
                     "local": p.local,
                     "entity": p.entity,
                     "netId": net_id,
+                    "parent": p
+                        .entity
+                        .and_then(|e| self.engine.world.get_parent(e))
+                        .map(|parent| json!(parent))
+                        .unwrap_or(serde_json::Value::Null),
+                    "rev": p
+                        .entity
+                        .map(|e| self.engine.world.entity_rev(e))
+                        .unwrap_or(0),
                     "addr": remote_addrs.get(&p.slot).cloned().unwrap_or_else(|| {
                         if p.local { "local".into() } else { "?".into() }
                     }),
@@ -895,6 +933,18 @@ impl ServerThreadCtx {
         self.engine.world.spawn()
     }
 
+    #[methoddb::bind(name = "spawn_child")]
+    pub fn api_world_spawn_child(&mut self, parent: u64) -> u64 {
+        self.engine.world.spawn_child(parent)
+    }
+
+    #[methoddb::bind(name = "set_parent")]
+    pub fn api_world_set_parent(&mut self, child: u64, parent: u64, has_parent: bool) {
+        self.engine
+            .world
+            .set_parent(child, if has_parent { Some(parent) } else { None });
+    }
+
     #[methoddb::bind(name = "has")]
     pub fn api_world_has(&self, entity: u64, comp: u64) -> bool {
         self.engine.world.has(entity, comp)
@@ -918,6 +968,15 @@ impl ServerThreadCtx {
     #[methoddb::bind(name = "clear")]
     pub fn api_world_clear(&mut self) {
         self.clear_server_world();
+    }
+
+    /// Set the entity display name: `EntityName` component + native flecs name.
+    #[methoddb::bind(name = "set_entity_name")]
+    pub fn api_world_set_entity_name(&mut self, entity: u64, name: &str) {
+        use deerpunk_engine_common::components::EntityName;
+        let id = self.engine.world.component_init::<EntityName>();
+        self.engine.world.set(entity, id, EntityName::new(name));
+        self.engine.world.set_entity_name(entity, name);
     }
 
     #[methoddb::bind(name = "free_value")]
@@ -1628,6 +1687,14 @@ impl ServerThreadCtx {
 
     #[methoddb::bind(name = "remove")]
     pub fn api_client_world_remove(&mut self, _entity: u64, _comp: u64) {}
+
+    #[methoddb::bind(name = "get_parent")]
+    pub fn api_client_world_get_parent(&self, _entity: u64) -> u64 {
+        0
+    }
+
+    #[methoddb::bind(name = "set_parent")]
+    pub fn api_client_world_set_parent(&mut self, _entity: u64, _parent: u64, _has_parent: bool) {}
 
     /// "Both" component registration lands on the server world here.
     #[methoddb::bind(name = "component_register")]

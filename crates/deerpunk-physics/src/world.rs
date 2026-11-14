@@ -32,7 +32,10 @@ impl PhysicsWorld {
         // Оптимизация: меньше итераций solver'а.
         inner.integration_parameters.num_solver_iterations = 2;
         inner.integration_parameters.num_internal_pgs_iterations = 1;
-        inner.integration_parameters.max_ccd_substeps = 0;
+        // Soft-CCD substeps: 0 disables CCD entirely, which lets fast small
+        // bodies (falling item drops) tunnel through the thin voxel surface
+        // shell. Bodies must also opt in via `RigidBodyBuilder::ccd_enabled`.
+        inner.integration_parameters.max_ccd_substeps = 4;
 
         Self {
             inner,

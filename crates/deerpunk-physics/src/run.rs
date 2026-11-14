@@ -3,7 +3,7 @@ use super::PhysicsWorld;
 // Фаза 1: Копируем позицию из Transform для всех тел с RigidBodyHandle.
 //pub fn physics_sync_in(physics: &mut PhysicsWorld, world: &FlecsWorld) {
 // let transform_id = world
-//     .resolve_component("Transform")
+//     .resolve_component("TransformComponent")
 //     .expect("Transform not registered");
 // let rb_id = world
 //     .resolve_component("RigidBodyHandle")
@@ -46,7 +46,7 @@ pub fn physics_step(physics: &mut PhysicsWorld, dt: f32) -> super::world::Rapier
 
 // Фаза 3: Копируем позиции и ориентацию из rapier-тел обратно в Transform.
 //pub fn physics_sync_out(physics: &PhysicsWorld, world: &FlecsWorld) {
-// let transform_id = world.resolve_component("Transform").expect("Transform not registered");
+// let transform_id = world.resolve_component("TransformComponent").expect("Transform not registered");
 // let rb_id = world.resolve_component("RigidBodyHandle").expect("RigidBodyHandle not registered");
 
 // let mut updates: Vec<(u64, Vec3, Quat)> = Vec::new();

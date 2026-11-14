@@ -127,16 +127,8 @@ impl ServerEngine {
             self.world.simulate(delta_time);
         }
         {
-            let _g = profile::Scope::new("physics.prepare");
-            self.physics.prepare(&self.world, delta_time);
-        }
-        {
-            let _g = profile::Scope::new("physics.sim.step");
-            self.physics.step(delta_time);
-        }
-        {
-            let _g = profile::Scope::new("physics.writeback");
-            self.physics.writeback(&self.world);
+            let _g = profile::Scope::new("physics.advance");
+            self.physics.advance(&self.world, delta_time);
         }
         Ok(())
     }

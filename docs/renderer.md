@@ -47,7 +47,7 @@ flowchart TB
 **Where:** `crates/engine-client/render_extractor.rs`  
 **When:** Each frame before render, from `ClientEngine::extract_scene_view`.
 
-1. **`sync_world_transforms`** — [`TransformComponent`] + [`ParentComponent`] → [`WorldTransformComponent`] (hierarchy is **not** render-specific; extract only reads world pose).
+1. **`sync_world_transforms`** — [`TransformComponent`] + the native flecs `(ChildOf, _)` parent chain → [`WorldTransformComponent`] (hierarchy is **not** render-specific; extract only reads world pose).
 2. Extractor runs **prepared ECS queries** (cameras, `Mesh3D` + `DrawMaterial`, skinned meshes, terrain splats, lights). It outputs:
 
 - **`RenderScene`** — cameras + **`SceneGeometry`** (all draw lists, sky, lights, viewmodel pass).

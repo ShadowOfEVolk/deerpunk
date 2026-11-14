@@ -27,7 +27,6 @@ pub struct RenderExtractor {
     q_terrain_splat: QueryId,
     q_lights: QueryId,
     q_skinned: QueryId,
-    parent_id: ComponentId,
     mesh3d_id: ComponentId,
     skinned_id: ComponentId,
     world_transform_id: ComponentId,
@@ -40,8 +39,6 @@ impl RenderExtractor {
     pub fn new(world: &mut World) -> Self {
         let _ = world.component_init::<TransformComponent>();
         let _ = world.component_init::<CameraComponent>();
-        let parent_id =
-            world.component_init::<deerpunk_engine_common::components::ParentComponent>();
         let mesh3d_id = world.component_init::<Mesh3D>();
         let _ = world.component_init::<DrawMaterial>();
         let skinned_id = world.component_init::<SkinnedMesh3D>();
@@ -50,8 +47,8 @@ impl RenderExtractor {
         let world_transform_id =
             world.component_init::<deerpunk_engine_common::components::WorldTransformComponent>();
         let _ = world.component_init::<MeshDrawHidden>();
-        let q_world_sync_roots = world.query_prepare("TransformComponent, !ParentComponent");
-        let q_world_sync_parented = world.query_prepare("TransformComponent, ParentComponent");
+        let q_world_sync_roots = world.query_prepare("TransformComponent, !(ChildOf, *)");
+        let q_world_sync_parented = world.query_prepare("TransformComponent, (ChildOf, *)");
         Self {
             q_cameras: world.query_prepare("TransformComponent, CameraComponent"),
             q_draw_materials: world
@@ -62,7 +59,6 @@ impl RenderExtractor {
             q_skinned: world.query_prepare(
                 "WorldTransformComponent, SkinnedMesh3D, DrawMaterial, !MeshDrawHidden",
             ),
-            parent_id,
             mesh3d_id,
             skinned_id,
             world_transform_id,
@@ -291,7 +287,7 @@ impl RenderExtractor {
                 let (world_pos, world_rot) = world
                     .get::<WorldTransformComponent>(ent, self.world_transform_id)
                     .map(|w| (w.position, w.rotation))
-                    .unwrap_or_else(|| camera_world_pose(world, ent, &t, self.parent_id));
+                    .unwrap_or_else(|| camera_world_pose(world, ent, &t));
                 scene.push_camera(CameraDefinition {
                     position: world_pos.to_array(),
                     rotation: world_rot,

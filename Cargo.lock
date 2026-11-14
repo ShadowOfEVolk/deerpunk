@@ -806,6 +806,7 @@ dependencies = [
  "deerpunk-engine-network",
  "deerpunk-engine-resource",
  "deerpunk-engine-world",
+ "deerpunk-physics",
  "fern",
  "glam 0.33.3",
  "handlebars",
@@ -951,6 +952,17 @@ name = "deerpunk-inspector-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "deerpunk-physics"
+version = "0.1.0"
+dependencies = [
+ "deerpunk-engine-world",
+ "glam 0.33.3",
+ "log",
+ "rapier3d",
  "serde_json",
 ]
 

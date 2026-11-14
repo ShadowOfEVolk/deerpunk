@@ -26,6 +26,9 @@ pub struct ServerInspectShare {
     /// cost one atomic load each.
     entities_request: AtomicBool,
     players_request: AtomicBool,
+    /// `since` revision carried by the pending list request (0 = full).
+    entities_since: AtomicU64,
+    players_since: AtomicU64,
     /// Single in-flight detail request: (seq, entity id).
     pending_detail: Mutex<Option<(u64, u64)>>,
     next_seq: AtomicU64,
@@ -34,6 +37,10 @@ pub struct ServerInspectShare {
     gen: AtomicU64,
     entities: Mutex<Option<Snapshot>>,
     players: Mutex<Option<Snapshot>>,
+    /// Final `{col}.list` reply payloads (already diffed for the request's
+    /// `since` on the sim thread), keyed like the snapshots above.
+    entities_list: Mutex<Option<Snapshot>>,
+    players_list: Mutex<Option<Snapshot>>,
     /// Completed detail payloads keyed by request seq (bounded by single
     /// in-flight request).
     details: Mutex<HashMap<u64, Value>>,
@@ -46,12 +53,17 @@ impl ServerInspectShare {
 
     // ── main-thread poll side ──
 
-    pub fn request_entities(&self) {
+    /// Ask for the entity rows snapshot; `since` is the request's revision
+    /// (0 = full) and is diffed on the sim thread.
+    pub fn request_entities(&self, since: u64) {
         self.entities_request.store(true, Ordering::Relaxed);
+        self.entities_since.store(since, Ordering::Relaxed);
     }
 
-    pub fn request_players(&self) {
+    /// Same as [`Self::request_entities`] for the players collection.
+    pub fn request_players(&self, since: u64) {
         self.players_request.store(true, Ordering::Relaxed);
+        self.players_since.store(since, Ordering::Relaxed);
     }
 
     /// Ask the sim thread for a single entity's component detail.
@@ -61,12 +73,23 @@ impl ServerInspectShare {
         seq
     }
 
-    pub(crate) fn take_entities_request(&self) -> bool {
-        self.entities_request.swap(false, Ordering::Relaxed)
+    /// Consume the pending entities request; `Some(since)` when a request was
+    /// pending (0 = full snapshot).
+    pub(crate) fn take_entities_request(&self) -> Option<u64> {
+        if self.entities_request.swap(false, Ordering::Relaxed) {
+            Some(self.entities_since.swap(0, Ordering::Relaxed))
+        } else {
+            None
+        }
     }
 
-    pub(crate) fn take_players_request(&self) -> bool {
-        self.players_request.swap(false, Ordering::Relaxed)
+    /// Same as [`Self::take_entities_request`] for the players collection.
+    pub(crate) fn take_players_request(&self) -> Option<u64> {
+        if self.players_request.swap(false, Ordering::Relaxed) {
+            Some(self.players_since.swap(0, Ordering::Relaxed))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn take_pending_detail(&self) -> Option<(u64, u64)> {
@@ -94,6 +117,24 @@ impl ServerInspectShare {
             .map(|s| (s.gen, Arc::clone(&s.value)))
     }
 
+    /// Final (already diffed) `serverentities.list` reply payload.
+    pub fn entities_list_reply(&self) -> Option<(u64, Arc<Value>)> {
+        self.entities_list
+            .lock()
+            .expect("entities list reply")
+            .as_ref()
+            .map(|s| (s.gen, Arc::clone(&s.value)))
+    }
+
+    /// Final (already diffed) `players.list` reply payload.
+    pub fn players_list_reply(&self) -> Option<(u64, Arc<Value>)> {
+        self.players_list
+            .lock()
+            .expect("players list reply")
+            .as_ref()
+            .map(|s| (s.gen, Arc::clone(&s.value)))
+    }
+
     /// Completed detail payload for a request seq (consumed once).
     pub fn poll_detail(&self, seq: u64) -> Option<Value> {
         self.details.lock().expect("details").remove(&seq)
@@ -117,6 +158,26 @@ impl ServerInspectShare {
         });
     }
 
+    /// Publish a final `serverentities.list` reply (already diffed for the
+    /// request's `since`); bumps the shared generation.
+    pub(crate) fn publish_entities_list(&self, value: Value) {
+        let gen = self.gen.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.entities_list.lock().expect("entities list reply") = Some(Snapshot {
+            gen,
+            value: Arc::new(value),
+        });
+    }
+
+    /// Publish a final `players.list` reply (already diffed for the request's
+    /// `since`); bumps the shared generation.
+    pub(crate) fn publish_players_list(&self, value: Value) {
+        let gen = self.gen.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.players_list.lock().expect("players list reply") = Some(Snapshot {
+            gen,
+            value: Arc::new(value),
+        });
+    }
+
     pub(crate) fn publish_detail(&self, seq: u64, value: Value) {
         self.details.lock().expect("details").insert(seq, value);
     }
@@ -130,10 +191,18 @@ mod tests {
     #[test]
     fn requests_are_consumed_once() {
         let share = ServerInspectShare::new();
-        assert!(!share.take_entities_request(), "idle: no request pending");
-        share.request_entities();
-        assert!(share.take_entities_request(), "first take after request");
-        assert!(!share.take_entities_request(), "consumed");
+        assert_eq!(
+            share.take_entities_request(),
+            None,
+            "idle: no request pending"
+        );
+        share.request_entities(3);
+        assert_eq!(
+            share.take_entities_request(),
+            Some(3),
+            "first take after request"
+        );
+        assert_eq!(share.take_entities_request(), None, "consumed");
     }
 
     #[test]

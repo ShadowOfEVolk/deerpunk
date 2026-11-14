@@ -9,7 +9,10 @@ use crate::components::{
 };
 use crate::network::field_path::NetFieldId;
 use crate::network::net_field::register_engine_layout_net_fields;
-use crate::physics::CharacterController;
+use crate::physics::{
+    categories, CharacterController, Collider, ColliderShapeDesc, RigidBody, SHAPE_DESC_KIND_BALL,
+    SHAPE_DESC_KIND_BOX, SHAPE_DESC_KIND_CAPSULE,
+};
 use crate::resource::{path_to_file_uri, MeshRegistry, ResourceManager};
 use crate::world::{ComponentId, EntityId, NativePrefabApplyFn, World};
 use glam::{Quat, Vec3};
@@ -136,6 +139,162 @@ fn apply_character_controller(
         cc.set_noclip(true);
     }
     world.set(entity, comp, cc);
+    Ok(())
+}
+
+/// Map a prefab category name to its collision bit. `None` = unknown name.
+fn prefab_category_bit(name: &str) -> Option<u32> {
+    match name {
+        "terrain" => Some(categories::TERRAIN),
+        "tank" => Some(categories::TANK),
+        "projectile" => Some(categories::PROJECTILE),
+        "sensor" => Some(categories::SENSOR),
+        "player" => Some(categories::PLAYER),
+        _ => None,
+    }
+}
+
+/// OR together category bits from a JSON array of names. Hard error on
+/// unknown names / non-string entries.
+fn parse_category_bits(v: &Value, key: &str) -> Result<u32, String> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| format!("Collider.{key} must be an array of names"))?;
+    let mut bits = 0u32;
+    for item in arr {
+        let Some(s) = item.as_str() else {
+            return Err(format!("Collider.{key} entry must be a string"));
+        };
+        let bit = prefab_category_bit(s)
+            .ok_or_else(|| format!("Collider.{key} unknown category: {s}"))?;
+        bits |= bit;
+    }
+    Ok(bits)
+}
+
+fn apply_rigid_body(
+    world: &World,
+    _meshes: &mut MeshRegistry,
+    _gamedir: &Path,
+    _resources: &ResourceManager,
+    entity: EntityId,
+    comp: ComponentId,
+    value: &Value,
+) -> Result<(), String> {
+    let body_type = match value.get("type").and_then(|v| v.as_str()) {
+        Some("static") => 0,
+        Some("dynamic") => 1,
+        Some("kinematic") => 2,
+        Some(other) => return Err(format!("RigidBody.type unsupported: {other}")),
+        None => return Err("RigidBody.type missing (static|dynamic|kinematic)".to_string()),
+    };
+    let rb = RigidBody {
+        body_type,
+        gravity_scale: value
+            .get("gravity_scale")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32,
+        linear_damping: value
+            .get("linear_damping")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32,
+        angular_damping: value
+            .get("angular_damping")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32,
+        ccd_enabled: u32::from(value.get("ccd").and_then(|v| v.as_bool()).unwrap_or(false)),
+        can_sleep: u32::from(value.get("can_sleep").and_then(|v| v.as_bool()).unwrap_or(true)),
+    };
+    world.set(entity, comp, rb);
+    Ok(())
+}
+
+/// Parse one prefab shape entry into a `ColliderShapeDesc`. Hard error on
+/// unsupported kinds / missing params.
+fn parse_collider_shape(v: &Value) -> Result<ColliderShapeDesc, String> {
+    if let Some(half_extents) = v.get("box") {
+        let he = read_vec3(Some(half_extents))
+            .ok_or_else(|| "Collider.shapes.box requires half_extents [x,y,z]".to_string())?;
+        return Ok(ColliderShapeDesc {
+            kind: SHAPE_DESC_KIND_BOX,
+            params: [he.x, he.y, he.z, 0.0],
+            local_pos: [0.0; 3],
+        });
+    }
+    if let Some(radius) = v.get("ball").and_then(|v| v.as_f64()) {
+        return Ok(ColliderShapeDesc {
+            kind: SHAPE_DESC_KIND_BALL,
+            params: [radius as f32, 0.0, 0.0, 0.0],
+            local_pos: [0.0; 3],
+        });
+    }
+    if let Some(capsule) = v.get("capsule") {
+        let hh = capsule
+            .get("half_height")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| "Collider.shapes.capsule requires half_height".to_string())?;
+        let r = capsule
+            .get("radius")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| "Collider.shapes.capsule requires radius".to_string())?;
+        return Ok(ColliderShapeDesc {
+            kind: SHAPE_DESC_KIND_CAPSULE,
+            params: [hh as f32, r as f32, 0.0, 0.0],
+            local_pos: [0.0; 3],
+        });
+    }
+    Err("Collider.shapes entry must be {\"box\":[x,y,z]}, {\"ball\":r} or {\"capsule\":{...}}"
+        .to_string())
+}
+
+fn apply_collider(
+    world: &World,
+    _meshes: &mut MeshRegistry,
+    _gamedir: &Path,
+    _resources: &ResourceManager,
+    entity: EntityId,
+    comp: ComponentId,
+    value: &Value,
+) -> Result<(), String> {
+    let shapes_json = value
+        .get("shapes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Collider.shapes missing (1..=4 shape entries)".to_string())?;
+    if shapes_json.is_empty() || shapes_json.len() > 4 {
+        return Err(format!(
+            "Collider.shapes must contain 1..=4 entries, got {}",
+            shapes_json.len()
+        ));
+    }
+    let mut shapes = [ColliderShapeDesc {
+        kind: SHAPE_DESC_KIND_BOX,
+        params: [0.0; 4],
+        local_pos: [0.0; 3],
+    }; 4];
+    for (i, sv) in shapes_json.iter().enumerate() {
+        let mut desc = parse_collider_shape(sv)?;
+        if let Some(pos) = read_vec3(sv.get("pos")) {
+            desc.local_pos = [pos.x, pos.y, pos.z];
+        }
+        shapes[i] = desc;
+    }
+    let collider = Collider {
+        shapes,
+        shape_count: shapes_json.len() as u32,
+        category_bits: match value.get("categories") {
+            Some(v) => parse_category_bits(v, "categories")?,
+            None => 0,
+        },
+        mask_bits: match value.get("masks") {
+            Some(v) => parse_category_bits(v, "masks")?,
+            None => 0xFFFF,
+        },
+        friction: value.get("friction").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32,
+        restitution: value.get("restitution").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+        density: value.get("density").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+        sensor: u32::from(value.get("sensor").and_then(|v| v.as_bool()).unwrap_or(false)),
+    };
+    world.set(entity, comp, collider);
     Ok(())
 }
 
@@ -397,6 +556,8 @@ pub fn register_engine_prefab_appliers(world: &World) {
     attach::<TransformComponent>(world, "TransformComponent", apply_transform);
     attach::<CameraComponent>(world, "CameraComponent", apply_camera);
     attach::<CharacterController>(world, "CharacterController", apply_character_controller);
+    attach::<RigidBody>(world, "RigidBody", apply_rigid_body);
+    attach::<Collider>(world, "Collider", apply_collider);
     attach::<SoundEmitter>(world, "SoundEmitter", apply_sound_emitter);
     attach::<LuaScript>(world, "lua", apply_lua_script);
     attach::<Mesh3D>(world, "Mesh3D", apply_mesh3d);

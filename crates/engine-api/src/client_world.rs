@@ -20,6 +20,8 @@ pub struct ClientWorldApi {
     get_fn: extern "C" fn(*mut u8, u64, u64) -> *mut std::ffi::c_void,
     set_fn: extern "C" fn(*mut u8, u64, u64, *const std::ffi::c_void, usize),
     has_fn: extern "C" fn(*mut u8, u64, u64) -> bool,
+    get_parent_fn: extern "C" fn(*mut u8, u64) -> u64,
+    set_parent_fn: extern "C" fn(*mut u8, u64, u64, bool),
     spawn_fn: extern "C" fn(*mut u8) -> u64,
     destroy_fn: extern "C" fn(*mut u8, u64),
     remove_fn: extern "C" fn(*mut u8, u64, u64),
@@ -52,6 +54,8 @@ impl ClientWorldApi {
             get_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:get")) },
             set_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:set")) },
             has_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:has")) },
+            get_parent_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:get_parent")) },
+            set_parent_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:set_parent")) },
             spawn_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:spawn")) },
             destroy_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:destroy")) },
             remove_fn: unsafe { crate::fn_from_erased(resolve(r, "v1:client_world:remove")) },
@@ -151,6 +155,25 @@ impl ClientWorldApi {
     pub fn has(&self, entity: EntityId, comp: ComponentId) -> bool {
         deerpunk_engine_common::ecs_validate::assert_component_id(comp, "ClientWorldApi::has");
         (self.has_fn)(self.ctx, entity, comp)
+    }
+
+    /// Native flecs parent of `entity`, if any (`(ChildOf, _)` pair target).
+    pub fn get_parent(&self, entity: EntityId) -> Option<EntityId> {
+        let parent = (self.get_parent_fn)(self.ctx, entity);
+        if parent == 0 {
+            None
+        } else {
+            Some(parent)
+        }
+    }
+
+    /// Set or replace the native `(ChildOf, parent)` pair; `None` detaches.
+    pub fn set_parent(&self, child: EntityId, parent: Option<EntityId>) {
+        let (parent, has_parent) = match parent {
+            Some(p) => (p, true),
+            None => (0, false),
+        };
+        (self.set_parent_fn)(self.ctx, child, parent, has_parent);
     }
 
     pub fn get<T: Copy>(&self, entity: EntityId, comp: ComponentId) -> Option<T> {

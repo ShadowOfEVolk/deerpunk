@@ -7,6 +7,7 @@ edition = "2021"
 path = "lib.rs"
 
 [dependencies]
+deerpunk-physics = { path = "../deerpunk-physics" }
 deerpunk-engine-ffi = { path = "../engine-ffi" }
 deerpunk-engine-world = { path = "../engine-world" }
 deerpunk-engine-network = { path = "../engine-network" }

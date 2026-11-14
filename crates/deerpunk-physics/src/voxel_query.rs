@@ -2,11 +2,13 @@
 //! to merge voxel hits with Rapier hits in `cast_ray` / `cast_capsule`.
 //!
 //! A voxel volume is a `VOXEL_VOLUME_SIZE`³ grid of unit cells. Cell `(x,y,z)`
+
 //! occupies the world AABB `[origin+(x,y,z), origin+(x+1,y+1,z+1))`. `solid`
 //! is a bitset: bit `i = x + y*S + z*S*S` set ⇔ cell is solid.
 
 use super::abi::{VOXEL_VOLUME_BITSET_BYTES, VOXEL_VOLUME_SIZE};
 use super::backend::{CapsuleCastHit, RayCastHit};
+use glam::Vec3;
 
 /// One registered voxel volume (host-side; not a Rapier collider).
 #[derive(Clone, Debug)]
@@ -368,3 +370,4 @@ fn other_axes(axis: usize) -> (usize, usize) {
         _ => (0, 1),
     }
 }
+

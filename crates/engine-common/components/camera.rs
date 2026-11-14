@@ -52,7 +52,7 @@ impl DepthAttachment {
     }
 }
 
-/// Camera lens. View pose comes from [`TransformComponent`] (+ [`ParentComponent`] for pawns).
+/// Camera lens. View pose comes from [`TransformComponent`] (+ the native flecs `(ChildOf, _)` parent chain for pawns).
 #[derive(Clone, Copy, Debug)]
 pub struct CameraComponent {
     pub fov_y: f32,

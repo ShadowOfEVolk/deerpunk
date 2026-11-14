@@ -61,6 +61,7 @@ pub fn initialize_result(
         capabilities: Some(json!({
             "componentFields": true,
             "eventsStream": false,
+            "deltas": true,
         })),
     }
 }

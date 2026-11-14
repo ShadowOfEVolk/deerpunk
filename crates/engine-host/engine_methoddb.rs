@@ -1477,6 +1477,29 @@ impl crate::Host {
         ce.world.remove(entity, comp);
     }
 
+    #[methoddb::bind(name = "get_parent")]
+    pub fn api_client_world_get_parent(&self, entity: u64) -> u64 {
+        self.client_engine
+            .as_ref()
+            .and_then(|c| c.world.get_parent(entity))
+            .unwrap_or(0)
+    }
+
+    #[methoddb::bind(name = "set_parent")]
+    pub fn api_client_world_set_parent(&mut self, entity: u64, parent: u64, has_parent: bool) {
+        let Some(ce) = self.client_engine.as_mut() else {
+            log::error!("[client_world] set_parent entity {entity:#x}: client engine not initialized");
+            return;
+        };
+        deerpunk_engine_common::ecs_validate::assert_entity_alive(
+            &ce.world,
+            entity,
+            "client_world::set_parent",
+        );
+        ce.world
+            .set_parent(entity, if has_parent { Some(parent) } else { None });
+    }
+
     #[methoddb::bind(name = "component_register")]
     pub fn api_client_world_component_register(&self, desc: &ComponentRegisterDesc) -> u64 {
         crate::engine_api::components::register_client_component_desc(self, desc)
@@ -2052,6 +2075,17 @@ impl crate::Host {
         0
     }
 
+    #[methoddb::bind(name = "spawn_child")]
+    pub fn api_world_spawn_child(&mut self, _parent: u64) -> u64 {
+        log::warn!("[world] spawn_child on main host (server world is on the sim thread)");
+        0
+    }
+
+    #[methoddb::bind(name = "set_parent")]
+    pub fn api_world_set_parent(&mut self, _child: u64, _parent: u64, _has_parent: bool) {
+        log::warn!("[world] set_parent on main host (server world is on the sim thread)");
+    }
+
     #[methoddb::bind(name = "has")]
     pub fn api_world_has(&self, _entity: u64, _comp: u64) -> bool {
         false
@@ -2072,6 +2106,11 @@ impl crate::Host {
 
     #[methoddb::bind(name = "clear")]
     pub fn api_world_clear(&mut self) {}
+
+    #[methoddb::bind(name = "set_entity_name")]
+    pub fn api_world_set_entity_name(&mut self, _entity: u64, _name: &str) {
+        log::warn!("[world] set_entity_name on main host (server world is on the sim thread)");
+    }
 
     #[methoddb::bind(name = "free_value")]
     pub fn api_world_free_value(&mut self, _ptr: *mut c_void) {}

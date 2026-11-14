@@ -19,9 +19,11 @@ deerpunk_engine_common::cvar_def!(
     "Bind address for inspector WS (e.g. 127.0.0.1 or 0.0.0.0)."
 );
 
+mod collection_delta;
 mod server_share;
 mod ws;
 
+pub(crate) use collection_delta::{CollectionDelta, ListReply};
 pub(crate) use server_share::ServerInspectShare;
 
 pub(crate) use ws::{WsConnection, WsIncoming};
@@ -32,7 +34,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use deerpunk_engine_common::components::{PrefabId, TransformComponent};
+use deerpunk_engine_common::components::{EntityName, PrefabId, TransformComponent};
 use deerpunk_engine_common::world::World;
 use deerpunk_inspector_protocol as proto;
 use serde_json::{json, Value};
@@ -48,6 +50,8 @@ use crate::system_profiler;
 pub(crate) struct ClientEntityRow {
     pub(crate) id: u64,
     pub(crate) name: String,
+    pub(crate) parent: Option<u64>,
+    pub(crate) rev: u64,
     pub(crate) prefab_id: Option<u32>,
     pub(crate) position: Option<[f32; 3]>,
 }
@@ -77,6 +81,18 @@ pub(crate) fn entity_position(world: &World, entity: u64) -> Option<[f32; 3]> {
     world
         .get::<TransformComponent>(entity, comp)
         .map(|t| t.position.to_array())
+}
+
+/// Inspector row name: `EntityName` component → native flecs name
+/// (`ecs_get_name`, already resolved into `native_fallback` by
+/// [`World::inspect_entities`]) → `0x{id:x}` fallback (also in
+/// `native_fallback`).
+pub(crate) fn entity_display_name(world: &World, entity: u64, native_fallback: &str) -> String {
+    let comp = world.component_init::<EntityName>();
+    match world.get::<EntityName>(entity, comp) {
+        Some(name) if !name.as_str().is_empty() => name.as_str().to_string(),
+        _ => native_fallback.to_string(),
+    }
 }
 
 /// FMOD Studio event snapshot for `fmod_events.*` RPCs.
@@ -134,6 +150,8 @@ struct ActiveInspector {
     clients: HashMap<u64, ClientState>,
     next_client_id: u64,
     collections: Vec<proto::CollectionDescriptor>,
+    /// Delta history for the synchronous `cliententities` collection.
+    cliententities_delta: CollectionDelta,
 }
 
 /// Owned by [`crate::Host`].
@@ -206,6 +224,7 @@ impl Inspector {
             clients: HashMap::new(),
             next_client_id: 1,
             collections: self.merged_collections(),
+            cliententities_delta: CollectionDelta::new(),
         });
     }
 
@@ -264,7 +283,13 @@ impl Inspector {
                 match client.socket.read_incoming() {
                     Ok(WsIncoming::Text(text)) => {
                         budget -= 1;
-                        match handle_message(text.trim(), ctx.as_ref(), &insp.collections, client) {
+                        match handle_message(
+                            text.trim(),
+                            ctx.as_ref(),
+                            &insp.collections,
+                            client,
+                            &mut insp.cliententities_delta,
+                        ) {
                             Ok(msgs) => {
                                 for m in msgs {
                                     responses.push((id, m));
@@ -306,13 +331,18 @@ impl Inspector {
         };
 
         // Deliver deferred `serverentities` list replies once the sim thread
-        // published a fresh snapshot (latest-wins, 2s cap).
+        // published a diffed reply for the request's `since` (latest-wins, 2s
+        // cap). Note: two clients queueing list requests in the same tick
+        // share one `since` slot — the later request wins (pre-existing
+        // latest-wins behavior).
         for (&id, client) in insp.clients.iter_mut() {
             let Some(pending) = client.pending_entities_list.as_ref() else {
                 continue;
             };
-            let fresh = share.entities_snapshot().map(|(g, _)| g > pending.wait_gen);
-            match (fresh, share.entities_snapshot()) {
+            let fresh = share
+                .entities_list_reply()
+                .map(|(g, _)| g > pending.wait_gen);
+            match (fresh, share.entities_list_reply()) {
                 (Some(true), Some((_, value))) => {
                     if client
                         .socket
@@ -341,13 +371,15 @@ impl Inspector {
             }
         }
 
-        // Same for `players` list replies.
+        // Same for `players` list replies (diffed on the sim thread).
         for (&id, client) in insp.clients.iter_mut() {
             let Some(pending) = client.pending_players_list.as_ref() else {
                 continue;
             };
-            let fresh = share.players_snapshot().map(|(g, _)| g > pending.wait_gen);
-            match (fresh, share.players_snapshot()) {
+            let fresh = share
+                .players_list_reply()
+                .map(|(g, _)| g > pending.wait_gen);
+            match (fresh, share.players_list_reply()) {
                 (Some(true), Some((_, value))) => {
                     if client
                         .socket
@@ -488,8 +520,9 @@ fn server_collection_rpc(
 ) -> Result<Vec<String>, String> {
     match action {
         "list" => {
+            let since = params.get("since").and_then(Value::as_u64).unwrap_or(0);
             if col_id == "serverentities" {
-                share.request_entities();
+                share.request_entities(since);
                 client.pending_entities_list = Some(PendingList {
                     request_id: id.clone(),
                     wait_gen: share.gen_now(),
@@ -497,7 +530,7 @@ fn server_collection_rpc(
                     timeout_what: "server world did not answer entities list",
                 });
             } else {
-                share.request_players();
+                share.request_players(since);
                 client.pending_players_list = Some(PendingList {
                     request_id: id.clone(),
                     wait_gen: share.gen_now(),
@@ -519,7 +552,7 @@ fn server_collection_rpc(
             if col_id == "serverentities" {
                 // Ask for a fresh rows snapshot first so repeated gets stay
                 // current; the detail itself is a single in-flight request.
-                share.request_entities();
+                share.request_entities(0);
                 let seq = share.request_detail(index);
                 client.pending_entities_get = Some(PendingGet {
                     request_id: id.clone(),
@@ -528,7 +561,7 @@ fn server_collection_rpc(
                     not_found_msg: "entity not found",
                 });
             } else {
-                share.request_players();
+                share.request_players(0);
                 client.pending_players_get = Some(PendingPlayersGet {
                     request_id: id.clone(),
                     index,
@@ -551,6 +584,7 @@ fn handle_message(
     ctx: Option<&InspectorRpcCtx<'_>>,
     collections: &[proto::CollectionDescriptor],
     client: &mut ClientState,
+    client_delta: &mut CollectionDelta,
 ) -> Result<Vec<String>, String> {
     if line.is_empty() {
         return Ok(Vec::new());
@@ -594,7 +628,7 @@ fn handle_message(
     // works at the main menu (world off). Server-world collections defer
     // through the share (sim thread); they need a ctx to carry the share.
     if col_id == "cliententities" {
-        return client_entities_rpc(action, &id, &params, ctx);
+        return client_entities_rpc(action, &id, &params, ctx, client_delta);
     }
     if col_id == "serverentities" || col_id == "players" {
         let Some(ctx) = ctx else {
@@ -620,6 +654,10 @@ fn handle_message(
     let known = collections.iter().any(|c| c.id == col_id);
     if known {
         return match action {
+            // Main-thread collections (prefabs/assets/systems/fmod_events/
+            // methoddb) have no delta history: `since` is ignored and every
+            // list is a full snapshot. Entity collections carry revisions
+            // (see `CollectionDelta`).
             "list" => Ok(vec![proto::ok(&id, collection_list(col_id, ctx))]),
             "get" => Ok(vec![collection_get(col_id, &id, &params, ctx)]),
             _ => Ok(vec![proto::err(
@@ -671,6 +709,8 @@ fn rows_value(rows: &[ClientEntityRow]) -> Vec<Value> {
             let mut row = json!({
                 "index": e.id,
                 "name": e.name,
+                "parent": e.parent.map(|p| json!(p)).unwrap_or(Value::Null),
+                "rev": e.rev,
             });
             let obj = row.as_object_mut().expect("entity row object");
             if let Some(prefab_id) = e.prefab_id {
@@ -692,6 +732,7 @@ fn client_entities_rpc(
     id: &Value,
     params: &Value,
     ctx: Option<&InspectorRpcCtx<'_>>,
+    delta: &mut CollectionDelta,
 ) -> Result<Vec<String>, String> {
     #[cfg(any(feature = "client", feature = "full"))]
     {
@@ -712,21 +753,26 @@ fn client_entities_rpc(
                     .into_iter()
                     .map(|e| ClientEntityRow {
                         id: e.id,
+                        parent: world.get_parent(e.id),
+                        rev: world.entity_rev(e.id),
                         prefab_id: entity_prefab_id(world, e.id),
                         position: entity_position(world, e.id),
-                        name: e.name,
+                        name: entity_display_name(world, e.id, &e.name),
                     })
                     .collect();
                 let entities = rows_value(&rows);
                 let time = ctx.map(|c| c.time_secs).unwrap_or(0.0);
-                Ok(vec![proto::ok(
-                    id,
-                    json!({
-                        "time": time,
-                        "count": entities.len(),
-                        "entities": entities,
-                    }),
-                )])
+                let fresh = json!({
+                    "time": time,
+                    "count": entities.len(),
+                    "entities": entities,
+                });
+                let revision = delta.publish(&fresh, "entities");
+                let since = params.get("since").and_then(Value::as_u64).unwrap_or(0);
+                let reply = match delta.list_reply(since, &fresh, "entities") {
+                    ListReply::Full(v) | ListReply::Unchanged(v) | ListReply::Delta(v) => v,
+                };
+                Ok(vec![proto::ok(id, reply)])
             }
             "get" => {
                 let Some(client) = client else {
@@ -767,6 +813,7 @@ fn client_entities_rpc(
                     json!({
                         "index": ent.id,
                         "name": ent.name,
+                        "rev": world.entity_rev(ent.id),
                         "components": components,
                     }),
                 )])
@@ -780,7 +827,7 @@ fn client_entities_rpc(
     }
     #[cfg(not(any(feature = "client", feature = "full")))]
     {
-        let _ = (params, ctx);
+        let _ = (params, ctx, delta);
         match action {
             // No client world without client features: immediate empty list.
             "list" => Ok(vec![proto::ok(

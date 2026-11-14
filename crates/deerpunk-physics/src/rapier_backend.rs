@@ -9,13 +9,16 @@ use std::ffi::c_void;
 
 use super::abi::{
     decode_shape, Collider, ColliderPart, PartsHandle, ShapeGeom, ShapeHandle, BODY_TYPE_DYNAMIC,
-    BODY_TYPE_KINEMATIC, PARTS_HANDLE_INVALID, SHAPE_HANDLE_INVALID,
+    BODY_TYPE_KINEMATIC, PARTS_HANDLE_INVALID, SHAPE_HANDLE_INVALID, VOXEL_VOLUME_SIZE,
 };
 use super::backend::{CapsuleCastHit, PhysicsBackend, RayCastHit};
 use super::character::CharacterController;
 use super::world::{categories, BodyType, PhysicsWorld};
-use crate::components::TransformComponent;
-use crate::world::World;
+use super::{
+    Collider as PodCollider, PhysBodyHandle, RigidBody, TransformView, Velocity,
+    SHAPE_DESC_KIND_BALL, SHAPE_DESC_KIND_BOX, SHAPE_DESC_KIND_CAPSULE,
+};
+use deerpunk_engine_world::{ComponentDescriptor, World};
 
 /// Player capsules: collide with world, not with other players.
 fn player_collision_groups() -> InteractionGroups {
@@ -117,17 +120,36 @@ pub struct RapierPhysicsBackend {
     /// `shapes` or `voxel_shapes`.
     voxel_shapes: Arena<super::voxel_query::VoxelVolume>,
     /// Entities whose `Collider` is a single voxel-volume part: they have no
-    /// Rapier body; `cast_ray`/`cast_capsule` query these directly.
+    /// bridge body; `cast_ray`/`cast_capsule` query the DDA volumes directly.
     voxel_entities: HashMap<u64, Vec<ShapeHandle>>,
+    /// Static Rapier contact bodies for voxel-only entities (parry `Voxels`
+    /// shape built from the same bitset the DDA queries sweep). Deliberately
+    /// NOT in `body_map`: prepare/writeback key off `body_map` and voxel
+    /// entities must stay excluded from that bridge.
+    voxel_contact_bodies: HashMap<u64, RigidBodyHandle>,
     /// Flecs world + component ids for observers (ecs_get_id fallback).
     transform_id: u64,
     collider_id: u64,
     char_id: u64,
+    rigid_body_id: u64,
+    pod_collider_id: u64,
+    velocity_id: u64,
+    phys_handle_id: u64,
     /// Server ECS world (for Flecs sync systems invoked from prepare/writeback).
-    pub(crate) world_view: *const crate::world::World,
+    pub(crate) world_view: *const deerpunk_engine_world::World,
     sys_sync_in: u64,
+    sys_rigid_body_prepare: u64,
     sys_writeback_characters: u64,
     sys_writeback_dynamics: u64,
+    sys_rigid_body_writeback: u64,
+    /// Leftover server time for the fixed-timestep physics loop (`advance`).
+    step_accumulator: f32,
+    /// Last velocity value applied from the `Velocity` component, per entity.
+    /// Change detection: the component is only pushed into Rapier when it
+    /// differs from this, never compared against the solver-owned body linvel
+    /// (which changes legitimately every substep — comparing against it made
+    /// prepare resurrect stale writeback values and fight the contacts).
+    applied_linvel: HashMap<u64, [f32; 3]>,
     attached: bool,
     /// Contact skin (`target_distance`) for swept capsule casts. Smaller for
     /// voxel (1-unit) scale, larger for HL scale. Set via cvar `ph_capsule_skin`.
@@ -145,14 +167,23 @@ impl RapierPhysicsBackend {
             parts: Arena::new(),
             voxel_shapes: Arena::new(),
             voxel_entities: HashMap::new(),
+            voxel_contact_bodies: HashMap::new(),
             characters: HashMap::new(),
             transform_id: 0,
             collider_id: 0,
             char_id: 0,
+            rigid_body_id: 0,
+            pod_collider_id: 0,
+            velocity_id: 0,
+            phys_handle_id: 0,
             world_view: std::ptr::null(),
             sys_sync_in: 0,
+            sys_rigid_body_prepare: 0,
             sys_writeback_characters: 0,
             sys_writeback_dynamics: 0,
+            sys_rigid_body_writeback: 0,
+            step_accumulator: 0.0,
+            applied_linvel: HashMap::new(),
             attached: false,
             capsule_skin: 0.5,
         }
@@ -227,7 +258,8 @@ impl RapierPhysicsBackend {
         }
     }
 
-    /// True if `parts_handle` is a single voxel-volume part (no Rapier body).
+    /// True if `parts_handle` is a single voxel-volume part (voxel-only path:
+    /// DDA queries + static `Voxels` contact body, no bridge body).
     fn is_voxel_only(&self, parts_handle: PartsHandle) -> bool {
         let Some(parts) = self.parts.get(parts_handle) else {
             return false;
@@ -236,6 +268,107 @@ impl RapierPhysicsBackend {
             return false;
         }
         parts[0].shape & VOXEL_HANDLE_FLAG != 0
+    }
+
+    /// parry `Voxels` shape for a [`super::voxel_query::VoxelVolume`], with
+    /// EXACTLY the mapping `voxel_query` DDA queries use:
+    ///
+    /// - DDA (`voxel_query`): cell `(x,y,z)` occupies the world AABB
+    ///   `[origin + (x,y,z), origin + (x+1,y+1,z+1))`, and bit
+    ///   `i = x + y*S + z*S*S` (LSB-first in `solid[i >> 3]`) marks it solid.
+    /// - parry (`Voxels::new`): the voxel at grid coord `(x,y,z)` spans the
+    ///   shape-local AABB `[(x,y,z) * cell_size, ((x,y,z)+1) * cell_size)`.
+    ///
+    /// With `cell_size = 1` and the body posed at `volume.origin` with identity
+    /// rotation (see `replace_voxel_contact_body`), the two grids coincide
+    /// cell-for-cell in world space, so DDA ray hits and contact geometry
+    /// describe the same surface. The entity `TransformComponent` and the
+    /// `ColliderPart` local pose are deliberately ignored — the DDA path
+    /// ignores them too (it only reads `volume.origin`).
+    fn voxels_shape(vol: &super::voxel_query::VoxelVolume) -> SharedShape {
+        let mut cells = Vec::with_capacity(
+            VOXEL_VOLUME_SIZE * VOXEL_VOLUME_SIZE * VOXEL_VOLUME_SIZE / 4,
+        );
+        for z in 0..VOXEL_VOLUME_SIZE {
+            for y in 0..VOXEL_VOLUME_SIZE {
+                for x in 0..VOXEL_VOLUME_SIZE {
+                    if vol.is_solid(x, y, z) {
+                        cells.push(IVector::new(x as i32, y as i32, z as i32));
+                    }
+                }
+            }
+        }
+        SharedShape::new(Voxels::new(Vector::ONE, &cells))
+    }
+
+    /// Rapier compares sleep thresholds against velocity in meters
+    /// (`v / IntegrationParameters::length_unit`), while this engine runs all
+    /// velocities and gravity in raw world units (length_unit=64 exists only to
+    /// scale solver epsilons). The default normalized threshold (0.05) therefore
+    /// equals 3.2 units/s and force-sleeps bodies mid-fall (~0.5 s after spawn).
+    /// Translate the desired engine-units threshold into the normalized scale.
+    fn apply_units_sleep_threshold(&mut self, handle: RigidBodyHandle) {
+        const SLEEP_THRESHOLD_UNITS: f32 = 0.2; // units/s, well below walk speed
+        let lu = self.world.inner.integration_parameters.length_unit;
+        if lu > 0.0 {
+            if let Some(body) = self.world.inner.bodies.get_mut(handle) {
+                body.activation_mut().normalized_linear_threshold =
+                    SLEEP_THRESHOLD_UNITS / lu;
+            }
+        }
+    }
+
+    /// Destroy + recreate the static contact body for a voxel-only entity.
+    /// Called on every `PhysCollider` OnSet, so a chunk rebuild (block change)
+    /// replaces the contact geometry from the fresh bitset — the same
+    /// destroy-then-insert pattern `insert_body` uses for other bodies.
+    fn replace_voxel_contact_body(&mut self, entity: u64, collider: &Collider) {
+        self.destroy_voxel_contact_body(entity);
+        let Some(vol) = self
+            .voxel_entities
+            .get(&entity)
+            .and_then(|handles| handles.first().copied())
+            .and_then(|h| self.voxel_shapes.get(shape_arena_index(h)))
+            .cloned()
+        else {
+            return;
+        };
+        let solid_cells: u32 = vol.solid.iter().map(|b| b.count_ones()).sum();
+        // All-empty chunk: nothing to collide with; keep it contact-free.
+        if solid_cells == 0 {
+            return;
+        }
+        // Body pose = volume origin (identity rotation): pins the parry grid
+        // exactly onto the DDA grid (see `voxels_shape`).
+        let origin = Vec3::new(
+            vol.origin[0] as f32,
+            vol.origin[1] as f32,
+            vol.origin[2] as f32,
+        );
+        let rb = RigidBodyBuilder::fixed().translation(origin);
+        let groups = InteractionGroups {
+            memberships: Group::from(collider.category_bits),
+            filter: Group::from(collider.mask_bits),
+            test_mode: InteractionTestMode::default(),
+        };
+        let cb = ColliderBuilder::new(Self::voxels_shape(&vol))
+            .friction(collider.friction)
+            .restitution(collider.restitution)
+            .collision_groups(groups);
+        let (handle, _) = self.world.inner.insert(rb, cb);
+        self.voxel_contact_bodies.insert(entity, handle);
+        log::info!(
+            "[physics] voxel contact body entity={entity:#x} origin={:?} cells={solid_cells} bodies={}",
+            vol.origin,
+            self.world.inner.bodies.len()
+        );
+    }
+
+    /// Destroy the voxel contact body of `entity` (no-op when absent).
+    fn destroy_voxel_contact_body(&mut self, entity: u64) {
+        if let Some(handle) = self.voxel_contact_bodies.remove(&entity) {
+            self.world.inner.remove_body(handle);
+        }
     }
 
     fn part_pose(part: &ColliderPart) -> Pose {
@@ -301,12 +434,6 @@ impl RapierPhysicsBackend {
     ) {
         self.world.destroy_body(entity);
 
-        let rb = match Self::body_type(collider.body_type) {
-            BodyType::Static => RigidBodyBuilder::fixed(),
-            BodyType::Dynamic => RigidBodyBuilder::dynamic(),
-            BodyType::Kinematic => RigidBodyBuilder::kinematic_position_based(),
-        };
-
         let rot = Quat::from_xyzw(
             rotation_xyzw[0],
             rotation_xyzw[1],
@@ -314,6 +441,13 @@ impl RapierPhysicsBackend {
             rotation_xyzw[3],
         );
         let pose = Pose::from_parts(Vec3::from_array(position), rot);
+
+        let rb = match Self::body_type(collider.body_type) {
+            BodyType::Static => RigidBodyBuilder::fixed(),
+            BodyType::Dynamic => RigidBodyBuilder::dynamic(),
+            BodyType::Kinematic => RigidBodyBuilder::kinematic_position_based(),
+        }
+        .pose(pose);
 
         let groups = InteractionGroups {
             memberships: Group::from(collider.category_bits),
@@ -334,6 +468,7 @@ impl RapierPhysicsBackend {
 
         let (handle, _) = self.world.inner.insert(rb, cb);
         self.world.body_map.insert(entity, handle);
+        self.apply_units_sleep_threshold(handle);
         // Only real Rapier bodies land here (voxel volumes and characters take
         // other paths), so this stays one line per dynamic entity, not spam.
         log::info!(
@@ -428,39 +563,30 @@ impl RapierPhysicsBackend {
                 return *entity;
             }
         }
+        // Voxel contact bodies live outside `body_map` (they must stay out of
+        // the prepare/writeback bridge); resolve them here so Rapier-side
+        // ray/capsule hits attribute the same chunk entity as the DDA path.
+        for (entity, handle) in &self.voxel_contact_bodies {
+            if *handle == rb {
+                return *entity;
+            }
+        }
         0
     }
-
-    fn sync_query_bvh(&mut self) {
-        let handles: Vec<ColliderHandle> =
-            self.world.inner.colliders.iter().map(|(h, _)| h).collect();
-        if handles.is_empty() {
-            return;
-        }
-        let mut events = Vec::new();
-        self.world.inner.broad_phase.update(
-            &self.world.inner.integration_parameters,
-            &self.world.inner.colliders,
-            &self.world.inner.bodies,
-            &handles,
-            &[],
-            &mut events,
-        );
-    }
-
     /// Per-entity sync (Flecs system `PhysicsSyncIn`).
     pub(crate) fn integrate_character(&mut self, world: &World, entity: u64, dt: f32) {
         let Some(entry) = self.characters.get(&entity) else {
             return;
         };
         let cc_id = world.component_init::<CharacterController>();
-        let t_id = world.component_init::<TransformComponent>();
+        let t_ptr = world.get_raw(entity, self.transform_id);
+        if t_ptr.is_null() {
+            return;
+        }
         let Some(cc) = world.get::<CharacterController>(entity, cc_id) else {
             return;
         };
-        let Some(t) = world.get::<TransformComponent>(entity, t_id) else {
-            return;
-        };
+        let t = unsafe { &*(t_ptr as *const TransformView) };
         let body = entry.body;
         let shape = entry.shape.clone();
         let center_offset = entry.center_offset.max(cc.center_offset());
@@ -521,7 +647,6 @@ impl RapierPhysicsBackend {
             return;
         };
         let cc_id = world.component_init::<CharacterController>();
-        let t_id = world.component_init::<TransformComponent>();
         let ptr = world.get_raw(entity, cc_id);
         let manual = if !ptr.is_null() {
             unsafe { (*(ptr as *const CharacterController)).manual_move() }
@@ -535,9 +660,9 @@ impl RapierPhysicsBackend {
             return;
         };
         let feet = rb.translation();
-        if let Some(mut t) = world.get::<TransformComponent>(entity, t_id) {
+        if let Some(mut t) = world.get::<TransformView>(entity, self.transform_id) {
             t.position = feet;
-            world.set(entity, t_id, t);
+            world.set(entity, self.transform_id, t);
         }
         if !ptr.is_null() {
             let cc = unsafe { &mut *(ptr as *mut CharacterController) };
@@ -561,23 +686,228 @@ impl RapierPhysicsBackend {
         if !rb.is_dynamic() {
             return;
         }
-        let t_id = world.component_init::<TransformComponent>();
-        if let Some(mut t) = world.get::<TransformComponent>(entity, t_id) {
+        if let Some(mut t) = world.get::<TransformView>(entity, self.transform_id) {
             t.position = rb.translation();
             t.rotation = *rb.rotation();
-            world.set(entity, t_id, t);
+            world.set(entity, self.transform_id, t);
         }
+    }
+
+    /// Bridge prepare pass for POD `RigidBody` entities (manual system, query
+    /// `"RigidBody, TransformComponent"`). Prefab appliers `World::set` components in
+    /// arbitrary order, so `RigidBody` may land before its `TransformComponent`;
+    /// instead of an OnSet observer, this runs every prepare and:
+    /// 1. creates any missing Rapier body (idempotent via body_map /
+    ///    character / voxel checks) from Transform + `Collider` + `Velocity`,
+    /// 2. teleports static/kinematic bodies to Transform (Transform authority),
+    /// 3. writes `Velocity.linear` → body linvel for dynamic bodies (wakes).
+    pub(crate) fn prepare_rigid_body(&mut self, world: &World, entity: u64) {
+        let Some(rb_desc) = world.get::<RigidBody>(entity, self.rigid_body_id) else {
+            return;
+        };
+        let t_ptr = world.get_raw(entity, self.transform_id);
+        if t_ptr.is_null() {
+            return;
+        }
+        let t = unsafe { &*(t_ptr as *const TransformView) };
+        if self.world.body_map.contains_key(&entity)
+            || self.characters.contains_key(&entity)
+            || self.voxel_entities.contains_key(&entity)
+            || self.voxel_contact_bodies.contains_key(&entity)
+        {
+            // Body already exists: static/kinematic teleports to Transform,
+            // dynamic gets its Velocity component copied in (set_linvel wakes).
+            let Some(&handle) = self.world.body_map.get(&entity) else {
+                return;
+            };
+            let Some(body) = self.world.inner.bodies.get_mut(handle) else {
+                return;
+            };
+            match rb_desc.body_type {
+                BODY_TYPE_DYNAMIC => {
+                    // Apply the Velocity component only when gameplay CHANGED it
+                    // since the last application (change detection against the
+                    // last-applied value, not the solver-owned body linvel).
+                    if let Some(v) = world.get::<Velocity>(entity, self.velocity_id) {
+                        if self.applied_linvel.get(&entity) != Some(&v.linear) {
+                            body.set_linvel(Vec3::from_array(v.linear), true);
+                            self.applied_linvel.insert(entity, v.linear);
+                        }
+                    }
+                }
+                _ => {
+                    // Static/kinematic: Transform is authority, but skip the
+                    // teleport when the body already matches (keeps fixed
+                    // geometry out of the broad-phase update path).
+                    let moved = (t.position - body.translation()).length_squared() > 1e-12
+                        || 1.0 - body.rotation().dot(t.rotation) > 1e-6;
+                    if moved {
+                        body.set_position(Pose::from_parts(t.position, t.rotation), true);
+                    }
+                }
+            }
+            return;
+        }
+        // Fresh creation: shape comes from the POD `Collider` if present.
+        let pod_collider = world.get::<PodCollider>(entity, self.pod_collider_id);
+        let initial_vel = world
+            .get::<Velocity>(entity, self.velocity_id)
+            .map(|v| v.linear);
+        let shape = pod_collider.as_ref().and_then(pod_shared_shape);
+        let rot = t.rotation.to_array();
+        let handle = self.insert_rigid_body(
+            entity,
+            t.position.to_array(),
+            [rot[0], rot[1], rot[2], rot[3]],
+            &rb_desc,
+            pod_collider.as_ref(),
+            shape,
+        );
+        world.set(
+            entity,
+            self.phys_handle_id,
+            PhysBodyHandle(PhysBodyHandle::encode(handle)),
+        );
+        // Initial linear velocity from `Velocity` if present (dynamic only).
+        if rb_desc.body_type == BODY_TYPE_DYNAMIC {
+            if let Some(linvel) = initial_vel {
+                if let Some(body) = self.world.inner.bodies.get_mut(handle) {
+                    body.set_linvel(Vec3::from_array(linvel), true);
+                }
+                self.applied_linvel.insert(entity, linvel);
+            }
+        }
+    }
+
+    /// Bridge writeback pass for POD `RigidBody` entities (manual system, query
+    /// `"RigidBody, TransformComponent"`). Dynamic bodies copy pose → `TransformView`
+    /// and body linvel → `Velocity`.
+    pub(crate) fn writeback_rigid_body(&mut self, world: &World, entity: u64) {
+        let Some(rb_desc) = world.get::<RigidBody>(entity, self.rigid_body_id) else {
+            return;
+        };
+        if rb_desc.body_type != BODY_TYPE_DYNAMIC {
+            return;
+        }
+        let Some(&handle) = self.world.body_map.get(&entity) else {
+            return;
+        };
+        let Some(body) = self.world.inner.bodies.get(handle) else {
+            return;
+        };
+        let linvel = body.linvel();
+        let angvel = body.angvel();
+        if let Some(mut t) = world.get::<TransformView>(entity, self.transform_id) {
+            // Skip the write when the body did not move (bit-identical while
+            // asleep): avoids per-frame component churn for resting bodies.
+            if t.position != body.translation() || t.rotation != *body.rotation() {
+                t.position = body.translation();
+                t.rotation = *body.rotation();
+                world.set(entity, self.transform_id, t);
+            }
+        }
+        if let Some(mut v) = world.get::<Velocity>(entity, self.velocity_id) {
+            let lin = [linvel.x, linvel.y, linvel.z];
+            let ang = [angvel.x, angvel.y, angvel.z];
+            if v.linear != lin || v.angular != ang {
+                v.linear = lin;
+                v.angular = ang;
+                world.set(entity, self.velocity_id, v);
+            }
+        }
+        // The component now mirrors the solver-owned linvel; record it as the
+        // last-applied value so prepare does not treat the writeback as a
+        // gameplay change and re-apply it over the next substeps.
+        self.applied_linvel
+            .insert(entity, [linvel.x, linvel.y, linvel.z]);
+    }
+
+    /// Insert a Rapier rigid body from the bridge's POD descriptor path
+    /// (`RigidBody` + optional `Collider` component). Returns the encoded
+    /// Rapier handle for `PhysBodyHandle`.
+    fn insert_rigid_body(
+        &mut self,
+        entity: u64,
+        position: [f32; 3],
+        rotation_xyzw: [f32; 4],
+        rb_desc: &RigidBody,
+        collider: Option<&PodCollider>,
+        shape: Option<SharedShape>,
+    ) -> rapier3d::prelude::RigidBodyHandle {
+        self.world.destroy_body(entity);
+        let rot = Quat::from_xyzw(
+            rotation_xyzw[0],
+            rotation_xyzw[1],
+            rotation_xyzw[2],
+            rotation_xyzw[3],
+        );
+        let pose = Pose::from_parts(Vec3::from_array(position), rot);
+        let rb = match rb_desc.body_type {
+            BODY_TYPE_DYNAMIC => RigidBodyBuilder::dynamic(),
+            BODY_TYPE_KINEMATIC => RigidBodyBuilder::kinematic_position_based(),
+            _ => RigidBodyBuilder::fixed(),
+        }
+        .pose(pose)
+        .gravity_scale(rb_desc.gravity_scale)
+        .linear_damping(rb_desc.linear_damping)
+        .angular_damping(rb_desc.angular_damping)
+        .can_sleep(rb_desc.can_sleep != 0);
+        let rb = if rb_desc.ccd_enabled != 0 {
+            rb.ccd_enabled(true)
+        } else {
+            rb
+        };
+        let Some(shape) = shape else {
+            let handle = self.world.inner.insert_body(rb);
+            self.world.body_map.insert(entity, handle);
+            self.apply_units_sleep_threshold(handle);
+            log::info!(
+                "[physics] bridge body entity={entity:#x} handle={handle:?} (no collider)"
+            );
+            return handle;
+        };
+        let Some(c) = collider else {
+            let handle = self.world.inner.insert_body(rb);
+            self.world.body_map.insert(entity, handle);
+            self.apply_units_sleep_threshold(handle);
+            log::info!("[physics] bridge body entity={entity:#x} handle={handle:?} (no collider)");
+            return handle;
+        };
+        let groups = InteractionGroups {
+            memberships: Group::from(c.category_bits),
+            filter: Group::from(c.mask_bits),
+            test_mode: InteractionTestMode::default(),
+        };
+        let mut cb = ColliderBuilder::new(shape)
+            .friction(c.friction)
+            .restitution(c.restitution)
+            .collision_groups(groups);
+        if c.sensor != 0 {
+            cb = cb.sensor(true);
+        }
+        if c.density > 0.0 {
+            cb = cb.density(c.density);
+        }
+        let (handle, _) = self.world.inner.insert(rb, cb);
+        self.world.body_map.insert(entity, handle);
+        self.apply_units_sleep_threshold(handle);
+        log::info!("[physics] bridge body entity={entity:#x} handle={handle:?}");
+        handle
     }
 
     pub(crate) fn set_sync_system_ids(
         &mut self,
+        rigid_body_prepare: u64,
         sync_in: u64,
         writeback_characters: u64,
         writeback_dynamics: u64,
+        rigid_body_writeback: u64,
     ) {
+        self.sys_rigid_body_prepare = rigid_body_prepare;
         self.sys_sync_in = sync_in;
         self.sys_writeback_characters = writeback_characters;
         self.sys_writeback_dynamics = writeback_dynamics;
+        self.sys_rigid_body_writeback = rigid_body_writeback;
     }
 
     /// Sweep all registered voxel volumes with a ray; return the closest hit.
@@ -691,6 +1021,8 @@ impl PhysicsBackend for RapierPhysicsBackend {
         self.shapes.clear();
         self.voxel_shapes.clear();
         self.voxel_entities.clear();
+        self.voxel_contact_bodies.clear();
+        self.applied_linvel.clear();
         self.parts.clear();
         self.world.body_map.clear();
         self.world.tile_body_map.clear();
@@ -761,7 +1093,6 @@ impl PhysicsBackend for RapierPhysicsBackend {
         }
         d /= dlen;
 
-        self.sync_query_bvh();
 
         let shape = SharedShape::capsule_z(half_height, radius);
         let pose = Pose::from_parts(Vec3::from_array(center), Quat::IDENTITY);
@@ -829,7 +1160,6 @@ impl PhysicsBackend for RapierPhysicsBackend {
         }
         d /= dlen;
 
-        self.sync_query_bvh();
 
         let exclude = if exclude_entity != 0 {
             self.world.body_map.get(&exclude_entity).copied()
@@ -864,17 +1194,23 @@ impl PhysicsBackend for RapierPhysicsBackend {
         rotation_xyzw: [f32; 4],
         collider: &Collider,
     ) {
-        // Voxel-volume-only bodies have no Rapier representation; track the
-        // shape handle for DDA queries in `cast_ray`/`cast_capsule`.
+        // Voxel-volume-only colliders: registered for the DDA sweeps in
+        // `cast_ray`/`cast_capsule` AND backed by a real static Rapier body
+        // (parry `Voxels`, see `voxel_contact_bodies`) so dynamic bodies get
+        // contact physics against terrain. The contact body is rebuilt on every
+        // OnSet (chunk bitset rebuild on block change).
         if self.is_voxel_only(collider.parts) {
             self.world.destroy_body(entity);
             let parts = self.parts.get(collider.parts).cloned().unwrap_or_default();
             let handles: Vec<ShapeHandle> = parts.iter().map(|p| p.shape).collect();
             self.voxel_entities.insert(entity, handles);
+            self.replace_voxel_contact_body(entity, collider);
             return;
         }
-        // Mixed Rapier + voxel parts aren't supported; drop the voxel handles.
+        // Mixed Rapier + voxel parts aren't supported; drop the voxel handles
+        // and any contact body left over from a previous voxel-only upsert.
         self.voxel_entities.remove(&entity);
+        self.destroy_voxel_contact_body(entity);
         let Some(shape) = self.build_shared_shape(collider.parts) else {
             log::warn!(
                 "[physics] upsert_body entity={entity:#x}: empty/invalid parts={}",
@@ -887,10 +1223,12 @@ impl PhysicsBackend for RapierPhysicsBackend {
     }
 
     fn remove_body(&mut self, entity: u64) {
+        self.destroy_voxel_contact_body(entity);
         if self.characters.contains_key(&entity) {
             self.remove_character(entity);
         } else if self.voxel_entities.remove(&entity).is_some() {
-            // voxel-only body: nothing in Rapier to destroy.
+            // voxel-only body: DDA registration removed; the static contact
+            // body was destroyed above.
         } else {
             self.world.destroy_body(entity);
         }
@@ -933,7 +1271,11 @@ impl PhysicsBackend for RapierPhysicsBackend {
     }
 
     fn prepare(&mut self, world: &World, dt: f32) {
-        self.sync_query_bvh();
+        // Create missing bridge bodies first so sync/step see them
+        // (`PhysicsRigidBodyPrepare`, query "RigidBody, TransformComponent").
+        if self.sys_rigid_body_prepare != 0 {
+            world.run_system(self.sys_rigid_body_prepare, 0.0);
+        }
         if self.sys_sync_in != 0 {
             world.run_system(self.sys_sync_in, dt.max(0.0));
         }
@@ -950,6 +1292,32 @@ impl PhysicsBackend for RapierPhysicsBackend {
         if self.sys_writeback_dynamics != 0 {
             world.run_system(self.sys_writeback_dynamics, 0.0);
         }
+        if self.sys_rigid_body_writeback != 0 {
+            world.run_system(self.sys_rigid_body_writeback, 0.0);
+        }
+    }
+
+    /// Fixed-timestep loop decoupled from the server tick rate: physics runs
+    /// in 1/60 s steps (the server ticks at 20 TPS → 3 substeps per tick), so
+    /// solver quality and CCD behave like a real-time simulation instead of
+    /// integrating 50 ms chunks. Writeback runs once per server frame with the
+    /// final state. The accumulator is clamped so a hitch cannot trigger a
+    /// spiral of death (leftover time beyond MAX_SUBSTEPS is dropped).
+    fn advance(&mut self, world: &World, dt: f32) {
+        const FIXED_DT: f32 = 1.0 / 60.0;
+        const MAX_SUBSTEPS: u32 = 5;
+
+        self.step_accumulator += dt;
+        let max_acc = FIXED_DT * MAX_SUBSTEPS as f32;
+        if self.step_accumulator > max_acc {
+            self.step_accumulator = max_acc;
+        }
+        while self.step_accumulator >= FIXED_DT {
+            self.prepare(world, FIXED_DT);
+            self.step(FIXED_DT);
+            self.step_accumulator -= FIXED_DT;
+        }
+        self.writeback(world);
     }
 
     fn attach_ecs(&mut self, world: &World) {
@@ -957,42 +1325,75 @@ impl PhysicsBackend for RapierPhysicsBackend {
             return;
         }
         self.world_view = world as *const World;
-        self.collider_id = world.component_init::<Collider>();
+        // Legacy ABI collider: flecs component renamed "Collider" → "PhysCollider"
+        // (Rust type `abi::Collider` is unchanged). Registered by raw descriptor
+        // so the flecs name does not follow the Rust type name.
+        self.collider_id = world.component_init_raw(&ComponentDescriptor {
+            name: "PhysCollider".to_string(),
+            size: std::mem::size_of::<Collider>(),
+            align: std::mem::align_of::<Collider>(),
+            prefab_apply_user: std::ptr::null_mut(),
+            prefab_apply: None,
+            inspect_schema_cbor: Vec::new(),
+            inspect_dump_user: std::ptr::null_mut(),
+            inspect_dump_native: None,
+            inspect_dump_ffi: None,
+            layout_meta: Vec::new(),
+        });
         self.char_id = world.component_init::<CharacterController>();
-        self.transform_id = world.component_init::<TransformComponent>();
+        // POD bridge components (the prefab-facing contract types).
+        self.rigid_body_id = world.component_init::<RigidBody>();
+        self.pod_collider_id = world.component_init::<PodCollider>();
+        self.velocity_id = world.component_init::<Velocity>();
+        self.phys_handle_id = world.component_init::<PhysBodyHandle>();
+        // Transform: layout-compatible raw registration (no engine-common dep).
+        self.transform_id = world.component_init_raw(&ComponentDescriptor {
+            name: "TransformComponent".to_string(),
+            size: std::mem::size_of::<TransformView>(),
+            align: std::mem::align_of::<TransformView>(),
+            prefab_apply_user: std::ptr::null_mut(),
+            prefab_apply: None,
+            inspect_schema_cbor: Vec::new(),
+            inspect_dump_user: std::ptr::null_mut(),
+            inspect_dump_native: None,
+            inspect_dump_ffi: None,
+            layout_meta: Vec::new(),
+        });
 
         let self_ptr = self as *mut RapierPhysicsBackend as *mut c_void;
-        let on_collider_set = observer_collider_set as crate::world::EcsCallback;
-        let on_collider_rm = observer_collider_remove as crate::world::EcsCallback;
-        let on_char_set = observer_character_set as crate::world::EcsCallback;
-        let on_char_rm = observer_character_remove as crate::world::EcsCallback;
+        let on_collider_set = observer_collider_set as deerpunk_engine_world::EcsCallback;
+        let on_collider_rm = observer_collider_remove as deerpunk_engine_world::EcsCallback;
+        let on_char_set = observer_character_set as deerpunk_engine_world::EcsCallback;
+        let on_char_rm = observer_character_remove as deerpunk_engine_world::EcsCallback;
+        let on_rigid_body_rm = observer_rigid_body_remove as deerpunk_engine_world::EcsCallback;
+        // OnSet/OnRemove on the legacy ABI collider (flecs name "PhysCollider").
         if world
             .register_observer(
-                "Collider",
-                &[crate::world::WatchEvent::OnSet],
+                "PhysCollider",
+                &[deerpunk_engine_world::WatchEvent::OnSet],
                 self_ptr,
                 on_collider_set,
             )
             .is_err()
         {
-            log::error!("[physics] OnSet Collider observer failed");
+            log::error!("[physics] OnSet PhysCollider observer failed");
         }
         if world
             .register_observer(
-                "Collider",
-                &[crate::world::WatchEvent::OnRemove],
+                "PhysCollider",
+                &[deerpunk_engine_world::WatchEvent::OnRemove],
                 self_ptr,
                 on_collider_rm,
             )
             .is_err()
         {
-            log::error!("[physics] OnRemove Collider observer failed");
+            log::error!("[physics] OnRemove PhysCollider observer failed");
         }
         // OnAdd only — writeback must not recreate the kinematic capsule every tick.
         if world
             .register_observer(
                 "CharacterController",
-                &[crate::world::WatchEvent::OnAdd],
+                &[deerpunk_engine_world::WatchEvent::OnAdd],
                 self_ptr,
                 on_char_set,
             )
@@ -1003,7 +1404,7 @@ impl PhysicsBackend for RapierPhysicsBackend {
         if world
             .register_observer(
                 "CharacterController",
-                &[crate::world::WatchEvent::OnRemove],
+                &[deerpunk_engine_world::WatchEvent::OnRemove],
                 self_ptr,
                 on_char_rm,
             )
@@ -1011,11 +1412,26 @@ impl PhysicsBackend for RapierPhysicsBackend {
         {
             log::error!("[physics] OnRemove CharacterController observer failed");
         }
+        // Removal observers are safe: OnRemove on "RigidBody" destroys the
+        // body and clears `PhysBodyHandle`. No OnSet observer — prefab appliers
+        // set components in arbitrary order, so body creation happens in the
+        // PhysicsRigidBodyPrepare pass (see ecs_sync.rs / prepare).
+        if world
+            .register_observer(
+                "RigidBody",
+                &[deerpunk_engine_world::WatchEvent::OnRemove],
+                self_ptr,
+                on_rigid_body_rm,
+            )
+            .is_err()
+        {
+            log::error!("[physics] OnRemove RigidBody observer failed");
+        }
 
         self.attached = true;
         super::ecs_sync::register_sync_systems(self, world);
         log::info!(
-            "[physics] Collider/CharacterController observers + PhysicsSyncIn/Writeback systems; prepare→step→writeback"
+            "[physics] PhysCollider/CharacterController observers, OnRemove RigidBody cleanup, PhysicsRigidBodyPrepare/PhysicsSyncIn/Writeback systems; prepare→step→writeback"
         );
     }
 
@@ -1025,7 +1441,7 @@ impl PhysicsBackend for RapierPhysicsBackend {
 }
 
 extern "C-unwind" fn observer_collider_set(
-    entities: *const crate::world::EntityId,
+    entities: *const deerpunk_engine_world::EntityId,
     count: u32,
     _dt: f32,
     ctx: *mut c_void,
@@ -1043,10 +1459,12 @@ extern "C-unwind" fn observer_collider_set(
         let Some(c) = world.get::<Collider>(e, backend.collider_id) else {
             continue;
         };
-        let Some(t) = world.get::<TransformComponent>(e, backend.transform_id) else {
-            log::warn!("[physics] Collider OnSet entity={e:#x}: no Transform");
+        let t_ptr = world.get_raw(e, backend.transform_id);
+        if t_ptr.is_null() {
+            log::warn!("[physics] PhysCollider OnSet entity={e:#x}: no Transform");
             continue;
-        };
+        }
+        let t = unsafe { &*(t_ptr as *const TransformView) };
         let rot = t.rotation.to_array();
         backend.upsert_body(
             e,
@@ -1058,7 +1476,7 @@ extern "C-unwind" fn observer_collider_set(
 }
 
 extern "C-unwind" fn observer_collider_remove(
-    entities: *const crate::world::EntityId,
+    entities: *const deerpunk_engine_world::EntityId,
     count: u32,
     _dt: f32,
     ctx: *mut c_void,
@@ -1074,7 +1492,7 @@ extern "C-unwind" fn observer_collider_remove(
 }
 
 extern "C-unwind" fn observer_character_set(
-    entities: *const crate::world::EntityId,
+    entities: *const deerpunk_engine_world::EntityId,
     count: u32,
     _dt: f32,
     ctx: *mut c_void,
@@ -1092,10 +1510,12 @@ extern "C-unwind" fn observer_character_set(
         let Some(c) = world.get::<CharacterController>(e, backend.char_id) else {
             continue;
         };
-        let Some(t) = world.get::<TransformComponent>(e, backend.transform_id) else {
+        let t_ptr = world.get_raw(e, backend.transform_id);
+        if t_ptr.is_null() {
             log::warn!("[physics] CharacterController OnAdd entity={e:#x}: no Transform");
             continue;
-        };
+        }
+        let t = unsafe { &*(t_ptr as *const TransformView) };
         backend.upsert_character(e, t.position.to_array(), &c);
         log::info!(
             "[physics] CharacterController OnAdd entity={e:#x} feet={:?}",
@@ -1105,7 +1525,7 @@ extern "C-unwind" fn observer_character_set(
 }
 
 extern "C-unwind" fn observer_character_remove(
-    entities: *const crate::world::EntityId,
+    entities: *const deerpunk_engine_world::EntityId,
     count: u32,
     _dt: f32,
     ctx: *mut c_void,
@@ -1117,5 +1537,73 @@ extern "C-unwind" fn observer_character_remove(
     for i in 0..count as usize {
         let e = unsafe { *entities.add(i) };
         backend.remove_character(e);
+    }
+}
+
+/// Rapier geometry straight from the POD [`PodCollider`] shapes array (no
+/// shape/parts arena round-trip: the descriptor stores the params inline).
+fn pod_shared_shape(c: &PodCollider) -> Option<SharedShape> {
+    if c.shape_count == 0 {
+        return None;
+    }
+    let mut parts: Vec<(Pose, SharedShape)> = Vec::new();
+    for desc in c.shapes.iter().take(c.shape_count as usize) {
+        let shape = match desc.kind {
+            SHAPE_DESC_KIND_BOX => Some(SharedShape::cuboid(
+                desc.params[0],
+                desc.params[1],
+                desc.params[2],
+            )),
+            SHAPE_DESC_KIND_BALL => Some(SharedShape::ball(desc.params[0])),
+            SHAPE_DESC_KIND_CAPSULE => Some(SharedShape::capsule_z(
+                desc.params[0],
+                desc.params[1],
+            )),
+            other => {
+                log::warn!("[physics] unknown POD collider shape kind {other}");
+                None
+            }
+        };
+        if let Some(shape) = shape {
+            parts.push((
+                Pose::from_parts(Vec3::from_array(desc.local_pos), Quat::IDENTITY),
+                shape,
+            ));
+        }
+    }
+    match parts.len() {
+        0 => None,
+        1 => {
+            let (pose, shape) = parts.pop().unwrap();
+            if pose.translation == Vec3::ZERO && pose.rotation == Quat::IDENTITY {
+                Some(shape)
+            } else {
+                Some(SharedShape::compound(vec![(pose, shape)]))
+            }
+        }
+        _ => Some(SharedShape::compound(parts)),
+    }
+}
+
+extern "C-unwind" fn observer_rigid_body_remove(
+    entities: *const deerpunk_engine_world::EntityId,
+    count: u32,
+    _dt: f32,
+    ctx: *mut c_void,
+) {
+    if entities.is_null() || ctx.is_null() || count == 0 {
+        return;
+    }
+    let backend = unsafe { &mut *(ctx as *mut RapierPhysicsBackend) };
+    if backend.world_view.is_null() {
+        return;
+    }
+    let world = unsafe { &*backend.world_view };
+    for i in 0..count as usize {
+        let e = unsafe { *entities.add(i) };
+        backend.remove_body(e);
+        backend.applied_linvel.remove(&e);
+        // PhysBodyHandle is removed together with the body.
+        world.remove(e, backend.phys_handle_id);
     }
 }

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use flecs_ecs_sys::{self as sys};
 use serde_json::Value;
@@ -90,6 +91,60 @@ pub enum WatchEvent {
     OnAdd,
     OnSet,
     OnRemove,
+}
+
+/// Per-entity revision counters for the inspector delta protocol.
+///
+/// Written only by the wildcard component observer ([`World::new`] registers
+/// it, [`revision_observer_bridge`] bumps); host code only reads through
+/// [`World::entity_rev`]. The observer holds an `Arc` handle to this state so
+/// the callback never re-enters `World` or any host API from inside Flecs.
+struct EntityRevisions {
+    /// Monotonic across all entities so a revision uniquely orders writes
+    /// even when entity ids are recycled.
+    counter: AtomicU64,
+    revs: Mutex<HashMap<EntityId, u64>>,
+}
+
+impl EntityRevisions {
+    fn bump_all(&self, entities: &[EntityId]) {
+        let mut revs = self.revs.lock().expect("entity revision map");
+        for &entity in entities {
+            let next = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+            revs.insert(entity, next);
+        }
+    }
+
+    fn get(&self, entity: EntityId) -> Option<u64> {
+        self.revs
+            .lock()
+            .expect("entity revision map")
+            .get(&entity)
+            .copied()
+    }
+
+    fn remove(&self, entity: EntityId) {
+        self.revs
+            .lock()
+            .expect("entity revision map")
+            .remove(&entity);
+    }
+}
+
+/// Flecs observer bridge: bump the revision of every entity in the event
+/// batch (add / set / remove of any component, including pairs).
+extern "C-unwind" fn revision_observer_bridge(
+    entities: *const EntityId,
+    count: u32,
+    _dt: f32,
+    ctx: *mut c_void,
+) {
+    if entities.is_null() || ctx.is_null() || count == 0 {
+        return;
+    }
+    let revs = unsafe { &*(ctx as *const EntityRevisions) };
+    let batch = unsafe { std::slice::from_raw_parts(entities, count as usize) };
+    revs.bump_all(batch);
 }
 
 struct CallbackSlot {
@@ -187,6 +242,10 @@ pub struct World {
     deferred_destroy: Mutex<Vec<EntityId>>,
     /// Named Flecs phases (`renderer.prepare` and others) plus the phase last assigned to a system.
     stages: Mutex<StageTable>,
+    /// Per-entity inspector revisions (written by the component observer).
+    entity_revs: Arc<EntityRevisions>,
+    /// Observer handle (`Arc::into_raw` of [`Self::entity_revs`]); reclaimed in [`Drop`].
+    entity_revs_handle: *const EntityRevisions,
 }
 
 unsafe impl Send for World {}
@@ -202,7 +261,7 @@ impl World {
     pub fn new() -> Self {
         let inner = unsafe { sys::ecs_init() };
         unsafe { sys::ecs_log_set_level(5) };
-        Self {
+        let mut world = Self {
             inner,
             queries: Vec::new(),
             prefab_appliers: Mutex::new(HashMap::new()),
@@ -213,7 +272,40 @@ impl World {
                 by_name: HashMap::new(),
                 system_phase: HashMap::new(),
             }),
+            entity_revs: Arc::new(EntityRevisions {
+                counter: AtomicU64::new(1),
+                revs: Mutex::new(HashMap::new()),
+            }),
+            entity_revs_handle: std::ptr::null(),
+        };
+        world.entity_revs_handle = Arc::into_raw(Arc::clone(&world.entity_revs));
+        world.register_entity_revision_observer();
+        world
+    }
+
+    /// Wildcard observer over every component id (pairs included): each add /
+    /// set / remove bumps the entity's inspector revision. The callback only
+    /// touches the [`EntityRevisions`] state behind the observer handle, so it
+    /// never re-enters `World` or host code.
+    fn register_entity_revision_observer(&self) {
+        // `*` covers plain component add/set/remove; pairs are matched
+        // explicitly (flecs wildcard observers do not fire on pair ids).
+        for query in ["*", "(ChildOf, *)"] {
+            self.register_observer(
+                query,
+                &[WatchEvent::OnAdd, WatchEvent::OnSet, WatchEvent::OnRemove],
+                self.entity_revs_handle as *mut c_void,
+                revision_observer_bridge as EcsCallback,
+            )
+            .expect("entity revision observer must register");
         }
+    }
+
+    /// Inspector revision of `entity`: bumped on every component add / set /
+    /// remove (and on parent changes, which are `ChildOf` pair writes).
+    /// `0` when no component event was recorded yet.
+    pub fn entity_rev(&self, entity: EntityId) -> u64 {
+        self.entity_revs.get(entity).unwrap_or(0)
     }
 
     pub fn inspect_registry(&self) -> &ComponentInspectRegistry {
@@ -471,6 +563,51 @@ impl World {
         unsafe { sys::ecs_new(self.inner) }
     }
 
+    /// Spawn an entity as a child of `parent` (native flecs `(ChildOf, parent)` pair).
+    pub fn spawn_child(&self, parent: EntityId) -> EntityId {
+        crate::ecs_validate::assert_entity_alive(self, parent, "spawn_child");
+        unsafe {
+            let mut desc: sys::ecs_entity_desc_t = std::mem::zeroed();
+            desc.parent = parent;
+            let entity = sys::ecs_entity_init(self.inner, &desc);
+            log::trace!("ecs: spawn entity {entity} as child of {parent}");
+            entity
+        }
+    }
+
+    /// Native flecs parent (target of the `(ChildOf, _)` pair), if any.
+    pub fn get_parent(&self, entity: EntityId) -> Option<EntityId> {
+        let parent = unsafe { sys::ecs_get_parent(self.inner, entity) };
+        if parent == 0 {
+            None
+        } else {
+            Some(parent)
+        }
+    }
+
+    /// Set or replace the native `(ChildOf, parent)` pair. `None` removes the
+    /// existing parent link.
+    pub fn set_parent(&self, child: EntityId, parent: Option<EntityId>) {
+        crate::ecs_validate::assert_entity_alive(self, child, "set_parent");
+        unsafe {
+            if let Some(current) = self.get_parent(child) {
+                sys::ecs_remove_id(
+                    self.inner,
+                    child,
+                    sys::ecs_make_pair(sys::EcsChildOf, current),
+                );
+            }
+            if let Some(parent) = parent {
+                crate::ecs_validate::assert_entity_alive(self, parent, "set_parent");
+                sys::ecs_add_id(
+                    self.inner,
+                    child,
+                    sys::ecs_make_pair(sys::EcsChildOf, parent),
+                );
+            }
+        }
+    }
+
     pub fn get_raw(&self, entity: EntityId, comp: ComponentId) -> *const std::ffi::c_void {
         crate::ecs_validate::assert_component_id(comp, "get_raw");
         unsafe { sys::ecs_get_id(self.inner, entity, comp) }
@@ -558,6 +695,8 @@ impl World {
 
     pub fn destroy(&self, entity: EntityId) {
         unsafe { sys::ecs_delete(self.inner, entity) }
+        // Drop the stale revision so a recycled id starts clean.
+        self.entity_revs.remove(entity);
     }
 
     /// Queue delete until after the current / next [`Self::simulate`] (`ecs_progress` completes first).
@@ -597,6 +736,8 @@ impl World {
         unsafe {
             sys::ecs_set_name(self.inner, entity, c_name.as_ptr());
         }
+        // Identifier pairs are not covered by the revision observers.
+        self.entity_revs.bump_all(std::slice::from_ref(&entity));
     }
 
     // ── System ─────────────────────────────────────────────────
@@ -1000,7 +1141,13 @@ impl<'a> Iterator for QueryBatches<'a> {
             let mut sizes = Vec::with_capacity(fields);
             for f in 0..fields {
                 let size = *self.it.sizes.add(f) as usize;
-                let col = sys::ecs_field_w_size(&*self.it, size, f as i8);
+                // Pair terms like `(ChildOf, *)` have no data (size 0); passing
+                // 0 to ecs_field_w_size aborts, so expose a null column instead.
+                let col = if size == 0 {
+                    std::ptr::null()
+                } else {
+                    sys::ecs_field_w_size(&*self.it, size, f as i8)
+                };
                 columns.push(col as *const std::ffi::c_void);
                 sizes.push(size);
             }
@@ -1038,6 +1185,7 @@ fn is_game_component_token(token: &str) -> bool {
             | "Worldspawn"
             | "PointLight"
             | "SoundEmitter"
+            | "EntityName"
             | "LuaScript"
             | "MapKv"
             | "UiDocumentComponent"
@@ -1292,6 +1440,10 @@ impl Drop for World {
                 }
             }
             sys::ecs_fini(self.inner);
+            // The observer is gone with the Flecs world; reclaim its handle.
+            if !self.entity_revs_handle.is_null() {
+                drop(unsafe { Arc::from_raw(self.entity_revs_handle) });
+            }
         }
     }
 }
@@ -1371,5 +1523,97 @@ mod stage_tests {
         assert_eq!(runs, 1);
         assert_eq!(world.set_system_stage(0, "renderer.prepare"), -1);
         assert_eq!(world.set_system_stage(id, ""), -1);
+    }
+
+    /// World-transform sync queries: the native `(ChildOf, _)` pair (and its
+    /// negation) split roots from parented entities in the query DSL.
+    #[test]
+    fn child_of_pair_queries_split_roots_and_children() {
+        let mut world = World::new();
+        let tid = world.component_init_raw(&crate::world::ComponentDescriptor {
+            name: "ProbeTransform".into(),
+            size: 64,
+            align: 4,
+            prefab_apply_user: std::ptr::null_mut(),
+            prefab_apply: None,
+            inspect_schema_cbor: Vec::new(),
+            inspect_dump_user: std::ptr::null_mut(),
+            inspect_dump_native: None,
+            inspect_dump_ffi: None,
+            layout_meta: Vec::new(),
+        });
+        let set_probe = |w: &World, e: EntityId| {
+            let data = [0u8; 64];
+            w.set_raw(e, tid, data.as_ptr() as *const c_void, 64);
+        };
+
+        let root = world.spawn();
+        set_probe(&world, root);
+        let child = world.spawn_child(root);
+        set_probe(&world, child);
+        let orphan = world.spawn();
+        set_probe(&world, orphan);
+
+        let q_parented = world.query_prepare("ProbeTransform, (ChildOf, *)");
+        let q_roots = world.query_prepare("ProbeTransform, !(ChildOf, *)");
+        let count = |w: &World, q: crate::world::QueryId| {
+            w.query_batches(q)
+                .map(|b| b.map(|batch| batch.count).sum::<usize>())
+                .unwrap_or(0)
+        };
+        assert_eq!(count(&world, q_parented), 1);
+        assert_eq!(count(&world, q_roots), 2);
+        assert_eq!(world.get_parent(child), Some(root));
+        assert_eq!(world.get_parent(root), None);
+        world.set_parent(child, None);
+        assert_eq!(world.get_parent(child), None);
+        world.set_parent(child, Some(orphan));
+        assert_eq!(world.get_parent(child), Some(orphan));
+    }
+
+    /// Component add / set / remove (and `ChildOf` writes) bump the
+    /// per-entity inspector revision; destroy drops the entry so a recycled
+    /// id starts clean.
+    #[test]
+    fn entity_rev_bumps_on_component_events() {
+        let mut world = World::new();
+        let tid = world.component_init_raw(&crate::world::ComponentDescriptor {
+            name: "RevProbe".into(),
+            size: 4,
+            align: 4,
+            prefab_apply_user: std::ptr::null_mut(),
+            prefab_apply: None,
+            inspect_schema_cbor: Vec::new(),
+            inspect_dump_user: std::ptr::null_mut(),
+            inspect_dump_native: None,
+            inspect_dump_ffi: None,
+            layout_meta: Vec::new(),
+        });
+        let entity = world.spawn();
+        assert_eq!(world.entity_rev(entity), 0, "no component events yet");
+
+        let data = [0u8; 4];
+        world.set_raw(entity, tid, data.as_ptr() as *const c_void, 4);
+        let after_add = world.entity_rev(entity);
+        assert_ne!(after_add, 0, "component add bumps");
+
+        world.set_raw(entity, tid, data.as_ptr() as *const c_void, 4);
+        assert!(
+            world.entity_rev(entity) > after_add,
+            "component set bumps again"
+        );
+
+        let parent = world.spawn();
+        world.set_parent(entity, Some(parent));
+        assert!(
+            world.entity_rev(entity) > after_add + 1,
+            "ChildOf pair write bumps"
+        );
+
+        world.remove(entity, tid);
+        assert!(world.entity_rev(entity) > 0, "remove still bumps");
+
+        world.destroy(entity);
+        assert_eq!(world.entity_rev(entity), 0, "destroy drops the entry");
     }
 }

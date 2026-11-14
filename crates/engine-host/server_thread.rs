@@ -148,6 +148,8 @@ fn server_main(
         inspect_share,
         console_commands: Vec::new(),
         inspect_world_ready: false,
+        entities_delta: crate::inspector::CollectionDelta::new(),
+        players_delta: crate::inspector::CollectionDelta::new(),
         pending_start_map: None,
         last_overload_warn: None,
     };

@@ -3,7 +3,7 @@
 use crate::client_engine::{DebugColor, DebugDrawBuf};
 use deerpunk_engine_common::components::{CameraComponent, TransformComponent, Worldspawn};
 use deerpunk_engine_common::physics::{
-    CharacterController, Collider, PhysicsBackend, ShapeGeom, PARTS_HANDLE_INVALID,
+    CharacterController, PhysCollider, PhysicsBackend, ShapeGeom, PARTS_HANDLE_INVALID,
     SHAPE_HANDLE_INVALID,
 };
 use deerpunk_engine_common::world::World;
@@ -139,7 +139,11 @@ fn pick_world_part(
     origin: [f32; 3],
     dir: [f32; 3],
 ) -> Option<PartHit> {
-    let col_id = world.component_init::<Collider>();
+    // The legacy ABI collider's flecs name is "PhysCollider" (registered by the
+    // physics backend at attach); look it up instead of registering by type.
+    let Some(col_id) = world.component_lookup("PhysCollider") else {
+        return None;
+    };
     let t_id = world.component_init::<TransformComponent>();
     let ws_id = world.component_init::<Worldspawn>();
 
@@ -151,7 +155,7 @@ fn pick_world_part(
         if !world.has(e.id, ws_id) || !world.has(e.id, col_id) {
             continue;
         }
-        let col = unsafe { &*(world.get_raw(e.id, col_id) as *const Collider) };
+        let col = unsafe { &*(world.get_raw(e.id, col_id) as *const PhysCollider) };
         if col.parts == PARTS_HANDLE_INVALID {
             continue;
         }

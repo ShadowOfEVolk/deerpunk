@@ -1,6 +1,6 @@
 use glam::{Quat, Vec3};
 
-/// Local transform relative to [`ParentComponent`] (if any). World pose: [`WorldTransformComponent`].
+/// Local transform relative to the native flecs `(ChildOf, _)` parent (if any). World pose: [`WorldTransformComponent`].
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct TransformComponent {

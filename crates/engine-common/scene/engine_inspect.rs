@@ -4,11 +4,11 @@ use serde_json::{json, Value};
 
 use crate::component_inspect::NativeInspectDumpFn;
 use crate::components::{
-    CameraComponent, LuaScript, MapKv, Mesh3D, NetworkEntity, PointLight, PrefabId, SkinnedMesh3D,
-    SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent,
+    CameraComponent, EntityName, LuaScript, MapKv, Mesh3D, NetworkEntity, PointLight, PrefabId,
+    SkinnedMesh3D, SoundEmitter, StudioModel, TransformComponent, UiDocumentComponent,
 };
 use crate::material::DrawMaterial;
-use crate::physics::CharacterController;
+use crate::physics::{CharacterController, Collider, PhysBodyHandle, RigidBody, Velocity};
 use crate::world::{ComponentId, EntityId, World};
 
 fn reg(
@@ -184,6 +184,85 @@ fn dump_draw_material(world: &World, entity: EntityId, comp: ComponentId) -> Res
         "material_valid": !dm.handle.is_none(),
     }))
 }
+fn dump_entity_name(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+    let n = world
+        .get::<EntityName>(entity, comp)
+        .ok_or("EntityName missing")?;
+    Ok(json!({ "name": n.as_str() }))
+}
+
+fn dump_rigid_body(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+    let rb = world
+        .get::<RigidBody>(entity, comp)
+        .ok_or("RigidBody missing")?;
+    let body_type = match rb.body_type {
+        0 => "static",
+        1 => "dynamic",
+        2 => "kinematic",
+        _ => "unknown",
+    };
+    Ok(json!({
+        "body_type": body_type,
+        "gravity_scale": rb.gravity_scale,
+        "linear_damping": rb.linear_damping,
+        "angular_damping": rb.angular_damping,
+        "ccd": rb.ccd_enabled != 0,
+        "can_sleep": rb.can_sleep != 0,
+    }))
+}
+
+fn dump_collider(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+    let c = world
+        .get::<Collider>(entity, comp)
+        .ok_or("Collider missing")?;
+    let shapes: Vec<Value> = c.shapes[..c.shape_count.min(4) as usize]
+        .iter()
+        .map(|s| {
+            let pos = json!([s.local_pos[0], s.local_pos[1], s.local_pos[2]]);
+            match s.kind {
+                1 => json!({ "box": [s.params[0], s.params[1], s.params[2]], "pos": pos }),
+                2 => json!({ "ball": s.params[0], "pos": pos }),
+                3 => json!({ "capsule": { "half_height": s.params[0], "radius": s.params[1] }, "pos": pos }),
+                _ => json!({ "unknown": s.kind }),
+            }
+        })
+        .collect();
+    Ok(json!({
+        "shapes": shapes,
+        "shape_count": c.shape_count,
+        "category_bits": format!("0x{:08X}", c.category_bits),
+        "mask_bits": format!("0x{:08X}", c.mask_bits),
+        "friction": c.friction,
+        "restitution": c.restitution,
+        "density": c.density,
+        "sensor": c.sensor != 0,
+    }))
+}
+
+fn dump_velocity(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
+    let v = world
+        .get::<Velocity>(entity, comp)
+        .ok_or("Velocity missing")?;
+    Ok(json!({
+        "linear": [v.linear[0], v.linear[1], v.linear[2]],
+        "angular": [v.angular[0], v.angular[1], v.angular[2]],
+    }))
+}
+
+fn dump_phys_body_handle(
+    world: &World,
+    entity: EntityId,
+    comp: ComponentId,
+) -> Result<Value, String> {
+    let h = world
+        .get::<PhysBodyHandle>(entity, comp)
+        .ok_or("PhysBodyHandle missing")?;
+    Ok(json!({
+        "handle": h.0,
+        "index": (h.0 as u32) as u64,
+        "generation": (h.0 >> 32) as u32,
+    }))
+}
 
 fn dump_prefab_id(world: &World, entity: EntityId, comp: ComponentId) -> Result<Value, String> {
     let p = world
@@ -192,8 +271,21 @@ fn dump_prefab_id(world: &World, entity: EntityId, comp: ComponentId) -> Result<
     Ok(json!({ "id": p.id }))
 }
 
-/// Call after [`register_engine_prefab_appliers`]: same component ids, inspector metadata.
 pub fn register_engine_component_inspect(world: &World) {
+    let id = world.component_init::<EntityName>();
+    reg(
+        world,
+        "EntityName",
+        id,
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+            }
+        }),
+        dump_entity_name,
+    );
+
     let id = world.component_init::<TransformComponent>();
     reg(
         world,
@@ -224,6 +316,77 @@ pub fn register_engine_component_inspect(world: &World) {
             }
         }),
         dump_camera,
+    );
+
+    let id = world.component_init::<RigidBody>();
+    reg(
+        world,
+        "RigidBody",
+        id,
+        json!({
+            "type": "object",
+            "properties": {
+                "body_type": { "type": "string" },
+                "gravity_scale": { "type": "number" },
+                "linear_damping": { "type": "number" },
+                "angular_damping": { "type": "number" },
+                "ccd": { "type": "boolean" },
+                "can_sleep": { "type": "boolean" },
+            }
+        }),
+        dump_rigid_body,
+    );
+
+    let id = world.component_init::<Collider>();
+    reg(
+        world,
+        "Collider",
+        id,
+        json!({
+            "type": "object",
+            "properties": {
+                "shapes": { "type": "array" },
+                "shape_count": { "type": "integer" },
+                "category_bits": { "type": "string" },
+                "mask_bits": { "type": "string" },
+                "friction": { "type": "number" },
+                "restitution": { "type": "number" },
+                "density": { "type": "number" },
+                "sensor": { "type": "boolean" },
+            }
+        }),
+        dump_collider,
+    );
+
+    let id = world.component_init::<Velocity>();
+    reg(
+        world,
+        "Velocity",
+        id,
+        json!({
+            "type": "object",
+            "properties": {
+                "linear": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                "angular": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+            }
+        }),
+        dump_velocity,
+    );
+
+    let id = world.component_init::<PhysBodyHandle>();
+    reg(
+        world,
+        "PhysBodyHandle",
+        id,
+        json!({
+            "type": "object",
+            "properties": {
+                "handle": { "type": "integer" },
+                "index": { "type": "integer" },
+                "generation": { "type": "integer" },
+            }
+        }),
+        dump_phys_body_handle,
     );
 
     let id = world.component_init::<CharacterController>();

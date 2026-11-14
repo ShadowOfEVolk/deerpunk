@@ -5,6 +5,7 @@ members = [
     "crates/engine-client-fmod",
     "crates/engine-client-kira",
     "crates/engine-common",
+    "crates/deerpunk-physics",
     "crates/engine-world",
     "crates/engine-network",
     "crates/engine-resource",

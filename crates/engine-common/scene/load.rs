@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::components::{prefab_id_for, NetworkEntity, ParentComponent, PrefabId};
+use crate::components::{prefab_id_for, NetworkEntity, PrefabId};
 use crate::network::field_path::{FieldValue, NetFieldId};
 use crate::resource::{MeshRegistry, ResourceManager};
 use crate::world::{EntityId, World};
@@ -98,16 +98,14 @@ fn spawn_prefab_children(
     if children.is_empty() {
         return Ok(());
     }
-    let parent_id = world.component_init::<ParentComponent>();
     for (idx, child_def) in children.iter().enumerate() {
-        let child = world.spawn();
+        let child = world.spawn_child(parent);
         for (comp_name, value) in &child_def.components {
             apply_prefab_component_value(
                 world, meshes, gamedir, resources, child, comp_name, value,
             )
             .map_err(|e| format!("prefab '{prefab_name}' child[{idx}] {comp_name}: {e}"))?;
         }
-        world.set(child, parent_id, ParentComponent { parent });
         // Children spawned from the same prefab carry the same PrefabId.
         let prefab_comp = world.component_init::<PrefabId>();
         world.set(child, prefab_comp, prefab_id_for(prefab_name));

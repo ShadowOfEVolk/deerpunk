@@ -104,13 +104,24 @@ pub trait PhysicsBackend: Send {
     fn set_body_linvel(&mut self, entity: u64, linvel: [f32; 3]);
 
     /// `physics.prepare` — BVH + manual `ecs_run(PhysicsSyncIn)`.
-    fn prepare(&mut self, world: &crate::world::World, dt: f32);
+    fn prepare(&mut self, world: &deerpunk_engine_world::World, dt: f32);
 
     /// `physics.sim.step` — Rapier world step.
     fn step(&mut self, dt: f32);
 
     /// `physics.writeback` — Rapier → Transform + CharacterController.grounded.
-    fn writeback(&mut self, world: &crate::world::World);
+    fn writeback(&mut self, world: &deerpunk_engine_world::World);
+
+    /// Advance simulation by `dt` of server time.
+    ///
+    /// Default: single prepare→step→writeback pass. Backends may override to
+    /// decouple their internal tick rate from the server tick rate (see
+    /// `RapierPhysicsBackend::advance` for the fixed-timestep accumulator).
+    fn advance(&mut self, world: &deerpunk_engine_world::World, dt: f32) {
+        self.prepare(world, dt);
+        self.step(dt);
+        self.writeback(world);
+    }
 
     /// Set the contact skin used by swept capsule casts (`target_distance`).
     /// Smaller = tighter collision (voxel scale); larger = air cushion (HL scale).
@@ -118,7 +129,7 @@ pub trait PhysicsBackend: Send {
     fn set_capsule_skin(&mut self, _skin: f32) {}
 
     /// Wire Flecs OnSet/OnRemove for [`Collider`] / [`super::character::CharacterController`].
-    fn attach_ecs(&mut self, _world: &crate::world::World) {}
+    fn attach_ecs(&mut self, _world: &deerpunk_engine_world::World) {}
 }
 
 /// No-op backend until a real one is installed.
@@ -159,9 +170,9 @@ impl PhysicsBackend for NullPhysics {
 
     fn set_body_linvel(&mut self, _entity: u64, _linvel: [f32; 3]) {}
 
-    fn prepare(&mut self, _world: &crate::world::World, _dt: f32) {}
+    fn prepare(&mut self, _world: &deerpunk_engine_world::World, _dt: f32) {}
 
     fn step(&mut self, _dt: f32) {}
 
-    fn writeback(&mut self, _world: &crate::world::World) {}
+    fn writeback(&mut self, _world: &deerpunk_engine_world::World) {}
 }

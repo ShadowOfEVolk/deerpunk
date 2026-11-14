@@ -1,0 +1,11 @@
+[package]
+name = "deerpunk-physics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deerpunk-engine-world = { path = "../engine-world" }
+glam = { version = "0.33", features = ["serde"] }
+rapier3d = { version = "0.35", features = ["dim3", "profiler"] }
+log = "0.4"
+serde_json = "1"
