@@ -34,6 +34,20 @@ fn player_query_filter(exclude_body: Option<RigidBodyHandle>) -> QueryFilter<'st
     f
 }
 
+/// High bit that tags voxel-volume shape handles. `shapes` (Rapier geometry)
+/// and `voxel_shapes` (DDA volumes) are separate `Arena`s with independent
+/// counters, so their raw indices overlap; the tag keeps the two handle spaces
+/// disjoint and tells them apart at every use site.
+const VOXEL_HANDLE_FLAG: u32 = 1 << 31;
+
+fn tag_voxel_shape_handle(handle: ShapeHandle) -> ShapeHandle {
+    handle | VOXEL_HANDLE_FLAG
+}
+
+fn shape_arena_index(handle: ShapeHandle) -> ShapeHandle {
+    handle & !VOXEL_HANDLE_FLAG
+}
+
 struct Arena<T> {
     slots: Vec<Option<T>>,
     free: Vec<u32>,
@@ -221,7 +235,7 @@ impl RapierPhysicsBackend {
         if parts.len() != 1 {
             return false;
         }
-        self.voxel_shapes.get(parts[0].shape).is_some()
+        parts[0].shape & VOXEL_HANDLE_FLAG != 0
     }
 
     fn part_pose(part: &ColliderPart) -> Pose {
@@ -318,13 +332,14 @@ impl RapierPhysicsBackend {
             cb = cb.density(collider.density);
         }
 
-        let (handle, _) = self.world.inner.insert(rb.position(pose), cb);
+        let (handle, _) = self.world.inner.insert(rb, cb);
         self.world.body_map.insert(entity, handle);
-        // log::info!(
-        //     "[physics] collider entity={entity:#x} pos={:?} bodies={}",
-        //     position,
-        //     self.world.inner.bodies.len()
-        // );
+        // Only real Rapier bodies land here (voxel volumes and characters take
+        // other paths), so this stays one line per dynamic entity, not spam.
+        log::info!(
+            "[physics] dynamic body entity={entity:#x} handle={handle:?} bodies={}",
+            self.world.inner.bodies.len()
+        );
     }
 
     fn upsert_character(&mut self, entity: u64, position: [f32; 3], cc: &CharacterController) {
@@ -575,7 +590,7 @@ impl RapierPhysicsBackend {
         let mut best: Option<RayCastHit> = None;
         for (entity, handles) in &self.voxel_entities {
             for &h in handles {
-                let Some(vol) = self.voxel_shapes.get(h) else {
+                let Some(vol) = self.voxel_shapes.get(shape_arena_index(h)) else {
                     continue;
                 };
                 if let Some(hit) =
@@ -607,7 +622,7 @@ impl RapierPhysicsBackend {
         let mut best: Option<CapsuleCastHit> = None;
         for (entity, handles) in &self.voxel_entities {
             for &h in handles {
-                let Some(vol) = self.voxel_shapes.get(h) else {
+                let Some(vol) = self.voxel_shapes.get(shape_arena_index(h)) else {
                     continue;
                 };
                 if let Some(hit) = super::voxel_query::cast_capsule_volume(
@@ -685,9 +700,10 @@ impl PhysicsBackend for RapierPhysicsBackend {
 
     fn create_shape(&mut self, abi: &[u8]) -> ShapeHandle {
         match decode_shape(abi) {
-            Some(ShapeGeom::VoxelVolume { origin, solid }) => self
-                .voxel_shapes
-                .insert(super::voxel_query::VoxelVolume { origin, solid }),
+            Some(ShapeGeom::VoxelVolume { origin, solid }) => tag_voxel_shape_handle(
+                self.voxel_shapes
+                    .insert(super::voxel_query::VoxelVolume { origin, solid }),
+            ),
             Some(geom) => self.shapes.insert(geom),
             None => {
                 log::warn!("[physics] create_shape: bad ABI ({} bytes)", abi.len());
@@ -697,8 +713,11 @@ impl PhysicsBackend for RapierPhysicsBackend {
     }
 
     fn destroy_shape(&mut self, handle: ShapeHandle) {
-        let _ = self.shapes.remove(handle);
-        let _ = self.voxel_shapes.remove(handle);
+        if handle & VOXEL_HANDLE_FLAG != 0 {
+            let _ = self.voxel_shapes.remove(shape_arena_index(handle));
+        } else {
+            let _ = self.shapes.remove(handle);
+        }
     }
 
     fn create_parts(&mut self, parts: &[ColliderPart]) -> PartsHandle {
